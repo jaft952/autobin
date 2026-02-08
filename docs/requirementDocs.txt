@@ -1,0 +1,698 @@
+================================================================================
+Requirements Document
+
+Intelligent Robotic Waste Management System
+
+================================================================================
+
+Project Title: Robotic with Intelligent Waste Management
+Project Code: BMCS 3403 PROJECT 1
+Document Version: 1.0
+My Module: 2
+================================================================================
+1. Project Overview
+================================================================================
+1.1 Project Background
+
+In indoor public spaces in Malaysia (shopping malls, universities, office buildings, etc.), the problem of ground litter accumulation around trash bins persists.
+Small solid waste items (paper cups, plastic bottles, food packaging) frequently fall on the ground within a radius of 0.5–2 meters from trash bins due to:
+
+Missed throws
+
+Trash bin overflow during peak hours
+
+Casual or irresponsible disposal behavior
+
+Traditional scheduled cleaning systems (2+1 or 3+1 collection cycles) cannot respond in real time to waste accumulation, and manual cleaning incurs high labor costs.
+In 2023, Malaysia invested RM1.9 billion in solid waste collection and public hygiene, yet waste management still faces significant challenges.
+
+1.2 Project Objectives
+
+To develop an autonomous intelligent waste management system consisting of two modules:
+
+Module 1: Vision-Guided Aerial Trash Interception Robot
+
+Module 2: Vision-Guided Ground Trash Collection Robotic Arm (Upgraded to 6 Degrees of Freedom)
+
+The system enables continuous monitoring and automated cleaning of the area around trash bins, reducing human intervention and improving cleaning efficiency.
+
+1.3 Application Scenarios
+
+Indoor, flat, obstacle-free environments
+
+Fixed areas around trash bins (0.5–2 m radius)
+
+Normal indoor lighting conditions
+
+High-traffic public facilities
+
+================================================================================
+2. Problem Statement
+================================================================================
+Problem 1: Ground Litter Accumulation and Limitations of Existing Automated Cleaning Solutions
+
+Persistent accumulation of litter around trash bins in indoor public environments
+
+Existing robotic vacuum cleaners can only handle fine particles and cannot collect three-dimensional solid objects (cups, bottles)
+
+A specialized robotic system with manipulation capability is required
+
+Problem 2: Low Efficiency and Rising Cost of Scheduled Manual Cleaning
+
+Traditional 2+1 or 3+1 collection systems cannot dynamically respond to real-time waste accumulation
+
+Waste accumulates rapidly during peak hours and remains until the next scheduled cleaning cycle
+
+Manual spot cleaning is labor-intensive and expensive
+
+Problem 3: Lack of Automated Localized Waste Collection Solutions for Fixed Trash Bin Areas
+
+Existing automation solutions focus on large-scale logistics and centralized processing
+
+The 1–2 m radius around trash bins still relies on manual cleaning
+
+There is a lack of dedicated automated solutions designed for fixed-point waste collection
+
+================================================================================
+3. System Scope
+================================================================================
+3.1 In Scope
+
+Indoor operation only
+
+Flat and obstacle-free floors
+
+Fixed-area operation around trash bins
+
+Detection and collection of small solid waste
+
+Real-time vision processing and motion control
+
+Performance monitoring and data logging
+
+3.2 Out of Scope
+
+Liquid spills
+
+Fine dust
+
+Stairs or ramps
+
+Large or heavy objects
+
+Outdoor operation
+
+================================================================================
+4. Functional Requirements
+================================================================================
+4.1 Module 1: Vision-Guided Aerial Trash Interception Robot (Catch Trash)
+FR1.1 Airborne Object Detection
+
+The system shall detect and track airborne objects within the camera field of view.
+
+The system shall classify detected airborne objects by type and size.
+
+The system shall achieve at least 80% confidence under normal indoor lighting conditions.
+
+FR1.2 Trajectory Prediction
+
+The system shall track airborne object trajectories in real time.
+
+The system shall predict landing or interception points.
+
+The system shall perform trajectory prediction within a defined time window.
+
+The system shall update object tracking at a minimum defined frequency.
+
+FR1.3 Navigation and Interception
+
+The system shall navigate to the predicted interception position before the object lands.
+
+The system shall prioritize objects with higher velocities.
+
+The system shall dynamically adjust speed based on object distance and estimated impact time.
+
+If interception becomes infeasible, the system shall slow down or stop.
+
+FR1.4 Failure Handling
+
+The system shall detect failed interception attempts.
+
+After a failed interception, control shall be transferred to the ground collection module.
+
+The system shall record interception attempts and outcomes for performance analysis.
+
+FR1.5 Operational Constraints
+
+Objects below a configurable confidence threshold shall be ignored.
+
+The system shall operate only within predefined spatial boundaries.
+
+Objects detected outside reachable interception zones shall be ignored.
+
+The interception function shall be disabled under low-light conditions below a defined threshold.
+
+4.2 Module 2: Vision-Guided Ground Trash Collection Robotic Arm (Grab Trash – Updated to 6 DOF)
+FR2.1 Ground Trash Detection
+
+The system shall detect objects on the floor within the camera field of view.
+
+The system shall detect trash objects within a 0.5–2 m radius around the trash bin.
+
+The system shall provide coordinates for each detected trash object.
+
+The system shall classify detected ground objects by type and size.
+
+The system shall achieve at least 80% detection accuracy under normal indoor lighting conditions.
+
+FR2.2 Collection Priority
+
+For newly detected objects, the system shall wait approximately 15 seconds before initiating pickup.
+
+Pickup tasks shall be prioritized based on detection confidence.
+
+FR2.3 Six Degrees of Freedom Robotic Arm Control
+
+The system shall be equipped with a six degrees of freedom (6 DOF) robotic arm to enable flexible manipulation.
+
+The 6 DOF configuration provides:
+
+Three rotational joints for shoulder and elbow motion
+
+Three rotational joints for wrist orientation adjustment
+
+The system shall execute collision-free motion to reach the target object.
+
+The system shall grasp the waste and transport it to the trash bin.
+
+The 6 DOF design shall enable:
+
+Multi-angle approach to objects
+
+End-effector orientation adjustment for different object shapes
+
+Operation in constrained spaces
+
+Motion path optimization for higher efficiency
+
+FR2.4 Performance Monitoring
+
+The system shall record performance data including detection rate and pickup success rate.
+
+The system shall classify operational failures (detection error, localization error, grasp failure).
+
+The system shall export performance metrics for review.
+
+4.3 Shared Functional Requirements
+FR3.1 Mobility Control
+
+The system shall independently control left and right wheel speeds to adjust interception paths.
+
+The system shall avoid collisions while navigating to interception points.
+
+The system shall limit maximum speed to ensure safe indoor operation.
+
+FR3.2 Safety Functions
+
+The system shall pause interception if a human is detected within a safety radius.
+
+The system shall provide an emergency stop function.
+
+The system shall immediately stop motion when obstacles are detected within a predefined distance.
+
+================================================================================
+5. Non-Functional Requirements
+================================================================================
+5.1 Performance Requirements
+NFR1.1 Processing Speed
+
+The system shall process visual input and update interception decisions within 200 ms per frame.
+
+The system shall maintain at least 15 frames per second of effective tracking.
+
+The system shall initiate motion within 100 ms after interception point prediction.
+
+The system shall support real-time operation without cloud computing.
+
+NFR1.2 6 DOF Robotic Arm Performance
+
+The robotic arm shall complete motion from initial position to target position within 3 seconds.
+
+Joint motion shall be smooth and free of vibration.
+
+End-effector positioning accuracy shall be within ±2 cm.
+
+The system shall support at least 3 pickup cycles per minute.
+
+5.2 Accuracy and Reliability
+NFR2.1 Prediction Accuracy
+
+Under controlled indoor conditions, interception point prediction error shall not exceed ±30 cm.
+
+The system shall correctly classify target waste objects with at least 80% confidence.
+
+The system shall operate continuously under normal indoor lighting.
+
+NFR2.2 6 DOF Robotic Arm Reliability
+
+The robotic arm shall maintain stable performance during continuous 8-hour operation.
+
+Grasp success rate shall exceed 75%.
+
+The system shall detect joint limits and prevent over-extension.
+
+5.3 Safety Requirements
+NFR3.1 Speed Limitation
+
+The system shall limit maximum linear velocity within safe indoor thresholds.
+
+Maximum end-effector speed shall not exceed 0.5 m/s.
+
+NFR3.2 Collision Avoidance
+
+The system shall immediately stop motion when obstacles are detected within predefined distance.
+
+The system shall not initiate interception when a human is detected within the safety radius.
+
+5.4 Robustness and Fault Tolerance
+NFR4.1 Error Recovery
+
+The system shall tolerate temporary loss of visual tracking without system failure.
+
+The system shall safely recover from failed interception attempts.
+
+The system shall continue operating if non-critical components fail.
+
+NFR4.2 6 DOF Robotic Arm Fault Tolerance
+
+The robotic arm shall detect abnormal torque and trigger protective stop.
+
+The system shall retry once after a grasp failure.
+
+The system shall log all error conditions for diagnostics.
+
+5.5 Power and Resource Constraints
+NFR5.1 Battery Life
+
+The system shall operate continuously for at least X minutes on a single battery charge.
+
+Modules shall not exceed the power budget allocated by the system power unit.
+
+NFR5.2 Computational Resources
+
+CPU utilization shall remain below 80% during normal operation.
+
+6 DOF inverse kinematics computation shall complete within 50 ms.
+
+5.6 Modularity and Maintainability
+NFR6.1 Independent Testing
+
+Modules shall be independently testable without the ground collection module.
+
+6 DOF robotic arm control shall be tested as an independent module.
+
+NFR6.2 Configuration Flexibility
+
+Parameters shall be adjustable without recompiling code.
+
+Modules shall expose clear input/output interfaces for integration.
+
+6 DOF joint limits and speed parameters shall be configurable.
+
+5.7 Usability and Configuration
+NFR7.1 User Configuration
+
+The system shall allow configuration of interception sensitivity parameters.
+
+The system shall provide visual or log-based feedback for debugging and evaluation.
+
+The 6 DOF robotic arm shall support manual teaching mode for initial setup.
+
+================================================================================
+6. System Architecture
+================================================================================
+6.1 High-Level Architecture
+
+The system adopts a monolithic architecture enabling tight integration between Module 1 (aerial interception) and Module 2 (ground collection).
+Hardware resources and coordinated decision logic are shared.
+
+Main architectural layers:
+
+Layer 1: Perception Layer
+
+Layer 2: Decision Layer
+
+Layer 3: Motion / Action Layer
+
+Cross-cutting concerns: Safety, Monitoring
+
+6.2 Software Module Decomposition
+
+Module 1: Vision-Guided Aerial Trash Interception Robot
+
+Computer vision + AI prediction
+
+Mobile platform
+
+Motion control
+
+Sensor system (obstacle and human avoidance)
+
+Schematic design (hardware)
+
+Voice recognition (optional feature)
+
+Module 2: Vision-Guided Ground Trash Collection Robotic Arm (6 DOF)
+
+Computer vision + AI classification
+
+Monitoring system
+
+6 DOF robotic arm components
+
+Robotic arm control (inverse kinematics)
+
+Chassis design (hardware)
+
+Standing function (optional feature)
+
+6.3 Hardware Architecture
+6.3.1 Module 1 Hardware
+
+Mobile wheeled chassis
+
+Camera 1 (airborne object detection)
+
+Embedded processing unit
+
+Distance sensors
+
+Motor drivers
+
+6.3.2 Module 2 Hardware (Updated to 6 DOF)
+
+Six degrees of freedom robotic arm:
+
+Joint 1: Base rotation (±180°)
+
+Joint 2: Shoulder pitch (±90°)
+
+Joint 3: Elbow pitch (±120°)
+
+Joint 4: Wrist roll (±180°)
+
+Joint 5: Wrist pitch (±90°)
+
+Joint 6: Wrist yaw (±180°)
+
+End effector (gripper)
+
+Camera 2 (ground object detection)
+
+Servo motor controller
+
+Force / torque sensors (optional)
+
+6.4 Software Architecture Structure
+robotic-waste-management/
+│
+├── docs/                          # Documentation
+│
+├── src/
+│   ├── main.py                   # System entry point
+│   │
+│   ├── config/                   # Configuration (cross-cutting)
+│   │
+│   ├── events/                   # Event infrastructure (cross-cutting)
+│   │   ├── event_bus.py
+│   │   ├── perception_events.py
+│   │   ├── motion_events.py
+│   │   ├── safety_events.py
+│   │   └── system_events.py
+│   │
+│   │ ====== Layer 1: Perception Layer ======
+│   ├── perception/
+│   │   ├── camera_handler.py         # Camera 1 and 2 input
+│   │   ├── vision_processor.py       # YOLOv8 detection
+│   │   ├── airborne_tracker.py       # Airborne object tracking
+│   │   ├── floor_detector.py         # Floor trash detection
+│   │   └── models/
+│   │       ├── yolov8_airborne.pt
+│   │       └── yolov8_floor.pt
+│   │
+│   │ ====== Layer 2: Decision Layer ======
+│   ├── decision/
+│   │   ├── coordinator.py            # Main decision module
+│   │   ├── trajectory_predictor.py   # Landing point prediction
+│   │   ├── priority_manager.py       # Task prioritization
+│   │   └── dwell_timer.py            # 15-second delay timer
+│   │
+│   │ ====== Layer 3: Motion / Action Layer ======
+│   ├── motion/
+│   │   ├── mobile_base.py            # Module 1: Wheel control
+│   │   ├── robotic_arm_6dof.py       # Module 2: 6 DOF arm control
+│   │   ├── inverse_kinematics.py     # 6 DOF IK solver
+│   │   ├── path_planner.py           # Collision-free planning
+│   │   └── gripper_control.py        # End effector control
+│   │
+│   │ ====== Cross-Cutting Concerns ======
+│   ├── safety/
+│   │   ├── safety_monitor.py
+│   │   ├── emergency_stop.py
+│   │   └── sensors.py
+│   │
+│   ├── monitoring/
+│   │   ├── performance_logger.py
+│   │   ├── failure_classifier.py
+│   │   └── metrics_exporter.py
+│   │
+│   └── utils/
+│
+├── tests/
+├── data/
+└── ...
+
+================================================================================
+7. Interface Definitions
+================================================================================
+7.1 Vision → Decision Interface
+
+Input: Object position (x, y, z), object type, confidence
+Output: Decision commands
+
+7.2 Decision → Mobile Base Interface
+
+Input: Target position (x, y), speed
+Output: Motor speed (left wheel, right wheel)
+
+7.3 Decision → 6 DOF Robotic Arm Interface
+
+Input: Target position (x, y, z), orientation (roll, pitch, yaw)
+Output: Six joint angles (θ1, θ2, θ3, θ4, θ5, θ6)
+
+7.4 Safety Monitoring Interface
+
+Input: Sensor data, system status
+Output: Emergency stop signals, warnings
+
+7.5 Performance Monitoring Interface
+
+Input: Operational events, timestamps
+Output: Performance metrics, log data
+
+================================================================================
+8. Development Plan
+================================================================================
+8.1 Phase 1 (Hardware)
+
+Schematic design
+
+Chassis design
+
+Mobile components
+
+6 DOF robotic arm components (updated)
+
+Sensor system (obstacle and human avoidance)
+
+8.2 Phase 2 (Core Software)
+
+Computer vision + AI prediction (airborne)
+
+Computer vision + AI classification (ground)
+
+Mobility control
+
+6 DOF robotic arm control and inverse kinematics (updated)
+
+8.3 Phase 3 (Integration and Optional Features)
+
+Monitoring system
+
+Voice recognition (optional feature)
+
+Standing function (optional feature)
+
+================================================================================
+9. Project Milestones
+================================================================================
+Activity	Expected Outcome	Completion Date
+Proposal	Define objectives, problems, solutions, and target users	26 Dec 2025
+Chapter 1: Introduction	Background, objectives, and problem justification	06 Feb 2026
+Chapter 2: Literature Review	Critical review of existing systems, research gaps, and related technologies	23 Feb 2026
+Chapter 3: Methodology	Define system requirements, development tools, and agile framework	13 Mar 2026
+Chapter 4: Design	System architecture, data flow, state machines, and hardware interfaces	30 Mar 2026
+Chapter 5: Development & Testing	Core module development, performance monitoring, unit and integration testing	26 Jun 2026
+Chapter 6: System Deployment	Deploy and test system in real environments, collect performance data	10 Jul 2026
+Chapter 7: Project Conclusion	Final summary, achievements, limitations, and recommendations	24 Jul 2026
+================================================================================
+10. Target Market
+================================================================================
+10.1 Facility Managers of Malaysian Commercial Buildings and Shopping Malls
+
+Reduce manual spot-cleaning frequency and labor costs
+
+Improve user satisfaction while maintaining high cleanliness standards
+
+10.2 Malaysian Educational Institutions
+
+Maintain cleanliness in high-traffic campus areas without increasing cleaning workload
+
+Demonstrate commitment to sustainability
+
+10.3 Cleaning Service Contractors
+
+Redeploy labor from repetitive tasks to higher-value services
+
+Improve operational margins and address labor shortages
+
+10.4 IoT Solution Integrators
+
+Modular autonomous components for smart building systems
+
+Integration with existing smart bin infrastructure
+
+10.5 Public Facility Operators
+
+Continuously maintain cleanliness around waste collection points
+
+Improve user experience and reduce dependence on manual cleaning
+
+================================================================================
+11. System Uniqueness
+================================================================================
+11.1 Integrated Software System and Inter-Module Coordination
+
+Unlike isolated solutions, this project implements a unified software architecture where a centralized coordination module explicitly manages resource arbitration and priority-based handover between Module 1 (interception) and Module 2 (collection).
+
+11.2 Localized Fixed-Point Operation in High-Visibility Trash Bin Areas
+
+The system is specifically designed to continuously operate within a fixed 1–2 m radius around trash bins — a high-impact area where cleanliness directly affects user experience but lacks automation solutions in current Malaysian infrastructure.
+
+11.3 Embedded Real-Time Performance Monitoring
+
+A comprehensive instrumentation framework embeds timestamps across more than 10 processing stages, enabling structured failure classification and automated latency analysis. This provides facility managers with quantitative deployment data for evidence-based decision-making.
+
+11.4 Flexibility of 6 DOF Robotic Arm (Updated)
+
+The 6 DOF robotic arm provides higher manipulation flexibility and broader workspace coverage than 2–3 DOF systems, enabling multi-angle approaches and handling complex spatial constraints.
+
+================================================================================
+12. Performance Targets
+================================================================================
+12.1 Detection Performance
+
+Trash detection accuracy: >80%
+
+Object classification confidence: >80%
+
+Detection latency: <200 ms per frame
+
+12.2 Operational Performance
+
+Pickup success rate: >75%
+
+Interception success rate: To be determined
+
+Complete pickup cycle time: <3 seconds (6 DOF)
+
+12.3 System Reliability
+
+Continuous operation time: 8 hours
+
+Error recovery success rate: >90%
+
+CPU utilization: <80%
+
+================================================================================
+13. Future Enhancements
+================================================================================
+13.1 High Priority
+
+Automatic battery charging
+
+Automatic trash bag replacement or replenishment
+
+13.2 Optional Features
+
+Voice recognition
+
+Standing function
+
+Throwing trash back to humans for interaction (humorous feature)
+
+================================================================================
+14. Risks and Limitations
+================================================================================
+14.1 Technical Risks
+
+Reduced detection accuracy under low-light conditions
+
+Computational complexity of 6 DOF inverse kinematics
+
+Collision risks in unstructured environments
+
+14.2 Operational Limitations
+
+Indoor flat surfaces only
+
+Cannot handle liquids or large objects
+
+Dependence on good lighting conditions
+
+14.3 Cost Considerations
+
+Higher cost of 6 DOF robotic arm compared to 2–3 DOF systems
+
+Requirement for higher-performance embedded processors
+
+Maintenance and calibration requirements
+
+================================================================================
+15. Success Criteria
+================================================================================
+15.1 Technical Success Criteria
+
+Trash detection accuracy >80%
+
+Pickup success rate >75%
+
+System latency <200 ms per frame
+
+6 DOF positioning accuracy ±2 cm
+
+15.2 Functional Success Criteria
+
+Successful integration and coordination between Module 1 and Module 2
+
+Effective collision avoidance and safety features
+
+Comprehensive performance logging and metrics export
+
+15.3 Deployment Success Criteria
+
+Stable 8-hour operation in real environments
+
+Positive user feedback
+
+Feasible integration pathway with existing waste management infrastructure
