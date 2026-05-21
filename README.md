@@ -184,3 +184,81 @@ Based on your requirements:
 ## Questions?
 
 Refer to your requirements document: `docs/requirementDocs.txt`
+
+---
+
+## Project Folder Structure
+
+```
+autobin/
+├── .git/                           # Git version control
+├── .gitignore                      # Git ignore patterns
+│
+├── data/                           # Dataset storage
+│   └── datasets/
+│       ├── module1/                # Module 1 datasets (if any)
+│       ├── module2/                # Module 2 datasets (if any)
+│       ├── raw/                    # Raw aluminum can detection dataset
+│       │   ├── annotations/
+│       │   │   ├── train_annotations.coco.json  (1506 images, 1552 annotations)
+│       │   │   ├── val_annotations.coco.json    (287 images, 293 annotations)
+│       │   │   └── test_annotations.coco.json   (184 images, 186 annotations)
+│       │   └── images/             # 1,977 aluminum can images
+│       └── yolo_format/            # Converted YOLO format
+│           └── data.yaml           # YOLOv8 dataset configuration
+│
+├── docs/                           # Documentation
+│   ├── FYPSRS.pdf                  # Project requirements document (PDF)
+│   └── requirementDocs.txt         # Requirements specification
+│
+├── logs/                           # Training and runtime logs
+│   ├── detection/                  # Detection inference logs
+│   ├── performance/                # Performance metrics logs
+│   └── training/                   # Training logs
+│
+├── models/                         # Trained model storage
+│   ├── module1/                    # Module 1 (aerial interception) models
+│   │   ├── checkpoints/            # Training checkpoints
+│   │   ├── experiments/            # Experimental models
+│   │   └── production/             # Production-ready models
+│   └── module2/                    # Module 2 (ground collection) models
+│       ├── checkpoints/            # Training checkpoints
+│       ├── experiments/            # Experimental models
+│       └── production/             # Production-ready models
+│
+├── runs/                           # YOLOv8 training runs output (empty initially)
+│
+├── src/                            # Source code
+│
+├── tests/                          # Unit and integration tests
+│
+├── training/                       # Training scripts and configs
+│   ├── configs/                    # Training configuration files
+│   ├── results/                    # Training results and metrics
+│   ├── scripts/                    # Training notebooks and scripts
+│   │   ├── check_dataset.py        # Dataset validation script
+│   │   ├── convert_coco_to_yolo.py # COCO to YOLO conversion
+│   │   ├── module1.ipynb           # Module 1 training notebook
+│   │   ├── monitor_training.py     # Training monitoring utilities
+│   │   ├── train_yolov8.py         # YOLOv8 training script
+│   │   └── README.md               # Training scripts documentation
+│   └── utils/                      # Training utility functions
+│
+├── extract_metal_dataset.py        # Script to extract metal/aluminum data
+├── merge_datasets.py               # Script to merge multiple datasets
+├── README.md                       # This file (main project documentation)
+├── requirements.txt                # Python dependencies
+└── setup.py                        # Package installation script
+```
+
+### Key Directories Explained
+
+- **`data/datasets/raw/`**: Contains the aluminum can detection dataset in COCO format with 1,977 images and 2,031 annotations across train/val/test splits. All categories unified to single class `aluminium_can`.
+
+- **`training/scripts/`**: Training notebooks and Python scripts for YOLOv8 model training, including dataset conversion utilities.
+
+- **`models/module2/`**: Storage for trained aluminum can detection models for the robotic arm (Module 2: Ground Trash Collection).
+
+- **`logs/`**: Organized logs for training runs, detection inference, and performance metrics tracking.
+
+- **`runs/`**: YOLOv8's default output directory for training runs (populated after training begins).
