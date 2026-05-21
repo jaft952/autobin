@@ -19,7 +19,7 @@ class ArmKinematics:
 
             URDFLink(
                 name="base_rotation",           # CH1: 0°-270° (Yaw)
-                translation_vector=[0, 0, 0.096],
+                origin_translation=[0, 0, 0.096],
                 orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
                 bounds=(-np.radians(135), np.radians(135)),
@@ -27,7 +27,7 @@ class ArmKinematics:
 
             URDFLink(
                 name="shoulder",                # CH2: 0°-270° (Pitch)
-                translation_vector=[0, 0, 0.105],
+                origin_translation=[0, 0, 0.105],
                 orientation=[0, 0, 0],
                 rotation=[0, 1, 0],
                 bounds=(-np.radians(135), np.radians(135)),
@@ -35,7 +35,7 @@ class ArmKinematics:
 
             URDFLink(
                 name="elbow",                   # CH3: 0°-270° (Pitch)
-                translation_vector=[0, 0, 0.1275],
+                origin_translation=[0, 0, 0.1275],
                 orientation=[0, 0, 0],
                 rotation=[0, 1, 0],
                 bounds=(-np.radians(135), np.radians(135)),
@@ -43,7 +43,7 @@ class ArmKinematics:
 
             URDFLink(
                 name="wrist_pitch",             # CH4: 0°-270° (Pitch)
-                translation_vector=[0, 0, 0.070],
+                origin_translation=[0, 0, 0.070],
                 orientation=[0, 0, 0],
                 rotation=[0, 1, 0],
                 bounds=(-np.radians(135), np.radians(135)),
@@ -51,7 +51,7 @@ class ArmKinematics:
 
             URDFLink(
                 name="wrist_rotate",            # CH5: 0°-270° (Roll)
-                translation_vector=[0, 0, 0.031],
+                origin_translation=[0, 0, 0.031],
                 orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
                 bounds=(-np.radians(135), np.radians(135)),
@@ -60,7 +60,7 @@ class ArmKinematics:
             # Tool Center Point (TCP). It represents the tip of the gripper.
             URDFLink(
                 name="gripper_tcp",             # CH6 Handled elsewhere (Claw state)
-                translation_vector=[0, 0, 0.083],
+                origin_translation=[0, 0, 0.083],
                 orientation=[0, 0, 0],
                 rotation=[0, 0, 0],             # Rotation [0,0,0] makes it a fixed link in ikpy
                 joint_type="fixed",             # Declare this correctly for ikpy solver
