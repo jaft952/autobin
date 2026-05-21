@@ -26,6 +26,7 @@ class GraspPlanner:
         
         # Send physical 0~270 angles to actuator
         self.actuator.set_arm_angles(servo_angles)
+        return True
 
     def control_gripper(self, action: str):
         """
