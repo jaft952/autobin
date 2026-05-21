@@ -62,7 +62,7 @@ class ArmKinematics:
                 name="gripper_tcp",             # CH6 Handled elsewhere (Claw state)
                 origin_translation=[0, 0, 0.083],
                 origin_orientation=[0, 0, 0],
-                rotation=[0, 0, 0],             # Rotation [0,0,0] makes it a fixed link in ikpy
+                rotation=None,             # Rotation [0,0,0] makes it a fixed link in ikpy
                 joint_type="fixed",             # Declare this correctly for ikpy solver
             ),
         ])
@@ -82,12 +82,12 @@ class ArmKinematics:
         # Run Inverse Kinematics solver
         if target_orientation is not None:
             ik_angles_rad = self.chain.inverse_kinematics(
-                target_xyz, 
+                target_position=target_xyz, 
                 target_orientation=target_orientation, 
                 orientation_mode="all"
             )
         else:
-            ik_angles_rad = self.chain.inverse_kinematics(target_xyz)
+            ik_angles_rad = self.chain.inverse_kinematics(target_position=target_xyz)
 
         servo_angles_deg = []
         
