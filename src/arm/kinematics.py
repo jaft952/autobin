@@ -19,7 +19,7 @@ class ArmKinematics:
 
             URDFLink(
                 name="base_rotation",           # CH1: 0°-270° (Yaw)
-                origin_translation=[0, 0, 0.096],
+                origin_translation=[0, 0, 0.042],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
                 bounds=(-np.radians(135), np.radians(135)),
