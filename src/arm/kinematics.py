@@ -29,7 +29,7 @@ class ArmKinematics:
                 name="shoulder",                # CH2: 0°-270° (Pitch)
                 origin_translation=[0, 0, 0.105],
                 origin_orientation=[0, 0, 0],
-                rotation=[0, 1, 0],
+                rotation=[1, 0, 0],
                 bounds=(-np.radians(135), np.radians(135)),
             ),
 
@@ -37,7 +37,7 @@ class ArmKinematics:
                 name="elbow",                   # CH3: 0°-270° (Pitch)
                 origin_translation=[0, 0, 0.1275],
                 origin_orientation=[0, 0, 0],
-                rotation=[0, 1, 0],
+                rotation=[1, 0, 0],
                 bounds=(-np.radians(135), np.radians(135)),
             ),
 
@@ -45,7 +45,7 @@ class ArmKinematics:
                 name="wrist_pitch",             # CH4: 0°-270° (Pitch)
                 origin_translation=[0, 0, 0.070],
                 origin_orientation=[0, 0, 0],
-                rotation=[0, 1, 0],
+                rotation=[1, 0, 0],
                 bounds=(-np.radians(135), np.radians(135)),
             ),
 
