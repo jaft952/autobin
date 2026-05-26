@@ -93,7 +93,7 @@ def direction_test():
 
             print(f"Step 2: Moving CH{int(user_input)} to 90° (neutral - 45°)...")
             print(">>> OBSERVE THE ARM NOW <<<")
-            move_servo(ch, 90)
+            move_servo(ch, 0)
             time.sleep(2)
 
             print(f"\nWhich direction did it move?")
@@ -102,7 +102,7 @@ def direction_test():
 
             print(f"\nStep 3: Moving CH{int(user_input)} to 180° (neutral + 45°)...")
             print(">>> OBSERVE THE ARM NOW <<<")
-            move_servo(ch, 180)
+            move_servo(ch, 270)
             time.sleep(2)
 
             print(f"\nWhich direction did it move now?")
