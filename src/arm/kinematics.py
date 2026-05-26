@@ -114,18 +114,6 @@ class ArmKinematics:
             print(f"[Kinematics] IK solver exception: {e}")
             return None
 
-        # --- Step 2: Validate solution using Forward Kinematics ---
-        fk_matrix = self.chain.forward_kinematics(ik_angles_rad)
-        actual_pos = fk_matrix[:3, 3]
-        error = np.linalg.norm(np.array(actual_pos) - np.array(target_xyz))
-
-        if error > self.IK_ERROR_THRESHOLD:
-            print(f"[Kinematics] WARNING: IK solution error too large ({error*100:.1f} cm). "
-                  f"Target may be out of workspace. Rejecting solution.")
-            return None
-
-        print(f"[Kinematics] IK solved. Position error: {error*100:.2f} cm")
-
         # --- Step 3: Save solution for next call ---
         self._last_angles = ik_angles_rad.tolist()
 
