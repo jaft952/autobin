@@ -6,7 +6,7 @@ from ikpy.link import OriginLink, URDFLink
 # Joints 1-5: physical 0° to 270°, neutral at 135°, IK bounds = ±135°
 # Gripper (Joint 6): physical 60° to 180°, neutral at 120°. Handled as a separate action, 
 # but we define its physical length as a fixed offset (TCP).
-JOINT_OFFSET_DEG = [0, 135, 135, 135, 135, 135, 120]  # index 0 is OriginLink
+JOINT_OFFSET_DEG = [0, 90, 90, 90, 90, 90, 120]  # index 0 is OriginLink
 
 class ArmKinematics:
     """
@@ -22,7 +22,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.042],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-np.radians(90), np.radians(90)),
             ),
 
             URDFLink(
@@ -30,7 +30,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.105],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-np.radians(90), np.radians(90)),
             ),
 
             URDFLink(
@@ -38,7 +38,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.1275],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-np.radians(90), np.radians(90)),
             ),
 
             URDFLink(
@@ -46,7 +46,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.070],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-np.radians(90), np.radians(90)),
             ),
 
             URDFLink(
@@ -54,7 +54,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.031],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-np.radians(90), np.radians(90)),
             ),
 
             # Tool Center Point (TCP). It represents the tip of the gripper.
@@ -97,7 +97,7 @@ class ArmKinematics:
             angle_deg = np.degrees(ik_angles_rad[i]) + JOINT_OFFSET_DEG[i]
             
             # Clip safely to hardware limits (0 - 270 degrees)
-            angle_deg = max(0.0, min(270.0, angle_deg))
+            angle_deg = max(0.0, min(180.0, angle_deg))
             servo_angles_deg.append(round(angle_deg, 2))
 
         return servo_angles_deg

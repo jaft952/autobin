@@ -36,7 +36,7 @@ def main():
             
             elif user_input == 'h':
                 print("back to home position ...")
-                planner.move_to([0, 10, 10]) 
+                planner.move_to([0, 0, 0.45]) 
                 continue
                 
             elif user_input == 'g':
