@@ -3,7 +3,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.motion.grasp_planner import GraspPlanner
+from src.arm.grasp_planner import GraspPlanner
 
 def print_menu():
     print("="*40)
