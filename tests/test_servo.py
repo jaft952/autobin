@@ -3,6 +3,8 @@ from adafruit_servokit import ServoKit
 import time
 
 kit = ServoKit(channels=16)
+for i in range(16):
+    kit.servo[i].actuation_range = 270
 
 NEUTRAL = 135  # All servos neutral at 135°
 
