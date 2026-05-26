@@ -93,7 +93,7 @@ def direction_test():
             reset_all()
             time.sleep(1)
 
-            print(f"Step 2: Moving CH{int(user_input)} to 90° (neutral - 45°)...")
+            print(f"Step 2: Moving CH{int(user_input)} to 0°")
             print(">>> OBSERVE THE ARM NOW <<<")
             move_servo(ch, 0)
             time.sleep(2)
@@ -102,7 +102,7 @@ def direction_test():
             print("Enter your observation (e.g. 'left', 'right', 'forward', 'backward'): ", end="")
             obs = input().strip()
 
-            print(f"\nStep 3: Moving CH{int(user_input)} to 180° (neutral + 45°)...")
+            print(f"\nStep 3: Moving CH{int(user_input)} to 270°")
             print(">>> OBSERVE THE ARM NOW <<<")
             move_servo(ch, 270)
             time.sleep(2)

@@ -95,7 +95,8 @@ class ArmKinematics:
         # Note: ik_angles_rad includes the OriginLink at index 0 and Gripper at index 6
         for i in range(1, 6):  # Only map CH1 to CH5
             angle_deg = np.degrees(ik_angles_rad[i]) + JOINT_OFFSET_DEG[i]
-            
+            if i == 3:
+                angle_deg = 270.0 - angle_deg
             # Clip safely to hardware limits (0 - 270 degrees)
             angle_deg = max(0.0, min(270.0, angle_deg))
             servo_angles_deg.append(round(angle_deg, 2))
