@@ -50,13 +50,12 @@ def train_yolov8_aluminum_detector(
     if device is None:
         device = check_gpu()
     
-    # Load pretrained YOLOv8 model
     model_name = f'yolov8{model_size}.pt'
     print(f"\nLoading pretrained model: {model_name}")
     model = YOLO(model_name)
     
     # Dataset configuration
-    data_yaml = '../../data/datasets/yolo_format/data.yaml'
+    data_yaml = Path(__file__).resolve().parent / '../../data/datasets/yolo_format/data.yaml'
     
     # Verify data.yaml exists
     if not Path(data_yaml).exists():
@@ -151,7 +150,7 @@ def train_yolov8_aluminum_detector(
     return model, results
 
 
-def evaluate_model(model, data_yaml='../../data/datasets/yolo_format/data.yaml'):
+def evaluate_model(model, data_yaml):
     """
     Evaluate trained model on validation set
     
@@ -199,14 +198,17 @@ if __name__ == "__main__":
         resume=False
     )
     
+    script_dir = Path(__file__).resolve().parent
+    root_dir = script_dir.parent.parent
+    best_model_path = root_dir / 'runs/detect/yolov8s_aluminum_can/weights/best.pt'
+    data_yaml = str(script_dir / '../../data/datasets/yolo_format/data.yaml')
     # Evaluate on test set
-    metrics = evaluate_model(model)
+    metrics = evaluate_model(model, data_yaml=data_yaml)
     
     # Save the best model to production directory
-    best_model_path = Path('runs/detect/yolov8s_aluminum_can/weights/best.pt')
     if best_model_path.exists():
         import shutil
-        production_dir = Path('../../models/module2/production')
+        production_dir = root_dir / 'models/subsystem2/production'
         production_dir.mkdir(parents=True, exist_ok=True)
         
         shutil.copy2(
@@ -215,8 +217,6 @@ if __name__ == "__main__":
         )
         print(f"\n✓ Best model saved to: {production_dir / 'aluminum_can_detector_best.pt'}")
     
-    # Optional: Export to ONNX for deployment
-    # export_model(model, export_format='onnx')
     
     print("\n" + "=" * 70)
     print("All training tasks completed!")
