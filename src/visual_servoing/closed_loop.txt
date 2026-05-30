@@ -1,0 +1,32 @@
+Step 1：定义 Feature Points
+text
+s      = gripper 当前像素坐标 (gx, gy)
+s_star = tin 目标像素坐标    (tx, ty)
+e      = s_star - s          ← pixel error
+Step 2：计算控制速度（Interaction Matrix）
+text
+业界标准用 Image Jacobian / Interaction Matrix L：
+
+velocity = λ × L⁺ × e
+
+λ       = gain（控制速度，通常 0.1~0.5）
+L⁺      = Interaction Matrix 伪逆
+e       = pixel error vector
+
+简化版（FYP 够用）：
+直接把 pixel error 乘以一个 gain 换算成 world 坐标偏移
+dx = e_x × pixel_to_mm
+dy = e_y × pixel_to_mm
+Step 3：收敛条件
+text
+if |e| < threshold (例如 10px):
+    → 停止移动，执行夹取
+else:
+    → 继续调整
+Step 4：安全限制
+text
+每次移动量限制最大值（防止 arm 突然大幅移动）
+max_step = 5mm per iteration
+Step 5：状态机
+text
+IDLE → SEARCHING → APPROACHING → GRASPING → DONE

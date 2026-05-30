@@ -1,0 +1,126 @@
+"""
+src/perception/gripper_detector.py
+
+Detects the 4 colored markers on the robotic arm gripper to determine
+its position, orientation, and open/close state.
+"""
+
+import cv2
+import yaml
+import math
+import numpy as np
+from pathlib import Path
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Dict, Tuple, Optional, List
+
+
+@dataclass
+class GripperState:
+    center_px: Tuple[int, int]
+    orientation: float
+    is_open: bool
+    confidence: float
+    raw_points: Dict[str, Tuple[int, int]] = field(default_factory=dict)
+
+
+class GripperDetector:
+    def __init__(self, config_path: str = None):
+        if config_path is None:
+            config_path = Path(__file__).parent / "config" / "color_config.yaml"
+            
+        self.config_path = Path(config_path)
+        self.colors = {}
+        self.history = deque(maxlen=5)  # temporal smoothing
+        self.load_config()
+
+    def load_config(self):
+        if not self.config_path.exists():
+            raise FileNotFoundError(f"Config not found: {self.config_path}")
+        with open(self.config_path, "r") as f:
+            data = yaml.safe_load(f)
+            for k, v in data["colors"].items():
+                self.colors[k] = {
+                    "lower": np.array(v["lower"]),
+                    "upper": np.array(v["upper"])
+                }
+
+    def detect(self, frame: np.ndarray) -> Optional[GripperState]:
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # Step 3, 4, 5: Find centers for each colored marker
+        points = {}
+        for color_name, bounds in self.colors.items():
+            center = self._find_color_center(hsv_frame, bounds["lower"], bounds["upper"])
+            if center is not None:
+                points[color_name] = center
+
+        # Step 6: Geometric Constraint Validation
+        if len(points) < 4:
+            return None  # Constraint 1: All 4 must be visible
+
+        out_l = points["outer_left"]
+        out_r = points["outer_right"]
+        in_l = points["inner_left"]
+        in_r = points["inner_right"]
+
+        dist_outer = self._distance(out_l, out_r)
+        dist_inner = self._distance(in_l, in_r)
+
+        # Constraint 2: Outer points must be wider than inner points
+        if dist_outer <= dist_inner:
+            return None
+
+        # Calculate geometric center of the gripper
+        cx = int((out_l[0] + out_r[0] + in_l[0] + in_r[0]) / 4)
+        cy = int((out_l[1] + out_r[1] + in_l[1] + in_r[1]) / 4)
+
+        # Step 8: Temporal smoothing
+        self.history.append((cx, cy))
+        smooth_cx = int(sum(p[0] for p in self.history) / len(self.history))
+        smooth_cy = int(sum(p[1] for p in self.history) / len(self.history))
+
+        # Determine if gripper is open based on inner distance threshold
+        # You may need to tune this threshold (e.g., 50 pixels) based on your camera view
+        is_open_threshold = 50.0  
+        is_open = dist_inner > is_open_threshold
+
+        # Orientation: angle of the line connecting outer left and outer right
+        dx = out_r[0] - out_l[0]
+        dy = out_r[1] - out_l[1]
+        angle = math.degrees(math.atan2(dy, dx))
+
+        return GripperState(
+            center_px=(smooth_cx, smooth_cy),
+            orientation=angle,
+            is_open=is_open,
+            confidence=1.0,
+            raw_points=points
+        )
+
+    def _find_color_center(self, hsv: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> Optional[Tuple[int, int]]:
+        mask = cv2.inRange(hsv, lower, upper)
+
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.erode(mask, kernel, iterations=1)
+        mask = cv2.dilate(mask, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        best_center = None
+        max_area = 0
+
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > 50 and area > max_area:  # Step 4: min area = 50px
+                M = cv2.moments(cnt)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    best_center = (cx, cy)
+                    max_area = area
+
+        return best_center
+
+    def _distance(self, p1: Tuple[int, int], p2: Tuple[int, int]) -> float:
+        return math.hypot(p2[0] - p1[0], p2[1] - p1[1])

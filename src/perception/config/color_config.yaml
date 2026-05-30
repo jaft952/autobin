@@ -1,0 +1,13 @@
+colors:
+  outer_left:
+    lower: [30, 50, 50]
+    upper: [85, 255, 255]
+  outer_right:
+    lower: [140, 50, 50]
+    upper: [175, 255, 255]
+  inner_left:
+    lower: [10, 100, 100]
+    upper: [25, 255, 255]
+  inner_right:
+    lower: [120, 50, 50]
+    upper: [135, 255, 255]

@@ -1,0 +1,4 @@
+pixel_to_mm: 1.2
+error_threshold_px: 15.0
+max_step_mm: 5.0
+gain: 0.15
