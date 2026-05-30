@@ -1,0 +1,63 @@
+Step 1：色彩空间转换
+text
+BGR → HSV
+原因：HSV 把颜色（Hue）和亮度（Value）分开
+     室内灯光变化只影响 V，不影响 H
+     比 BGR 对光线变化更稳定
+Step 2：HSV 范围标定（Calibration）
+text
+不要直接硬编码 HSV 范围！
+Industry standard 做法是先跑一个 calibration script：
+- 实时显示 trackbar 调整 H/S/V 的上下限
+- 对着真实打印出来的贴纸调整
+- 把最终值存进 config.yaml
+原因：同一个 CMYK 印出来在不同光线下 HSV 会有偏差
+Step 3：形态学处理（Morphological Operations）
+text
+HSV mask → erode → dilate
+erode  = 去掉小噪点
+dilate = 填补颜色块里的小空洞
+kernel size = 5×5（业界常用）
+Step 4：找 Contour + 面积过滤
+text
+findContours → 过滤太小的 contour（面积 < 50px²）
+原因：去掉环境里偶发的同色噪点
+业界做法：设 MIN_AREA 为可检测最小面积的 threshold
+Step 5：计算中心点（Moments）
+text
+用 cv2.moments() 计算每个色块的重心
+cx = M10 / M00
+cy = M01 / M00
+比 bounding box 中心更精确
+Step 6：验证 4 个色块的几何关系
+text
+业界叫做 Geometric Constraint Validation：
+
+条件 1：4 个颜色都必须同时检测到
+条件 2：外侧两点距离 要 > 内侧两点距离
+        （外侧比内侧宽）
+条件 3：左外 和 左内 要在同一侧（x 坐标相近）
+条件 4：所有点要在合理的 y 范围内（不能一个在顶一个在底）
+
+全部通过 → 才算 valid detection
+Step 7：输出 Gripper State
+text
+返回一个 GripperState object：
+- center_px    : (cx, cy)  gripper 中心像素
+- orientation  : 角度（左右两点连线的倾斜角）
+- is_open      : bool（内侧两点距离 > threshold）
+- confidence   : 0.0~1.0（几个条件通过的比例）
+- raw_points   : 4 个色块各自的像素坐标
+Step 8：Temporal Smoothing（可选但推荐）
+text
+业界做法：用 Kalman Filter 或简单的移动平均
+对连续几帧的中心点做平滑
+防止单帧噪点导致 arm 抖动
+简单版：过去 5 帧取平均
+文件结构建议
+text
+perception/
+├── gripper_detector.py      ← 主检测逻辑
+├── color_calibrator.py      ← Trackbar 标定工具
+└── config/
+    └── color_config.yaml    ← 存放 HSV 范围值

@@ -115,10 +115,11 @@ def main():
     print("=" * 60)
     
     # Define paths
-    base_dir = Path("../../data/datasets")
+    script_dir = Path(__file__).resolve().parent
+    base_dir = script_dir / "../../data/datasets"
+    
     raw_dir = base_dir / "raw"
     yolo_dir = base_dir / "yolo_format"
-    
     splits = ["train", "val", "test"]
     
     for split in splits:

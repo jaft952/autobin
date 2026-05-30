@@ -12,6 +12,15 @@ JOINT_OFFSET_DEG = [0, 135, 135, 135, 135, 135, 120]  # index 0 is OriginLink
 # CH3 elbow is physically reversed (servo mounted opposite direction)
 REVERSED_JOINTS = {3}  # set of joint indices (1-based) that are physically reversed
 
+NEUTRAL_FORWARD = [
+    0.0,              # OriginLink (fixed, always 0)
+    np.radians(90),   # CH1: yaw 90° to face +X direction
+    np.radians(60),   # CH2: shoulder pitched forward ~60°
+    np.radians(-60),  # CH3: elbow folded back ~-60°
+    0.0,              # CH4: wrist pitch neutral
+    0.0,              # CH5: wrist roll neutral
+    0.0,              # TCP (fixed link, always 0)
+]
 
 class ArmKinematics:
     """
@@ -75,11 +84,7 @@ class ArmKinematics:
         # Store last IK solution as initial_position for next call.
         # This ensures the solver always starts from the current arm pose,
         # greatly improving convergence speed and accuracy.
-        self._last_angles = [0.0] * 7  # 7 links (OriginLink + 5 joints + TCP)
-
-        # IK error threshold in meters — reject solution if FK error exceeds this
-        self.IK_ERROR_THRESHOLD = 0.015  # 1.5 cm
-
+        self._last_angles = list(NEUTRAL_FORWARD)  # Start at a known neutral pose
 
     def calculate_servo_angles(self, target_xyz: list, target_orientation=None) -> list | None:
         """

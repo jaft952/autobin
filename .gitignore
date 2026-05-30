@@ -240,4 +240,23 @@ pyrightconfig.json
 
 docs/
 
+# ========================
+# Machine Learning / AI
+# ========================
+
+runs/
+ai/training/scripts/runs/
+ai/training/results/
+ai/models/subsystem1/checkpoints/
+ai/models/subsystem1/experiments/
+ai/models/subsystem2/checkpoints/
+ai/models/subsystem2/experiments/
+*.pt
+
+*.yaml.cache
+
+ai/data/datasets/raw/images/
+ai/data/datasets/yolo_format/images/
+ai/data/datasets/yolo_format/labels/
+
 # End of https://www.toptal.com/developers/gitignore/api/python,images

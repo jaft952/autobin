@@ -2,7 +2,7 @@
 # Aluminum Can Detection Dataset
 
 # Dataset root path (relative to this file or absolute)
-path: C:/Users/jaft9/School/autobin/data/datasets/yolo_format
+path: ../../../ai/data/datasets/yolo_format
 
 # Train/Val/Test splits
 train: images/train  # Training images directory

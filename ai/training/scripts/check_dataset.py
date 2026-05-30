@@ -10,7 +10,8 @@ import json
 def check_dataset_structure():
     """Check if all required dataset files exist"""
     
-    dataset_root = Path("../../data/datasets/raw")
+    script_dir = Path(__file__).resolve().parent
+    dataset_root = script_dir / '../../data/datasets/raw'
     annotations_dir = dataset_root / "annotations"
     images_dir = dataset_root / "images"
     
@@ -60,6 +61,43 @@ def check_dataset_structure():
         print(f"✗ Images directory not found: {images_dir}")
     
     print("\n" + "=" * 60)
+def check_labels_match_images(raw_dir):
+
+    annotations_dir = raw_dir / 'annotations'
+    images_dir = raw_dir / 'images'
+    
+    if not images_dir.exists():
+        print(f"⚠ images folder not found at {images_dir}")
+        return
+
+    for split in ['train', 'val', 'test']:
+        json_file = annotations_dir / f"{split}_annotations.coco.json"
+        
+        if not json_file.exists():
+            continue
+            
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+            
+        images_in_json = data.get('images', [])
+        missing_images = []
+        
+        for img_info in images_in_json:
+            file_name = img_info.get('file_name')
+            if not (images_dir / file_name).exists():
+                missing_images.append(file_name)
+                
+        print(f"\n[{split}] Images defined in JSON: {len(images_in_json)}")
+        if missing_images:
+            print(f"  ❌ Missing physical images ({len(missing_images)}):")
+            for name in missing_images[:5]:
+                print(f"     - {name}")
+            if len(missing_images) > 5:
+                print(f"     - ... and {len(missing_images) - 5} more")
+        else:
+            print(f"  ✅ All images defined in {split} JSON physically exist in 'images' folder")
 
 if __name__ == "__main__":
     check_dataset_structure()
+    data_yaml = Path(__file__).resolve().parent / '../../data/datasets/raw'
+    check_labels_match_images(data_yaml)
