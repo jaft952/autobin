@@ -39,8 +39,11 @@ def main():
     cv2.createTrackbar("S Max", "Calibrator", 255, 255, nothing)
     cv2.createTrackbar("V Max", "Calibrator", 255, 255, nothing)
 
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    for i in range(30):
+        cap.read() 
     last_color_idx = -1
 
     print("Starting calibrator. Press 's' to save. Press 'q' to quit.")
