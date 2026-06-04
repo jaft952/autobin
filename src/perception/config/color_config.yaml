@@ -1,13 +1,37 @@
 colors:
-  outer_left:
-    lower: [30, 50, 50]
-    upper: [85, 255, 255]
-  outer_right:
-    lower: [140, 50, 50]
-    upper: [175, 255, 255]
   inner_left:
-    lower: [10, 100, 100]
-    upper: [25, 255, 255]
+    lower:
+    - 2
+    - 255
+    - 53
+    upper:
+    - 36
+    - 255
+    - 227
   inner_right:
-    lower: [120, 50, 50]
-    upper: [135, 255, 255]
+    lower:
+    - 37
+    - 58
+    - 0
+    upper:
+    - 179
+    - 255
+    - 53
+  outer_left:
+    lower:
+    - 20
+    - 125
+    - 0
+    upper:
+    - 179
+    - 255
+    - 255
+  outer_right:
+    lower:
+    - 0
+    - 255
+    - 67
+    upper:
+    - 3
+    - 255
+    - 255
