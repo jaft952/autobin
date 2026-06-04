@@ -35,16 +35,24 @@ class GripperDetector:
         self.load_config()
 
     def load_config(self):
-        if not self.config_path.exists():
-            raise FileNotFoundError(f"Config not found: {self.config_path}")
-        with open(self.config_path, "r") as f:
-            data = yaml.safe_load(f)
-            for k, v in data["colors"].items():
-                self.colors[k] = {
-                    "lower": np.array(v["lower"]),
-                    "upper": np.array(v["upper"])
-                }
-
+        self.colors = {
+            "outer_left": {   
+                "lower": np.array([40, 50, 40]),
+                "upper": np.array([90, 255, 255])
+            },
+            "outer_right": { 
+                "lower": np.array([0, 70, 50]), 
+                "upper": np.array([10, 255, 255])
+            },
+            "inner_left": {    # 橙色 (Orange)
+                "lower": np.array([11, 70, 50]),
+                "upper": np.array([25, 255, 255])
+            },
+            "inner_right": {   # 紫色 (Purple)
+                "lower": np.array([125, 40, 40]),
+                "upper": np.array([160, 255, 255])
+            }
+        }
     def detect(self, frame: np.ndarray) -> Optional[GripperState]:
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
