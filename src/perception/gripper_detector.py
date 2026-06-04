@@ -124,3 +124,26 @@ class GripperDetector:
 
     def _distance(self, p1: Tuple[int, int], p2: Tuple[int, int]) -> float:
         return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+    
+if __name__ == "__main__":
+    cap = cv2.VideoCapture(0)
+    detector = GripperDetector()
+    print("Testing Gripper Detector. Press 'q' to quit.")
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        
+        state = detector.detect(frame)
+        if state:
+            cx, cy = state.center_px
+            cv2.circle(frame, (cx, cy), 5, (0, 255, 0), -1)
+            cv2.putText(frame, f"Center: {cx},{cy} Open: {state.is_open}", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+        cv2.imshow("Gripper Test", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+            
+    cap.release()
+    cv2.destroyAllWindows()

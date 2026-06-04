@@ -259,4 +259,7 @@ ai/data/datasets/raw/images/
 ai/data/datasets/yolo_format/images/
 ai/data/datasets/yolo_format/labels/
 
+# Auto-generated or tuned configurations
+src/perception/config/color_config.yaml
+src/visual_servoing/config/servo_config.yaml
 # End of https://www.toptal.com/developers/gitignore/api/python,images
