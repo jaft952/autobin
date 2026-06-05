@@ -36,23 +36,24 @@ class GripperDetector:
 
     def load_config(self):
         self.colors = {
-            "outer_left": {   
-                "lower": np.array([40, 50, 40]),
-                "upper": np.array([90, 255, 255])
+            "outer_left": {    
+                "lower": np.array([25, 40, 40]),
+                "upper": np.array([55, 255, 255])
             },
-            "outer_right": { 
-                "lower": np.array([0, 70, 50]), 
-                "upper": np.array([10, 255, 255])
+            "outer_right": {   
+                "lower": np.array([145, 50, 40]), 
+                "upper": np.array([175, 255, 255])
             },
-            "inner_left": {    # 橙色 (Orange)
-                "lower": np.array([11, 70, 50]),
-                "upper": np.array([25, 255, 255])
+            "inner_left": {    
+                "lower": np.array([5, 70, 50]),
+                "upper": np.array([20, 255, 255])
             },
-            "inner_right": {   # 紫色 (Purple)
+            "inner_right": { 
                 "lower": np.array([125, 40, 40]),
-                "upper": np.array([160, 255, 255])
+                "upper": np.array([150, 255, 255])
             }
         }
+
     def detect(self, frame: np.ndarray) -> Optional[GripperState]:
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -120,13 +121,19 @@ class GripperDetector:
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area > 50 and area > max_area:  # Step 4: min area = 50px
-                M = cv2.moments(cnt)
-                if M["m00"] != 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
-                    best_center = (cx, cy)
-                    max_area = area
+            
+            if 15 < area < 1500:
+                x, y, w, h = cv2.boundingRect(cnt)
+                aspect_ratio = max(w / float(h), h / float(w))
+                
+                if aspect_ratio < 2.5:
+                    if area > max_area:  
+                        M = cv2.moments(cnt)
+                        if M["m00"] != 0:
+                            cx = int(M["m10"] / M["m00"])
+                            cy = int(M["m01"] / M["m00"])
+                            best_center = (cx, cy)
+                            max_area = area
 
         return best_center
 
