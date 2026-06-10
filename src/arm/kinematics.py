@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 from ikpy.chain import Chain
 from ikpy.link import OriginLink, URDFLink
 
@@ -9,18 +9,25 @@ from ikpy.link import OriginLink, URDFLink
 # but we define its physical length as a fixed offset (TCP).
 JOINT_OFFSET_DEG = [0, 135, 135, 135, 135, 135, 120]  # index 0 is OriginLink
 
-# CH3 elbow is physically reversed (servo mounted opposite direction)
+# Joints whose physical servo is mounted in the reversed direction.
+# This ONLY flips the servo command (output mapping); it does NOT change the IK model.
+# Determine this set empirically per-joint via tests/calibrate_fk.py — do not guess.
 REVERSED_JOINTS = {3}  # set of joint indices (1-based) that are physically reversed
 
-NEUTRAL_FORWARD = [
-    0.0,              # OriginLink (fixed, always 0)
-    np.radians(90),   # CH1: yaw 90° to face +X direction
-    np.radians(60),   # CH2: shoulder pitched forward ~60°
-    np.radians(-60),  # CH3: elbow folded back ~-60°
-    0.0,              # CH4: wrist pitch neutral
-    0.0,              # CH5: wrist roll neutral
-    0.0,              # TCP (fixed link, always 0)
-]
+# Joint limit shared by CH1-CH5 (±135° around the neutral 135° position).
+JOINT_BOUND_RAD = np.radians(135)
+
+# IK is considered converged only if the solution's forward kinematics lands within
+# this distance of the requested target. A genuinely converged solve is sub-mm; 1 cm
+# cleanly separates "reached it" from "solver railed against a joint limit".
+IK_POSITION_TOLERANCE = 0.01  # meters
+
+# Mid-range starting pose for shoulder/elbow/wrist used when seeding the solver.
+# Deliberately NOT on any joint bound, so the local optimizer has room to converge.
+SEED_SHOULDER_RAD = np.radians(45)
+SEED_ELBOW_RAD = np.radians(-90)
+SEED_WRIST_RAD = np.radians(45)
+
 
 class ArmKinematics:
     """
@@ -36,7 +43,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.042],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
             ),
 
             URDFLink(
@@ -44,7 +51,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.105],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
             ),
 
             URDFLink(
@@ -52,7 +59,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.1275],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
             ),
 
             URDFLink(
@@ -60,7 +67,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.070],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
             ),
 
             URDFLink(
@@ -68,7 +75,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.031],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-np.radians(135), np.radians(135)),
+                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
             ),
 
             # Tool Center Point (TCP). It represents the tip of the gripper.
@@ -81,59 +88,147 @@ class ArmKinematics:
             ),
         ])
 
-        # Store last IK solution as initial_position for next call.
-        # This ensures the solver always starts from the current arm pose,
-        # greatly improving convergence speed and accuracy.
-        self._last_angles = list(NEUTRAL_FORWARD)  # Start at a known neutral pose
+        # Last *converged* IK solution, reused as a warm-start seed for the next call.
+        # Only updated on success, so a failed (railed) solve never poisons the next seed.
+        self._last_angles = None
+        self._last_solution_ok = False
 
-    def calculate_servo_angles(self, target_xyz: list, target_orientation=None) -> list | None:
+    # ------------------------------------------------------------------ #
+    # Seeding
+    # ------------------------------------------------------------------ #
+    def _make_seed(self, target_xyz: list, family: int = 1) -> list:
         """
-        Calculate Inverse Kinematics and map the ±135° IK output back to
-        the physical 0°-270° target positions for the servos.
+        Build a full IK seed vector aimed at the target.
 
-        Parameters:
-            target_xyz: [x, y, z] target location in meters.
-            target_orientation: Optional target orientation vector.
+        The base joint (CH1) is the only DOF that produces horizontal azimuth, so a
+        bad CH1 seed is what previously railed the solver against its ±135° bound. We
+        point CH1 straight at the target azimuth instead of starting near a bound.
 
-        Returns:
-            List of 5 servo angles [CH1, CH2, CH3, CH4, CH5] in degrees,
-            or None if IK solution is unreachable / error too large.
+        family = +1 / -1 selects which of the two mirror solution branches to seed
+        (arm reaching "forward" vs "backward"), letting the caller retry the other
+        branch if the first fails.
         """
-        # --- Step 1: Run IK solver using last known pose as starting point ---
-        try:
-            if target_orientation is not None:
-                ik_angles_rad = self.chain.inverse_kinematics(
-                    target_position=target_xyz,
-                    target_orientation=target_orientation,
-                    orientation_mode="all",
-                    initial_position=self._last_angles,
-                    max_iter=1000,
-                )
-            else:
-                ik_angles_rad = self.chain.inverse_kinematics(
-                    target_position=target_xyz,
-                    initial_position=self._last_angles,
-                    max_iter=1000,
-                )
-        except Exception as e:
-            print(f"[Kinematics] IK solver exception: {e}")
-            return None
+        x, y, _z = target_xyz
+        phi = np.arctan2(y, x)
+        theta1 = phi - family * (np.pi / 2.0)
+        # Wrap to [-pi, pi] then clamp into the joint's reachable range.
+        theta1 = (theta1 + np.pi) % (2 * np.pi) - np.pi
+        theta1 = float(np.clip(theta1, -JOINT_BOUND_RAD, JOINT_BOUND_RAD))
 
-        # --- Step 3: Save solution for next call ---
-        self._last_angles = ik_angles_rad.tolist()
+        return [
+            0.0,                # OriginLink (fixed)
+            theta1,             # CH1: aimed at target azimuth
+            SEED_SHOULDER_RAD,  # CH2
+            SEED_ELBOW_RAD,     # CH3
+            SEED_WRIST_RAD,     # CH4
+            0.0,                # CH5 (roll — no effect on position)
+            0.0,                # TCP (fixed)
+        ]
 
-        # --- Step 4: Convert IK angles to physical servo degrees ---
+    # ------------------------------------------------------------------ #
+    # Angle <-> servo mapping (single source of truth for both directions)
+    # ------------------------------------------------------------------ #
+    def _ik_to_servo(self, ik_angles_rad) -> list:
+        """Map ikpy's ±135° internal angles to physical 0°-270° servo targets."""
         servo_angles_deg = []
-
-        for i in range(1, 6):  # Only map CH1 to CH5
+        for i in range(1, 6):  # CH1 .. CH5
             angle_deg = np.degrees(ik_angles_rad[i]) + JOINT_OFFSET_DEG[i]
-
-            # Compensate for physically reversed servo installations
             if i in REVERSED_JOINTS:
                 angle_deg = 270.0 - angle_deg
-
-            # Clip safely to hardware limits (0 - 270 degrees)
             angle_deg = max(0.0, min(270.0, angle_deg))
             servo_angles_deg.append(round(angle_deg, 2))
-
         return servo_angles_deg
+
+    def _servo_to_ik(self, servo_deg: list) -> list:
+        """
+        Inverse of _ik_to_servo: physical servo degrees -> ikpy 7-vector (radians).
+        Used by the calibration tooling to predict where a given servo pose lands.
+        (Hardware clamping at 0/270 is not invertible; assumes values within range.)
+        """
+        ik = [0.0]  # OriginLink
+        for idx, i in enumerate(range(1, 6)):
+            servo = servo_deg[idx]
+            if i in REVERSED_JOINTS:
+                ik_deg = 270.0 - servo - JOINT_OFFSET_DEG[i]
+            else:
+                ik_deg = servo - JOINT_OFFSET_DEG[i]
+            ik.append(np.radians(ik_deg))
+        ik.append(0.0)  # TCP
+        return ik
+
+    def predict_tip(self, servo_deg: list) -> list:
+        """
+        Calibration helper: given 5 physical servo angles (CH1-CH5), return the
+        model's predicted TCP position [x, y, z] in meters. Compare against a ruler
+        to validate/repair link lengths, zero offsets and rotation-axis directions.
+        """
+        ik = self._servo_to_ik(servo_deg)
+        tip = self.chain.forward_kinematics(ik)[:3, 3]
+        return [round(float(v), 4) for v in tip]
+
+    # ------------------------------------------------------------------ #
+    # Inverse kinematics
+    # ------------------------------------------------------------------ #
+    def calculate_servo_angles(self, target_xyz: list, target_orientation=None) -> list | None:
+        """
+        Solve IK for target_xyz (meters) and map the result to physical 0°-270°
+        servo angles [CH1..CH5].
+
+        Robustness for the redundant position-only case: try several seeds and accept
+        the first whose forward kinematics actually lands within IK_POSITION_TOLERANCE.
+
+        Returns the 5 servo angles, or None if no seed converges (target unreachable
+        / outside the joint-limited workspace). None means "do not move the arm".
+        """
+        target = np.asarray(target_xyz, dtype=float)
+
+        # Seed priority: azimuth-aimed branch -> last good pose (warm start) -> mirror branch.
+        seeds = [self._make_seed(target_xyz, family=1)]
+        if self._last_solution_ok and self._last_angles is not None:
+            seeds.append(list(self._last_angles))
+        seeds.append(self._make_seed(target_xyz, family=-1))
+
+        best_sol = None
+        best_err = float("inf")
+
+        for seed in seeds:
+            try:
+                if target_orientation is not None:
+                    sol = self.chain.inverse_kinematics(
+                        target_position=target_xyz,
+                        target_orientation=target_orientation,
+                        orientation_mode="all",
+                        initial_position=seed,
+                        max_iter=1000,
+                    )
+                else:
+                    sol = self.chain.inverse_kinematics(
+                        target_position=target_xyz,
+                        initial_position=seed,
+                        max_iter=1000,
+                    )
+            except Exception as e:
+                print(f"[Kinematics] IK solver exception: {e}")
+                continue
+
+            tip = self.chain.forward_kinematics(sol)[:3, 3]
+            err = float(np.linalg.norm(tip - target))
+            if err < best_err:
+                best_err, best_sol = err, sol
+            if err <= IK_POSITION_TOLERANCE:
+                break  # good enough, stop trying seeds
+
+        # --- Convergence check: refuse to fake success ---
+        if best_sol is None or best_err > IK_POSITION_TOLERANCE:
+            print(
+                f"[Kinematics] No convergent IK solution for {target_xyz} "
+                f"(best residual = {best_err * 100:.2f} cm > {IK_POSITION_TOLERANCE * 100:.1f} cm). "
+                f"Likely unreachable / outside joint-limited workspace."
+            )
+            self._last_solution_ok = False
+            return None
+
+        # Success: remember the pose for warm-starting the next call.
+        self._last_angles = best_sol.tolist()
+        self._last_solution_ok = True
+        return self._ik_to_servo(best_sol)
