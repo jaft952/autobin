@@ -1,4 +1,16 @@
 ﻿# src/hardware/actuators/pca9685_driver.py
+
+# Pulse-width range (microseconds) for the YF-6125MG 270° servos.
+# IMPORTANT: adafruit_servokit defaults to 750–2250 µs, which is tuned for 180° servos.
+# Using that default on a 270° servo compresses the travel — the servo only sweeps part
+# of the commanded range, so commanded degrees != physical degrees (the arm barely bends).
+# 500–2500 µs is the typical full-range spec for 270° hobby servos. Verify on the real
+# arm with tests/test_servo_travel.py and adjust these two numbers if the sweep isn't
+# exactly 270° between command 0 and command 270.
+SERVO_MIN_PULSE_US = 500
+SERVO_MAX_PULSE_US = 2500
+SERVO_RANGE_DEG = 270
+
 try:
     from adafruit_servokit import ServoKit
 except ImportError:
@@ -8,6 +20,9 @@ except ImportError:
         def __init__(self):
             self.angle = 135
             self.actuation_range = 270
+
+        def set_pulse_width_range(self, min_pulse, max_pulse):
+            self._pulse = (min_pulse, max_pulse)
 
     class ServoKit:
         def __init__(self, channels):
@@ -22,9 +37,11 @@ class ArmActuator:
     def __init__(self):
         # Initialize the PC9685 I2C bus and 16-channel servo controller
         self.kit = ServoKit(channels=16)
-        # Set all servo actuation ranges to 270 degrees per hardware spec
+        # Configure every channel for the 270° servos: full travel range AND correct
+        # pulse-width window, so a commanded angle actually maps to that physical angle.
         for i in range(16):
-            self.kit.servo[i].actuation_range = 270
+            self.kit.servo[i].actuation_range = SERVO_RANGE_DEG
+            self.kit.servo[i].set_pulse_width_range(SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US)
 
     def set_arm_angles(self, angles_deg: list):
         """
