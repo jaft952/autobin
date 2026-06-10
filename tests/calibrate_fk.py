@@ -1,20 +1,26 @@
 """
-Forward-Kinematics calibration helper.
+Forward-Kinematics calibration helper — makes the MODEL match the REAL arm.
 
-Goal: before trusting IK, make the MODEL's prediction match the REAL arm. This script
-prints, for a set of known servo poses, where the model thinks the gripper tip is. You
-move the real arm to the same servo angles, measure the tip with a ruler, and compare.
+This tool MOVES the real arm (on the Pi) and tells you where the MODEL thinks the
+gripper tip is, so you can compare directions and distances against a ruler.
 
-How to read it:
-  * Frame origin = base of CH1, +Z points up. All positions printed in centimeters.
-  * If the NEUTRAL pose isn't physically vertical / the right height -> fix zero offsets
-    (JOINT_OFFSET_DEG) and rotation-axis directions FIRST, everything else depends on it.
-  * In the single-joint sweeps, watch which way the REAL tip moves vs. the model. If a
-    joint moves the opposite way, that joint's direction is wrong: flip its `rotation`
-    axis in kinematics.py (e.g. [1,0,0] -> [-1,0,0]) OR toggle it in REVERSED_JOINTS —
-    pick ONE place, never both (they cancel).
+WHY: IK now converges in math, but the physical joint directions/zero points may not
+match the model (symptom: "Y reversed", arm extends when it should fold). This tool
+isolates each joint so we can find which ones are reversed.
+
+COORDINATE FRAME (decide once and keep it):
+  * +Z = up.
+  * Pick a "front" for the robot. +Y = away from you (forward), -Y = toward you.
+  * +X = to your right.
 
 Run:  python tests/calibrate_fk.py
+Commands at the prompt:
+  g                 run the GUIDED single-joint test (recommended — do this first)
+  n                 move to NEUTRAL (all 135), arm should stand straight up
+  a b c d e         move CH1..CH5 to these 5 angles (e.g. 135 95 135 135 135)
+  cN v              change only channel N to angle v (e.g. c2 95)
+  = x y z           record your ruler-measured tip (cm) and print delta vs model
+  q                 quit
 """
 import os
 import sys
@@ -23,63 +29,122 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.kinematics import ArmKinematics, REVERSED_JOINTS
 
+try:
+    from src.hardware.actuators.pca9685_driver import ArmActuator
+    _ACT_ERR = None
+except Exception as e:  # pragma: no cover - depends on hardware libs
+    ArmActuator = None
+    _ACT_ERR = e
 
-def show(kin, label, servo):
-    tip = kin.predict_tip(servo)
-    tip_cm = [round(v * 100, 1) for v in tip]
-    print(f"  {label:14s} servo={servo}  ->  model tip (x,y,z) cm = {tip_cm}")
-    return tip_cm
+NEUTRAL = [135, 135, 135, 135, 135]
 
 
-def main():
-    kin = ArmKinematics()
-    print("=" * 72)
-    print(" FK CALIBRATION  —  compare MODEL prediction vs. RULER measurement")
-    print(f" current REVERSED_JOINTS = {sorted(REVERSED_JOINTS)}   (verify this set below!)")
-    print("=" * 72)
+class Calibrator:
+    def __init__(self):
+        self.kin = ArmKinematics()
+        self.act = ArmActuator() if ArmActuator is not None else None
+        if self.act is None:
+            print(f"[note] actuator unavailable ({_ACT_ERR}); running in PREDICT-ONLY mode (no real movement).")
+        self.last_servo = list(NEUTRAL)
+        self.last_tip = self._tip(NEUTRAL)
 
-    print("\n[1] NEUTRAL pose — real arm should stand straight up & centered:")
-    show(kin, "neutral", [135, 135, 135, 135, 135])
-    print("    EXPECT physically ~ (0, 0, 45.8) cm, vertical.")
-    print("    If not vertical / wrong height -> fix zero offsets & axis directions first.")
+    def _tip(self, servo):
+        return [round(v * 100, 1) for v in self.kin.predict_tip(servo)]
 
-    print("\n[2] Single-joint sweeps — move ONE joint, check the tip direction matches:")
-    base = [135, 135, 135, 135, 135]
-    for ch in range(1, 6):
-        print(f"  -- CH{ch} --")
-        for val in (90, 135, 180):
-            servo = list(base)
-            servo[ch - 1] = val
-            show(kin, f"CH{ch}={val}", servo)
-    print("\n  NOTE: CH5 is roll about the tool axis — it should NOT move the tip position.")
-    print("        'Y reversed, X fine' usually points at CH1 (base yaw) reversed first.")
+    def move(self, servo):
+        servo = [max(0.0, min(270.0, float(x))) for x in servo]
+        tip = self._tip(servo)
+        if self.act is not None:
+            self.act.set_arm_angles(servo)
+        self.last_servo, self.last_tip = servo, tip
+        print(f"  -> CH1-5 = {servo}")
+        print(f"     MODEL predicts tip (x, y, z) cm = {tip}")
+        return tip
 
-    print("\n[3] Interactive compare (optional). Enter a measured pose, or 'q' to quit.")
-    print("    Format:  ch1 ch2 ch3 ch4 ch5 = mx my mz   (servo degrees = measured cm)")
-    while True:
-        try:
-            line = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not line or line.lower() == "q":
-            break
-        if "=" not in line:
-            print("    need an '=' separating servo angles from measured cm")
-            continue
-        try:
-            left, right = line.split("=", 1)
-            servo = [float(p) for p in left.split()]
-            meas = [float(p) for p in right.split()]
-            if len(servo) != 5 or len(meas) != 3:
-                print("    need 5 servo angles and 3 measured cm values")
-                continue
-            model_cm = [round(v * 100, 1) for v in kin.predict_tip(servo)]
-            delta = [round(meas[i] - model_cm[i], 1) for i in range(3)]
-            print(f"    model={model_cm} cm   measured={meas} cm   delta(meas-model)={delta} cm")
-        except ValueError as e:
-            print(f"    parse error: {e}")
+    @staticmethod
+    def _dir_words(neutral_tip, tip):
+        dx, dy, dz = (tip[i] - neutral_tip[i] for i in range(3))
+        parts = []
+        if abs(dx) >= 0.5:
+            parts.append("+X(right)" if dx > 0 else "-X(left)")
+        if abs(dy) >= 0.5:
+            parts.append("+Y(away/forward)" if dy > 0 else "-Y(toward you)")
+        if abs(dz) >= 0.5:
+            parts.append("up" if dz > 0 else "down")
+        return ", ".join(parts) if parts else "(barely moved)"
+
+    def guided(self):
+        print("\n" + "=" * 64)
+        print(" GUIDED CALIBRATION — watch the REAL arm after each move.")
+        print(" For each joint: does the real tip move the SAME way the model says,")
+        print(" or the OPPOSITE? Write it down — that tells us the REVERSED set.")
+        print("=" * 64)
+        nt = self.move(NEUTRAL)
+        input("\n[neutral] Is the real arm STANDING STRAIGHT UP & centered? (look, then Enter) ")
+
+        tests = [
+            ("CH2 (shoulder)", [135, 95, 135, 135, 135]),
+            ("CH3 (elbow)",    [135, 135, 95, 135, 135]),
+            ("CH4 (wristpitch)", [135, 135, 135, 95, 135]),
+        ]
+        for name, pose in tests:
+            print(f"\n-- {name}: moving its servo 135 -> 95 --")
+            tip = self.move(pose)
+            print(f"   MODEL says the tip moves: {self._dir_words(nt, tip)}")
+            input("   Watch the REAL arm — note SAME or OPPOSITE, then Enter. ")
+
+        # CH1 (yaw) only shows direction when the arm is tilted, so pre-tilt with CH2.
+        print("\n-- CH1 (base yaw): first tilt arm forward, then rotate base --")
+        base_tilt = [135, 95, 135, 135, 135]
+        nt1 = self.move(base_tilt)
+        input("   (arm now tilted) press Enter to rotate CH1 -> 95 ")
+        tip = self.move([95, 95, 135, 135, 135])
+        print(f"   MODEL says the tip swings: {self._dir_words(nt1, tip)}")
+        input("   Watch the REAL arm — note SAME or OPPOSITE, then Enter. ")
+
+        self.move(NEUTRAL)
+        print("\nDone. Report for each joint whether real == model (SAME) or OPPOSITE.")
+        print("Rule: every joint that is OPPOSITE must be TOGGLED in REVERSED_JOINTS.")
+
+    def repl(self):
+        print(f"\ncurrent REVERSED_JOINTS = {sorted(REVERSED_JOINTS)}")
+        print("type 'g' for the guided test, or 'q' to quit. (see file header for all commands)")
+        while True:
+            try:
+                line = input("\ncal> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not line or line.lower() == "q":
+                break
+            low = line.lower()
+            try:
+                if low == "g":
+                    self.guided()
+                elif low == "n":
+                    self.move(NEUTRAL)
+                elif low.startswith("c") and len(line.split()) == 2 and line[1].isdigit():
+                    ch = int(line.split()[0][1:])
+                    val = float(line.split()[1])
+                    servo = list(self.last_servo)
+                    servo[ch - 1] = val
+                    self.move(servo)
+                elif line.startswith("="):
+                    meas = [float(p) for p in line[1:].split()]
+                    if len(meas) != 3:
+                        print("   need 3 numbers: = x y z (cm)")
+                        continue
+                    delta = [round(meas[i] - self.last_tip[i], 1) for i in range(3)]
+                    print(f"   model={self.last_tip} cm  measured={meas} cm  delta(meas-model)={delta} cm")
+                else:
+                    nums = [float(p) for p in line.split()]
+                    if len(nums) != 5:
+                        print("   give 5 angles (CH1..CH5), or a command (g/n/cN v/= x y z/q)")
+                        continue
+                    self.move(nums)
+            except (ValueError, IndexError) as e:
+                print(f"   parse error: {e}")
 
 
 if __name__ == "__main__":
-    main()
+    Calibrator().repl()
