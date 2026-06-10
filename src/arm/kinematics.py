@@ -11,8 +11,10 @@ JOINT_OFFSET_DEG = [0, 135, 135, 135, 135, 135, 120]  # index 0 is OriginLink
 
 # Joints whose physical servo is mounted in the reversed direction.
 # This ONLY flips the servo command (output mapping); it does NOT change the IK model.
-# Determine this set empirically per-joint via tests/calibrate_fk.py — do not guess.
-REVERSED_JOINTS = {3}  # set of joint indices (1-based) that are physically reversed
+# Determined empirically per-joint via tests/calibrate_fk.py (guided single-joint test):
+# CH1/CH2/CH4 rotate opposite to the model; CH3 matches the model; CH5 is roll (no
+# position effect). Re-verify with calibrate_fk if the arm is rewired/remounted.
+REVERSED_JOINTS = {1, 2, 4}  # set of joint indices (1-based) that are physically reversed
 
 # Joint limit shared by CH1-CH5 (±135° around the neutral 135° position).
 JOINT_BOUND_RAD = np.radians(135)
@@ -55,7 +57,7 @@ class ArmKinematics:
             ),
 
             URDFLink(
-                name="elbow",                   # CH3: 0°-270° (Pitch) — physically reversed
+                name="elbow",                   # CH3: 0°-270° (Pitch)
                 origin_translation=[0, 0, 0.1275],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
