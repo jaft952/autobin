@@ -18,12 +18,17 @@ class GraspPlanner:
         Calculates and moves the arm to the (x, y, z) position in meters.
         """
         print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ...")
-        
+
         # Compute angles using ikpy (This already applies proper Offsets and Physical Bounds via kinematics.py)
         servo_angles = self.kinematics.calculate_servo_angles(target_xyz, target_orientation)
 
+        # None means IK did not converge — do NOT move the arm and report honestly.
+        if servo_angles is None:
+            print(f"[GraspPlanner] ⚠️ No reachable IK solution for {target_xyz}; arm NOT moved.")
+            return False
+
         print("[GraspPlanner] Kinematics Solved! Target Degrees (CH1-5):", servo_angles)
-        
+
         # Send physical 0~270 angles to actuator
         self.actuator.set_arm_angles(servo_angles)
         return True
