@@ -1,4 +1,4 @@
-﻿from src.arm.kinematics import ArmKinematics
+﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN
 from src.hardware.actuators.pca9685_driver import ArmActuator
 
 class GraspPlanner:
@@ -13,14 +13,16 @@ class GraspPlanner:
         self.kinematics = ArmKinematics()
         self.actuator = ArmActuator()  # Grabs hardware connection
 
-    def move_to(self, target_xyz: list, target_orientation=None):
+    def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN):
         """
         Calculates and moves the arm to the (x, y, z) position in meters.
+        By default the gripper is kept pointing DOWN (tool_direction=GRIPPER_DOWN);
+        pass tool_direction=None for pure position IK.
         """
         print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ...")
 
         # Compute angles using ikpy (This already applies proper Offsets and Physical Bounds via kinematics.py)
-        servo_angles = self.kinematics.calculate_servo_angles(target_xyz, target_orientation)
+        servo_angles = self.kinematics.calculate_servo_angles(target_xyz, tool_direction)
 
         # None means IK did not converge — do NOT move the arm and report honestly.
         if servo_angles is None:
