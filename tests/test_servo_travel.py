@@ -50,18 +50,29 @@ def main():
         write(a)
         input("   read protractor, then Enter for next... ")
 
-    if input("\nTest the 0° / 270° extremes too? (may hit mechanical stops) [y/N]: ").strip().lower() == "y":
-        for a in (0, 270, 135):
+    print("\n*** UPPER ZONE 180-270 — IMPORTANT for CH2/CH4! ***")
+    print("IK solutions for forward grasping poses always land in this zone for the")
+    print("reversed joints, and it was NOT covered by the basic sweep above.")
+    print("At each step ALSO check: does the bracket hit the frame / does the servo")
+    print("buzz or stall before reaching the angle?")
+    if input("Test the 180-270 zone now? [Y/n]: ").strip().lower() != "n":
+        for a in (180, 225, 250, 270, 135):
+            write(a)
+            input("   read protractor + check for collision/stall, then Enter... ")
+
+    if input("\nTest the 0° extreme too? (may hit mechanical stops) [y/N]: ").strip().lower() == "y":
+        for a in (0, 135):
             write(a)
             input("   read protractor, then Enter... ")
 
     print("\nHOW TO READ THE RESULT:")
     print(" * Command 90 -> 180 should physically move EXACTLY 90°.")
-    print("   - moves LESS than 90° -> servo under-travels -> WIDEN the pulse range")
+    print(" * Command 180 -> 225 -> 270 should each step EXACTLY 45°.")
+    print("   - steps in 90-180 correct but SHORT in 180-270 -> servo can't do the top")
+    print("     of its range (or the bracket collides) -> report which angle it stops at.")
+    print("   - ALL steps proportionally short -> WIDEN the pulse range")
     print(f"     (lower {SERVO_MIN_PULSE_US} / raise {SERVO_MAX_PULSE_US} in pca9685_driver.py).")
-    print("   - moves MORE than 90° -> NARROW the pulse range.")
-    print(" * Command 0 -> 270 should sweep a full 270°.")
-    print(" Tell me the physical angles you read and I'll set the exact pulse numbers.")
+    print(" Tell me the physical angles you read and I'll set the exact numbers.")
 
 
 if __name__ == "__main__":

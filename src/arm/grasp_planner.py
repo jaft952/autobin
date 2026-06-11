@@ -35,6 +35,17 @@ class GraspPlanner:
         self.actuator.set_arm_angles(servo_angles)
         return True
 
+    def home(self):
+        """
+        Return to the neutral stow pose (all joints centered, arm straight up).
+        Commands the servos directly — the straight-up pose cannot satisfy the
+        gripper-down constraint, so routing it through IK would (correctly) fail.
+        """
+        print("[GraspPlanner] Homing to neutral pose (servo-level, no IK)...")
+        self.actuator.set_arm_angles([135.0, 135.0, 135.0, 135.0, 135.0])
+        self.kinematics.reset_warm_start()
+        return True
+
     def control_gripper(self, action: str):
         """
         Separated gripper logic: open, close, stow.

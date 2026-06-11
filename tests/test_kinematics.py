@@ -8,11 +8,17 @@ from src.arm.grasp_planner import GraspPlanner
 def print_menu():
     print("="*40)
     print("command :")
-    print("  'x y z' : move to specific position (such as: 10 5 15)")
+    print("  'x y z' : move to specific position in meters (such as: 0.15 0 0.1)")
     print("  'g'     : grasp (close gripper)")
     print("  'r'     : release (open gripper)")
-    print("  'h'     : home (return to initial/sleep position)")
+    print("  'h'     : home (return to neutral, arm straight up)")
     print("  'q'     : quit the test program")
+    print("-"*40)
+    print("  workspace, gripper down (auto-tilts up to 45° when needed):")
+    print("    straight down: z=5cm r<~19 | z=10cm r<~18 | z=20cm r<~10")
+    print("    with 45° tilt: z=5cm r<~27 | z=10cm r<~27 | z=20cm r<~22")
+    print("  x,y,z are SIGNED components in meters (x=right, y=forward, z=up),")
+    print("  NOT distances. e.g. '0 0.15 0.1' = 15cm forward, 10cm high.")
     print("="*40)
 
 def main():
@@ -36,7 +42,7 @@ def main():
             
             elif user_input == 'h':
                 print("back to home position ...")
-                planner.move_to([0, 0, 0.45]) 
+                planner.home()
                 continue
                 
             elif user_input == 'g':

@@ -36,6 +36,12 @@ SEED_WRIST_RAD = np.radians(45)
 # the tool axis to point down makes the pose unique and graspable. Pass tool_direction=None
 # to fall back to pure position IK.
 GRIPPER_DOWN = [0.0, 0.0, -1.0]
+
+# When GRIPPER_DOWN is requested but straight-down is unreachable, retry with the
+# approach tilted outward (toward the target azimuth) by these angles, in order.
+# A vertical gripper costs its full 11.4cm of length in height budget; tilting ~45°
+# recovers a lot of horizontal reach while still grasping top-down-ish.
+APPROACH_TILTS_DEG = (0.0, 25.0, 45.0)
 # If the achieved tool axis deviates from the requested direction by more than this, warn.
 ORIENTATION_WARN_DEG = 20.0
 
@@ -184,6 +190,26 @@ class ArmKinematics:
         """World-space direction the gripper points (its local +Z) for an IK solution."""
         return np.asarray(self.chain.forward_kinematics(ik_angles))[:3, 2]
 
+    def reset_warm_start(self):
+        """Forget the stored warm-start pose. Call after the arm is moved outside IK
+        (e.g. servo-level homing), so the next solve doesn't seed from a stale pose."""
+        self._last_angles = None
+        self._last_solution_ok = False
+
+    def _down_directions(self, target_xyz):
+        """Candidate approach directions for grasping: straight down first, then tilted
+        outward toward the target azimuth per APPROACH_TILTS_DEG. Returns a list of
+        (tilt_deg, direction_vector) pairs."""
+        x, y, _z = target_xyz
+        phi = np.arctan2(y, x)
+        out = []
+        for tilt_deg in APPROACH_TILTS_DEG:
+            t = np.radians(tilt_deg)
+            out.append((tilt_deg, [float(np.sin(t) * np.cos(phi)),
+                                   float(np.sin(t) * np.sin(phi)),
+                                   float(-np.cos(t))]))
+        return out
+
     def calculate_servo_angles(self, target_xyz: list, tool_direction=GRIPPER_DOWN,
                                orientation_mode="Z") -> list | None:
         """
@@ -192,15 +218,26 @@ class ArmKinematics:
 
         By default the gripper is constrained to point DOWN (tool_direction=GRIPPER_DOWN,
         orientation_mode="Z"), which removes the wrist redundancy so the pose is unique and
-        graspable. Pass tool_direction=None for pure position IK.
+        graspable. If straight-down is unreachable, the approach is retried tilted outward
+        per APPROACH_TILTS_DEG (still top-down enough to grasp, much larger workspace).
+        Pass tool_direction=None for pure position IK.
 
-        Robustness: try several seeds and accept the first whose forward kinematics lands
-        within IK_POSITION_TOLERANCE of the target.
+        Robustness: try several seeds per direction and accept the first whose forward
+        kinematics lands within IK_POSITION_TOLERANCE of the target.
 
-        Returns the 5 servo angles, or None if no seed converges (target unreachable /
+        Returns the 5 servo angles, or None if nothing converges (target unreachable /
         outside the joint-limited workspace). None means "do not move the arm".
         """
         target = np.asarray(target_xyz, dtype=float)
+
+        # Candidate approach directions: the tilt ladder for the default grasp mode,
+        # exactly what the caller asked for otherwise.
+        if tool_direction is GRIPPER_DOWN:
+            directions = self._down_directions(target_xyz)
+        elif tool_direction is not None:
+            directions = [(None, tool_direction)]
+        else:
+            directions = [(None, None)]
 
         # Seed priority: azimuth-aimed branch -> last good pose (warm start) -> mirror branch.
         seeds = [self._make_seed(target_xyz, family=1)]
@@ -210,33 +247,44 @@ class ArmKinematics:
 
         best_sol = None
         best_err = float("inf")
+        solved_tilt = None
+        solved_direction = None
 
-        for seed in seeds:
-            try:
-                if tool_direction is not None:
-                    sol = self.chain.inverse_kinematics(
-                        target_position=target_xyz,
-                        target_orientation=tool_direction,
-                        orientation_mode=orientation_mode,
-                        initial_position=seed,
-                        max_iter=1000,
-                    )
-                else:
-                    sol = self.chain.inverse_kinematics(
-                        target_position=target_xyz,
-                        initial_position=seed,
-                        max_iter=1000,
-                    )
-            except Exception as e:
-                print(f"[Kinematics] IK solver exception: {e}")
-                continue
+        for tilt_deg, direction in directions:
+            for seed in seeds:
+                try:
+                    if direction is not None:
+                        sol = self.chain.inverse_kinematics(
+                            target_position=target_xyz,
+                            target_orientation=direction,
+                            orientation_mode=orientation_mode,
+                            initial_position=seed,
+                            max_iter=1000,
+                        )
+                    else:
+                        sol = self.chain.inverse_kinematics(
+                            target_position=target_xyz,
+                            initial_position=seed,
+                            max_iter=1000,
+                        )
+                except Exception as e:
+                    print(f"[Kinematics] IK solver exception: {e}")
+                    continue
 
-            tip = self.chain.forward_kinematics(sol)[:3, 3]
-            err = float(np.linalg.norm(tip - target))
-            if err < best_err:
-                best_err, best_sol = err, sol
-            if err <= IK_POSITION_TOLERANCE:
-                break  # good enough, stop trying seeds
+                tip = self.chain.forward_kinematics(sol)[:3, 3]
+                err = float(np.linalg.norm(tip - target))
+                if err < best_err:
+                    best_err, best_sol = err, sol
+                if err <= IK_POSITION_TOLERANCE:
+                    solved_tilt = tilt_deg
+                    solved_direction = direction
+                    break  # good enough, stop trying seeds
+            if best_err <= IK_POSITION_TOLERANCE:
+                break  # stop trying more-tilted directions
+
+        if solved_tilt is not None and solved_tilt > 0:
+            print(f"[Kinematics] straight-down unreachable; using approach tilted "
+                  f"{solved_tilt:.0f}° from vertical toward the target.")
 
         # --- Convergence check: refuse to fake success ---
         if best_sol is None or best_err > IK_POSITION_TOLERANCE:
@@ -248,10 +296,10 @@ class ArmKinematics:
             self._last_solution_ok = False
             return None
 
-        # Warn if the gripper could not actually reach the requested orientation.
-        if tool_direction is not None:
+        # Warn if the gripper could not actually reach the orientation that was solved for.
+        if solved_direction is not None:
             axis = self.tool_axis(best_sol)
-            want = np.asarray(tool_direction, dtype=float)
+            want = np.asarray(solved_direction, dtype=float)
             want = want / np.linalg.norm(want)
             tilt = np.degrees(np.arccos(np.clip(float(np.dot(axis, want)), -1.0, 1.0)))
             if tilt > ORIENTATION_WARN_DEG:
