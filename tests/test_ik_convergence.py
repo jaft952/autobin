@@ -74,6 +74,15 @@ def main():
             # If it returns a solution, that solution must be genuinely within tolerance.
             check(f"{t} returned solution is within tolerance", res <= IK_POSITION_TOLERANCE, f"residual={res*100:.2f} cm")
 
+    print("\n[F] gripper points DOWN by default (orientation constraint)")
+    servo = kin.calculate_servo_angles([0.20, 0.0, 0.20])  # default tool_direction = GRIPPER_DOWN
+    if servo is None:
+        check("comfortable target keeps gripper down", False, "got None")
+    else:
+        axis = kin.tool_axis(kin._servo_to_ik(servo))
+        tilt = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(axis, [0, 0, -1]))))))
+        check("gripper tool axis ~down (tilt < 25 deg)", tilt < 25.0, f"tilt={tilt:.1f} deg, axis={[round(float(v),2) for v in axis]}")
+
     print("\n" + "=" * 60)
     if failures:
         print(f"RESULT: {len(failures)} check(s) FAILED -> {failures}")

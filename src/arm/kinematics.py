@@ -30,6 +30,15 @@ SEED_SHOULDER_RAD = np.radians(45)
 SEED_ELBOW_RAD = np.radians(-90)
 SEED_WRIST_RAD = np.radians(45)
 
+# Default tool approach direction: gripper pointing straight DOWN (world -Z).
+# Position-only IK on this redundant 5-DOF arm picks arbitrary wrist poses (gripper may
+# face up/sideways -> cannot grasp, and its length skews the measured tip). Constraining
+# the tool axis to point down makes the pose unique and graspable. Pass tool_direction=None
+# to fall back to pure position IK.
+GRIPPER_DOWN = [0.0, 0.0, -1.0]
+# If the achieved tool axis deviates from the requested direction by more than this, warn.
+ORIENTATION_WARN_DEG = 20.0
+
 
 class ArmKinematics:
     """
@@ -171,16 +180,25 @@ class ArmKinematics:
     # ------------------------------------------------------------------ #
     # Inverse kinematics
     # ------------------------------------------------------------------ #
-    def calculate_servo_angles(self, target_xyz: list, target_orientation=None) -> list | None:
+    def tool_axis(self, ik_angles) -> np.ndarray:
+        """World-space direction the gripper points (its local +Z) for an IK solution."""
+        return np.asarray(self.chain.forward_kinematics(ik_angles))[:3, 2]
+
+    def calculate_servo_angles(self, target_xyz: list, tool_direction=GRIPPER_DOWN,
+                               orientation_mode="Z") -> list | None:
         """
         Solve IK for target_xyz (meters) and map the result to physical 0°-270°
         servo angles [CH1..CH5].
 
-        Robustness for the redundant position-only case: try several seeds and accept
-        the first whose forward kinematics actually lands within IK_POSITION_TOLERANCE.
+        By default the gripper is constrained to point DOWN (tool_direction=GRIPPER_DOWN,
+        orientation_mode="Z"), which removes the wrist redundancy so the pose is unique and
+        graspable. Pass tool_direction=None for pure position IK.
 
-        Returns the 5 servo angles, or None if no seed converges (target unreachable
-        / outside the joint-limited workspace). None means "do not move the arm".
+        Robustness: try several seeds and accept the first whose forward kinematics lands
+        within IK_POSITION_TOLERANCE of the target.
+
+        Returns the 5 servo angles, or None if no seed converges (target unreachable /
+        outside the joint-limited workspace). None means "do not move the arm".
         """
         target = np.asarray(target_xyz, dtype=float)
 
@@ -195,11 +213,11 @@ class ArmKinematics:
 
         for seed in seeds:
             try:
-                if target_orientation is not None:
+                if tool_direction is not None:
                     sol = self.chain.inverse_kinematics(
                         target_position=target_xyz,
-                        target_orientation=target_orientation,
-                        orientation_mode="all",
+                        target_orientation=tool_direction,
+                        orientation_mode=orientation_mode,
                         initial_position=seed,
                         max_iter=1000,
                     )
@@ -229,6 +247,16 @@ class ArmKinematics:
             )
             self._last_solution_ok = False
             return None
+
+        # Warn if the gripper could not actually reach the requested orientation.
+        if tool_direction is not None:
+            axis = self.tool_axis(best_sol)
+            want = np.asarray(tool_direction, dtype=float)
+            want = want / np.linalg.norm(want)
+            tilt = np.degrees(np.arccos(np.clip(float(np.dot(axis, want)), -1.0, 1.0)))
+            if tilt > ORIENTATION_WARN_DEG:
+                print(f"[Kinematics] note: gripper orientation off by {tilt:.0f}° "
+                      f"from requested (tool axis {np.round(axis, 2)}).")
 
         # Success: remember the pose for warm-starting the next call.
         self._last_angles = best_sol.tolist()
