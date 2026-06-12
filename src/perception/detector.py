@@ -108,12 +108,15 @@ class AluminiumCanDetector:
         conf_threshold: float = 0.5,
         frame_width: int = 1280,
         frame_height: int = 720,
+        device=0,
     ):
         self._model_path = Path(model_path)
         self._camera_index = camera_index
         self._conf_threshold = conf_threshold
         self._frame_width = frame_width
         self._frame_height = frame_height
+        # 0 = CUDA GPU (training PC). Pass "cpu" on the Raspberry Pi (no CUDA).
+        self._device = device
 
         self._model: Optional[YOLO] = None
         self._cap: Optional[cv2.VideoCapture] = None
@@ -159,7 +162,7 @@ class AluminiumCanDetector:
         yolo_results = self._model.predict(
             source=frame,
             conf=self._conf_threshold,
-            device=0,       # Use GPU (RTX 4060)
+            device=self._device,
             verbose=False,
         )
 

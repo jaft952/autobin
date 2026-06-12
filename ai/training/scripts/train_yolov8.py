@@ -1,12 +1,40 @@
 """
 YOLOv8 Training Script
-Train YOLOv8s model for aluminum can detection
+Train YOLOv8 models for the autobin perception stack.
+
+Presets (pick with --preset):
+  can       single-class aluminum can detector (original behavior, default)
+  combined  2-class detector: aluminum_can + gripper, ONE model for closed-loop
+            visual servoing (one inference pass returns both boxes per frame).
+
+Examples:
+  python train_yolov8.py                       # original can training
+  python train_yolov8.py --preset combined     # can + gripper 2-class training
+  python train_yolov8.py --preset combined --model-size n --epochs 150
 """
 
+import argparse
 from ultralytics import YOLO
 import torch
 from pathlib import Path
 import yaml
+
+
+# Per-preset configuration. data_yaml paths are relative to this script's folder.
+PRESETS = {
+    "can": {
+        "data_yaml": "../../data/datasets/yolo_format/data.yaml",
+        "run_name": "yolov8s_aluminum_can",
+        "single_cls": True,
+        "production_name": "aluminum_can_detector_best.pt",
+    },
+    "combined": {
+        "data_yaml": "../../data/datasets/yolo_format_combined/data.yaml",
+        "run_name": "yolov8_can_gripper",
+        "single_cls": False,   # CRITICAL: keep classes separate (can vs gripper)
+        "production_name": "can_gripper_detector_best.pt",
+    },
+}
 
 
 def check_gpu():
@@ -22,17 +50,18 @@ def check_gpu():
         return 'cpu'
 
 
-def train_yolov8_aluminum_detector(
+def train_yolov8_detector(
     model_size='s',
     epochs=100,
     batch_size=16,
     img_size=640,
     device=None,
-    resume=False
+    resume=False,
+    preset='can',
 ):
     """
-    Train YOLOv8 model for aluminum can detection
-    
+    Train a YOLOv8 detector for the given preset (see PRESETS).
+
     Args:
         model_size: Model size ('n', 's', 'm', 'l', 'x')
         epochs: Number of training epochs
@@ -40,23 +69,25 @@ def train_yolov8_aluminum_detector(
         img_size: Input image size
         device: Device to use (None for auto-detect)
         resume: Resume from last checkpoint
+        preset: 'can' (single-class, original) or 'combined' (can + gripper)
     """
-    
+    cfg = PRESETS[preset]
+
     print("=" * 70)
-    print("YOLOv8 Aluminum Can Detector - Training")
+    print(f"YOLOv8 Detector Training — preset '{preset}' ({cfg['run_name']})")
     print("=" * 70)
-    
+
     # Check device
     if device is None:
         device = check_gpu()
-    
+
     model_name = f'yolov8{model_size}.pt'
     print(f"\nLoading pretrained model: {model_name}")
     model = YOLO(model_name)
-    
+
     # Dataset configuration
-    data_yaml = Path(__file__).resolve().parent / '../../data/datasets/yolo_format/data.yaml'
-    
+    data_yaml = Path(__file__).resolve().parent / cfg['data_yaml']
+
     # Verify data.yaml exists
     if not Path(data_yaml).exists():
         raise FileNotFoundError(f"Dataset configuration not found: {data_yaml}")
@@ -123,15 +154,15 @@ def train_yolov8_aluminum_detector(
         
         # Directories
         project='runs/detect',
-        name='yolov8s_aluminum_can',
+        name=cfg['run_name'],
         exist_ok=False,
-        
+
         # Other
         pretrained=True,
         verbose=True,
         seed=42,
         deterministic=True,
-        single_cls=True,       # Single class detection
+        single_cls=cfg['single_cls'],  # False for multi-class (can + gripper)
         rect=False,            # Rectangular training
         cos_lr=False,          # Cosine learning rate scheduler
         close_mosaic=10,       # Disable mosaic in final N epochs
@@ -188,36 +219,47 @@ def export_model(model, export_format='onnx'):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train autobin YOLOv8 detectors")
+    parser.add_argument('--preset', choices=list(PRESETS), default='can',
+                        help="'can' = original 1-class detector, "
+                             "'combined' = 2-class can + gripper detector")
+    parser.add_argument('--model-size', default='s', choices=['n', 's', 'm', 'l', 'x'])
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--img-size', type=int, default=640)
+    parser.add_argument('--resume', action='store_true')
+    args = parser.parse_args()
+    cfg = PRESETS[args.preset]
+
     # Train the model
-    model, results = train_yolov8_aluminum_detector(
-        model_size='s',      # YOLOv8s (small - balanced speed/accuracy)
-        epochs=100,
-        batch_size=16,       # Adjust based on GPU memory
-        img_size=640,
-        device=None,         # Auto-detect GPU/CPU
-        resume=False
+    model, results = train_yolov8_detector(
+        model_size=args.model_size,
+        epochs=args.epochs,
+        batch_size=args.batch_size,  # Adjust based on GPU memory
+        img_size=args.img_size,
+        device=None,                 # Auto-detect GPU/CPU
+        resume=args.resume,
+        preset=args.preset,
     )
-    
+
     script_dir = Path(__file__).resolve().parent
     root_dir = script_dir.parent.parent
-    best_model_path = root_dir / 'runs/detect/yolov8s_aluminum_can/weights/best.pt'
-    data_yaml = str(script_dir / '../../data/datasets/yolo_format/data.yaml')
+    best_model_path = root_dir / f"runs/detect/{cfg['run_name']}/weights/best.pt"
+    data_yaml = str(script_dir / cfg['data_yaml'])
     # Evaluate on test set
     metrics = evaluate_model(model, data_yaml=data_yaml)
-    
+
     # Save the best model to production directory
     if best_model_path.exists():
         import shutil
         production_dir = root_dir / 'models/subsystem2/production'
         production_dir.mkdir(parents=True, exist_ok=True)
-        
-        shutil.copy2(
-            best_model_path,
-            production_dir / 'aluminum_can_detector_best.pt'
-        )
-        print(f"\n✓ Best model saved to: {production_dir / 'aluminum_can_detector_best.pt'}")
-    
-    
+
+        production_path = production_dir / cfg['production_name']
+        shutil.copy2(best_model_path, production_path)
+        print(f"\n✓ Best model saved to: {production_path}")
+
+
     print("\n" + "=" * 70)
     print("All training tasks completed!")
     print("=" * 70)

@@ -1,0 +1,26 @@
+# YOLOv8 Dataset Configuration File
+# Combined 2-class dataset: aluminum can + gripper
+# Used by:  python ai/training/scripts/train_yolov8.py --preset combined
+#
+# Build this dataset by merging:
+#   1. The existing can dataset (yolo_format/) — class ids stay 0.
+#   2. NEW images captured from the robot's real top-down camera showing the
+#      gripper (open / closed / holding a can / different heights & lighting).
+#      Label gripper boxes as class 1; ALSO label any visible cans as class 0
+#      in those images (unlabeled objects teach the model to ignore them!).
+
+# Dataset root path (relative to this file or absolute)
+path: ../../../ai/data/datasets/yolo_format_combined
+
+# Train/Val/Test splits
+train: images/train  # Training images directory
+val: images/val      # Validation images directory
+test: images/test    # Test images directory (optional)
+
+# Number of classes
+nc: 2
+
+# Class names
+names:
+  0: aluminum_can
+  1: gripper
