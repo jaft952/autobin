@@ -10,12 +10,11 @@ from ikpy.link import OriginLink, URDFLink
 # unit equals one physical degree (1:1):
 SERVO_CMD_MAX = 180.0      # servo command spans 0..180 (== actuation_range)
 CMD_PER_DEG = 1.0          # command units per physical degree
-# Servo command at each joint's MODEL-ZERO ("straight up") pose. Measured by jogging the
-# whole arm vertical (tests/servo_jog.py) at the old actuation_range=270 — angles were
-# CH1-5 = [145,145,150,135,145] — then converted to actuation_range=180 (x180/270).
+# Servo command at each joint's MODEL-ZERO ("straight up") pose, read directly with
+# tests/servo_jog.py at actuation_range=180 (CH1-5 = [96.7, 96.7, 100.0, 100.0, 90.0]).
 # CH2/CH3/CH4 (pitch) determine reach and are solid; CH1 (yaw azimuth-zero) and CH5 (roll)
 # aren't pinned down by verticality, so re-check those if the x/y direction looks rotated.
-SERVO_NEUTRAL_CMD = [0.0, 96.7, 96.7, 100.0, 90.0, 96.7, 80.0]  # index 0 = OriginLink, 6 = gripper
+SERVO_NEUTRAL_CMD = [0.0, 96.7, 96.7, 100.0, 100.0, 90.0, 80.0]  # index 0 = OriginLink, 6 = gripper
 
 # Joints whose physical servo is mounted in the reversed direction (negative physical
 # motion for positive model angle). Determined per-joint via tests/calibrate_fk.py:
@@ -34,11 +33,17 @@ SEED_ELBOW_RAD = np.radians(-60)
 SEED_WRIST_RAD = np.radians(45)
 
 
+# Keep IK solutions this far (deg) off each joint's physical limit. Poses sitting exactly
+# on a limit are mechanically marginal (the servo hunts/strains under gravity -> trembling).
+JOINT_BOUND_MARGIN_DEG = 5.0
+
+
 def joint_half_range_deg(i: int) -> float:
-    """Reachable half-range (degrees) of joint i, set by how far its servo command can
-    swing from neutral within the physical 0..SERVO_CMD_MAX command window (1:1 scale)."""
+    """Usable half-range (degrees) of joint i: how far its command can swing from neutral
+    within the 0..SERVO_CMD_MAX window (1:1 scale), minus a safety margin off the limit."""
     n = SERVO_NEUTRAL_CMD[i]
-    return min(n, SERVO_CMD_MAX - n) / CMD_PER_DEG
+    physical = min(n, SERVO_CMD_MAX - n) / CMD_PER_DEG
+    return max(5.0, physical - JOINT_BOUND_MARGIN_DEG)
 
 
 def joint_bound_rad(i: int) -> float:
