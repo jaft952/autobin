@@ -1,11 +1,20 @@
-﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN
+﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, SERVO_NEUTRAL_CMD
 from src.hardware.actuators.pca9685_driver import ArmActuator
+
+# Neutral/stow servo commands [CH1..CH5] = the model-zero (arm straight up) pose.
+# With actuation_range=180 these are ~90 (CH2 vertical is 95), NOT the old 135.
+HOME_ANGLES = [SERVO_NEUTRAL_CMD[i] for i in range(1, 6)]
 
 # Hardcoded servo pose [CH1..CH5] that drops a can into the bin mounted on the chassis.
 # The bin is fixed relative to the arm base, so this pose never changes -> no IK needed.
 # CAPTURE IT: jog the arm over the bin with tests/servo_jog.py, press 'p', and paste the
 # CH1-5 numbers here. (Still neutral = placeholder; update before relying on dump_to_bin.)
-BIN_DROP_ANGLES = [135.0, 135.0, 135.0, 135.0, 135.0]
+BIN_DROP_ANGLES = list(HOME_ANGLES)
+
+# Gripper commands (actuation_range=180). Tune on hardware if grip is too loose/tight.
+GRIPPER_OPEN = 120.0
+GRIPPER_CLOSED = 40.0
+GRIPPER_NEUTRAL = 80.0
 
 class GraspPlanner:
     """
@@ -48,7 +57,7 @@ class GraspPlanner:
         gripper-down constraint, so routing it through IK would (correctly) fail.
         """
         print("[GraspPlanner] Homing to neutral pose (servo-level, no IK)...")
-        self.actuator.set_arm_angles([135.0, 135.0, 135.0, 135.0, 135.0])
+        self.actuator.set_arm_angles(HOME_ANGLES)
         self.kinematics.reset_warm_start()
         return True
 
@@ -66,18 +75,17 @@ class GraspPlanner:
 
     def control_gripper(self, action: str):
         """
-        Separated gripper logic: open, close, stow.
-        Physical bounds: 60 to 180 degrees.
+        Separated gripper logic: open, close, stow (commands for actuation_range=180).
         """
         if action == "open":
             print("[GraspPlanner] Opening Gripper...")
-            self.actuator.set_gripper_angle(180.0)
+            self.actuator.set_gripper_angle(GRIPPER_OPEN)
         elif action == "close":
             print("[GraspPlanner] Closing Gripper...")
-            self.actuator.set_gripper_angle(60.0)
+            self.actuator.set_gripper_angle(GRIPPER_CLOSED)
         elif action == "neutral" or action == "stow":
             print("[GraspPlanner] Gripper to Neutral...")
-            self.actuator.set_gripper_angle(120.0)
+            self.actuator.set_gripper_angle(GRIPPER_NEUTRAL)
 
 
 # If the module is run independently, execute a test script 

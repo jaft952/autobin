@@ -14,7 +14,7 @@ import math
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
-from src.arm.kinematics import ArmKinematics, IK_POSITION_TOLERANCE
+from src.arm.kinematics import ArmKinematics, IK_POSITION_TOLERANCE, SERVO_NEUTRAL_CMD
 
 failures = []
 
@@ -34,7 +34,8 @@ def main():
     kin = ArmKinematics()
 
     print("\n[A] predict_tip / FK sanity")
-    tip = kin.predict_tip([135, 135, 135, 135, 135])
+    neutral_servo = [SERVO_NEUTRAL_CMD[i] for i in range(1, 6)]  # model-zero pose commands
+    tip = kin.predict_tip(neutral_servo)
     check("neutral tip ~ (0,0,0.4585) m", abs(tip[0]) < 1e-3 and abs(tip[1]) < 1e-3 and abs(tip[2] - 0.4585) < 2e-3, str(tip))
 
     print("\n[B] azimuth seed (_make_seed) points CH1 at the target")

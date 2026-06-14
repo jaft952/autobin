@@ -32,7 +32,7 @@ from src.hardware.actuators.pca9685_driver import (
 
 ACTUATION_PRESETS = [180, 200, 220, 240, 270]
 PULSE_PRESETS = [(500, 2500), (600, 2400), (750, 2250), (450, 2550), (400, 2600)]
-NEUTRAL = [135.0] * 5
+NEUTRAL = [SERVO_RANGE_DEG / 2.0] * 5  # mid command (a safe centred start)
 
 
 def main():
@@ -65,28 +65,36 @@ def main():
         return angle
 
     def scale_check():
+        center = state["range"] / 2.0
         print("\n--- SCALE CHECK (right-angle method) ---")
         home()
-        print("All servos -> 135. The arm should now stand VERTICAL (straight up).")
-        input("Confirm it's vertical, then press Enter... ")
-        print("\nNow bring CH%d so the arm segment is exactly HORIZONTAL (level with the"
-              " table). Type a command number to move it; type 'h' when it's level." % ch)
-        print("(vertical was command 135; just type values like 90, 70, 50 ... and watch)")
-        last = 135.0
+        print(f"All servos -> {center:.0f}. Bring CH{ch} so the arm is VERTICAL first if it isn't.")
+        input("Confirm/make it vertical, then press Enter... ")
+        print(f"\nNow bring CH{ch} so the arm segment is exactly HORIZONTAL (level with the"
+              " table). Type a command number to move it; type 'h' when it's level.")
+        print(f"(type values around {center:.0f} and watch the arm tilt)")
+        last = center
+        # First move CH to the vertical command the user confirms, so delta is measured
+        # from true vertical rather than the mid command.
         while True:
-            s = input("  CH command / 'h'=now horizontal / 'q'=abort: ").strip().lower()
+            s = input("  CH command / 'v'=this is VERTICAL / 'h'=now horizontal / 'q'=abort: ").strip().lower()
             if s == "q":
                 home()
                 return
+            if s == "v":
+                vertical = last
+                print(f"  vertical recorded at command {vertical:.0f}")
+                continue
             if s == "h":
-                delta = abs(last - 135.0)
+                vertical = locals().get("vertical", center)
+                delta = abs(last - vertical)
                 if delta < 5:
                     print("  that's barely off vertical — move it to truly horizontal first.")
                     continue
                 scale = 90.0 / delta
                 recommended = round(state["range"] * 90.0 / delta)
                 print("\n  ===== RESULT =====")
-                print(f"  vertical@135 -> horizontal@{last:.0f}: command moved {delta:.0f}°"
+                print(f"  vertical@{vertical:.0f} -> horizontal@{last:.0f}: command moved {delta:.0f}°"
                       f" to make a real 90°.")
                 print(f"  command:physical scale = {scale:.2f}"
                       f"  ({'≈1.0 = already correct!' if 0.9 <= scale <= 1.1 else 'NOT 1:1'})")
@@ -130,12 +138,13 @@ def main():
         scale_check()
 
     def limit_finder():
+        center = int(state["range"] / 2)
         print("\n--- LIMIT FINDER ---  answer: f=full step  s=smaller  n=no move")
-        for label, steps in (("UP", range(150, int(state["range"]) + 1, 15)),
-                             ("DOWN", range(120, -1, -15))):
+        for label, steps in (("UP", range(center + 15, int(state["range"]) + 1, 15)),
+                             ("DOWN", range(center - 15, -1, -15))):
             home()
             input(f"centered — Enter to step {label}... ")
-            last_full, prev = 135, 135
+            last_full, prev = center, center
             for a in steps:
                 write(a)
                 ans = input("   f/s/n? ").strip().lower()

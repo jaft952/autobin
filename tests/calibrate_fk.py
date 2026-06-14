@@ -16,7 +16,7 @@ COORDINATE FRAME (decide once and keep it):
 Run:  python tests/calibrate_fk.py
 Commands at the prompt:
   g                 run the GUIDED single-joint test (recommended — do this first)
-  n                 move to NEUTRAL (all 135), arm should stand straight up
+  n                 move to NEUTRAL (model-zero), arm should stand straight up
   a b c d e         move CH1..CH5 to these 5 angles (e.g. 135 95 135 135 135)
   cN v              change only channel N to angle v (e.g. c2 95)
   = x y z           record your ruler-measured tip (cm) and print delta vs model
@@ -27,7 +27,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arm.kinematics import ArmKinematics, REVERSED_JOINTS
+from src.arm.kinematics import ArmKinematics, REVERSED_JOINTS, SERVO_NEUTRAL_CMD
 
 try:
     from src.hardware.actuators.pca9685_driver import ArmActuator
@@ -36,7 +36,7 @@ except Exception as e:  # pragma: no cover - depends on hardware libs
     ArmActuator = None
     _ACT_ERR = e
 
-NEUTRAL = [135, 135, 135, 135, 135]
+NEUTRAL = [SERVO_NEUTRAL_CMD[i] for i in range(1, 6)]  # model-zero pose (actuation_range=180)
 
 
 class Calibrator:
@@ -82,23 +82,24 @@ class Calibrator:
         nt = self.move(NEUTRAL)
         input("\n[neutral] Is the real arm STANDING STRAIGHT UP & centered? (look, then Enter) ")
 
-        tests = [
-            ("CH2 (shoulder)", [135, 95, 135, 135, 135]),
-            ("CH3 (elbow)",    [135, 135, 95, 135, 135]),
-            ("CH4 (wristpitch)", [135, 135, 135, 95, 135]),
-        ]
-        for name, pose in tests:
-            print(f"\n-- {name}: moving its servo 135 -> 95 --")
-            tip = self.move(pose)
+        # Move each tested joint -40° from its neutral command and observe direction.
+        def pose_with(ch_idx, delta):
+            p = list(NEUTRAL)
+            p[ch_idx] = p[ch_idx] + delta
+            return p
+
+        for name, ch in (("CH2 (shoulder)", 2), ("CH3 (elbow)", 3), ("CH4 (wristpitch)", 4)):
+            print(f"\n-- {name}: moving its servo {NEUTRAL[ch-1]:.0f} -> {NEUTRAL[ch-1]-40:.0f} --")
+            tip = self.move(pose_with(ch - 1, -40))
             print(f"   MODEL says the tip moves: {self._dir_words(nt, tip)}")
             input("   Watch the REAL arm — note SAME or OPPOSITE, then Enter. ")
 
         # CH1 (yaw) only shows direction when the arm is tilted, so pre-tilt with CH2.
         print("\n-- CH1 (base yaw): first tilt arm forward, then rotate base --")
-        base_tilt = [135, 95, 135, 135, 135]
+        base_tilt = pose_with(1, -40)  # CH2 tilted
         nt1 = self.move(base_tilt)
-        input("   (arm now tilted) press Enter to rotate CH1 -> 95 ")
-        tip = self.move([95, 95, 135, 135, 135])
+        input("   (arm now tilted) press Enter to rotate CH1 -40° ")
+        tip = self.move([NEUTRAL[0] - 40] + base_tilt[1:])
         print(f"   MODEL says the tip swings: {self._dir_words(nt1, tip)}")
         input("   Watch the REAL arm — note SAME or OPPOSITE, then Enter. ")
 
