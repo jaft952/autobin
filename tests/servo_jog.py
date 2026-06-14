@@ -1,0 +1,129 @@
+"""
+Servo jog & pose capture — line-based, works on the Pi (and Windows sim).
+
+Purpose: hand-jog the arm to a fixed pose (e.g. the trash-bin drop position that
+sits on the chassis), then PRINT/SAVE the exact servo angles so you can hardcode
+them. Uses ArmActuator, so the 270° actuation_range + pulse-width calibration are
+the SAME as the real system — the angles you read here are directly usable in
+GraspPlanner.set_arm_angles().
+
+Commands (type, then Enter):
+  2 160        set CH2 to 160°   (channel 1-6, angle 0-270; gripper CH6 0-270)
+  +2 / -2      nudge the LAST-touched channel by +/- step (default 5°)
+  step 2       change the nudge step to 2°
+  p            PRINT all 6 current angles (and where the model thinks the tip is)
+  s name       SAVE current angles to tests/captured_poses.txt under 'name'
+  h            home all to neutral (135, gripper 120)
+  q            quit (servos left where they are)
+
+Run:  python tests/servo_jog.py
+"""
+import os
+import sys
+from datetime import datetime
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.hardware.actuators.pca9685_driver import ArmActuator
+
+# Forward kinematics is optional (needs ikpy). If unavailable we still jog/print.
+try:
+    from src.arm.kinematics import ArmKinematics
+    _kin = ArmKinematics()
+except Exception as e:  # pragma: no cover
+    _kin = None
+    print(f"[note] forward-kinematics preview disabled ({e})")
+
+NEUTRAL = [135.0, 135.0, 135.0, 135.0, 135.0, 120.0]  # CH1-5 arm, CH6 gripper
+POSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_poses.txt")
+
+
+def main():
+    act = ArmActuator()
+    angles = list(NEUTRAL)
+    last_ch = 0
+    step = 5.0
+
+    def apply(i, val):
+        val = max(0.0, min(270.0, float(val)))
+        act.kit.servo[i].angle = val
+        angles[i] = val
+        print(f"  CH{i + 1} = {val:.1f}°")
+
+    def print_pose():
+        print("\n  current servo angles (CH1-6):")
+        print("   ", [round(a, 1) for a in angles])
+        print("    arm only (CH1-5):", [round(a, 1) for a in angles[:5]])
+        if _kin is not None:
+            try:
+                tip = _kin.predict_tip(angles[:5])
+                print(f"    model thinks tip is at (x,y,z) = "
+                      f"{[round(v * 100, 1) for v in tip]} cm")
+            except Exception as e:
+                print(f"    (tip preview failed: {e})")
+        print()
+
+    print("=" * 60)
+    print(" SERVO JOG & POSE CAPTURE")
+    print(" type 'h' to home, '2 160' to set a servo, 'p' to print, 'q' to quit")
+    print("=" * 60)
+    print_pose()
+
+    while True:
+        try:
+            raw = input("jog> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not raw:
+            continue
+        parts = raw.split()
+        cmd = parts[0].lower()
+
+        if cmd == "q":
+            break
+        elif cmd == "h":
+            for i, a in enumerate(NEUTRAL):
+                apply(i, a)
+            last_ch = 0
+        elif cmd == "p":
+            print_pose()
+        elif cmd == "step" and len(parts) == 2:
+            try:
+                step = float(parts[1])
+                print(f"  nudge step = {step}°")
+            except ValueError:
+                print("  usage: step <degrees>")
+        elif cmd == "s":
+            name = parts[1] if len(parts) > 1 else "unnamed"
+            with open(POSE_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{name}\t{datetime.now():%Y-%m-%d %H:%M}\t"
+                        f"{[round(a, 1) for a in angles]}\n")
+            print(f"  saved '{name}' -> {POSE_FILE}")
+        elif cmd.startswith(("+", "-")) and len(cmd) > 1 and cmd[1:].isdigit():
+            # "+2" / "-3": nudge that channel by +/- step
+            ch = int(cmd[1:])
+            if 1 <= ch <= 6:
+                last_ch = ch - 1
+                delta = step if cmd[0] == "+" else -step
+                apply(last_ch, angles[last_ch] + delta)
+            else:
+                print("  channel must be 1-6")
+        elif len(parts) == 2 and parts[0].isdigit():
+            ch = int(parts[0])
+            if 1 <= ch <= 6:
+                try:
+                    last_ch = ch - 1
+                    apply(last_ch, float(parts[1]))
+                except ValueError:
+                    print("  angle must be a number 0-270")
+            else:
+                print("  channel must be 1-6")
+        else:
+            print("  commands: 'CH angle' | '+CH'/'-CH' | 'step N' | p | s name | h | q")
+
+    print("done (servos left in place).")
+
+
+if __name__ == "__main__":
+    main()

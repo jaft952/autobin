@@ -1,21 +1,20 @@
 """
-Servo travel calibration — confirms whether commanded degrees == physical degrees,
-and lets you experiment with different pulse-width ranges live.
+Servo calibration tool — find why "commanded degrees != physical degrees".
 
-Two distinct problems this can reveal (they can coexist):
-  * OFFSET — every step moves the RIGHT amount, but the whole range is rotated
-    (e.g. "the arm is shifted left overall"). Cause: servo horn mounted a few spline
-    teeth off / zero offset. Fix: remount the horn, or compensate in JOINT_OFFSET_DEG.
-    Pulse width will NOT fix this.
-  * SCALE — command 0..270 sweeps LESS than 270° physically (steps are short).
-    Cause: pulse-width range too narrow for this servo, or the servo's real travel
-    is simply less than 270°. Fix: widen pulses (this script lets you try), or accept
-    the real travel and narrow the IK joint bounds.
+The arm moves across the full 0-270 command range (no dead zone), so the problem
+is SCALE: a commanded change of N degrees may produce fewer physical degrees,
+because actuation_range / pulse-width don't match the servo's true travel.
 
-Quick discrimination: command 135 -> 225. Physically exactly 90° = OFFSET only.
-Physically ~60° = SCALE problem.
+You do NOT need a protractor. "Vertical" and "horizontal" are exact 90° references,
+so we use the arm itself to measure the command->physical scale.
 
-You need a protractor / angle gauge on the joint you test.
+Menu:
+  s  SCALE CHECK (recommended) — measure command:physical ratio with a right angle,
+     and get the recommended actuation_range. Do this on CH2.
+  r  ACTUATION-RANGE experiment — try 180 / 200 / 240 / 270 / custom and re-check.
+  p  PULSE-WIDTH experiment — try different microsecond ranges.
+  l  LIMIT FINDER — step outward until the servo stops (saturation), answer f/s/n.
+  q  quit
 
 Run:  python tests/test_servo_travel.py
 """
@@ -28,53 +27,23 @@ from src.hardware.actuators.pca9685_driver import (
     ArmActuator,
     SERVO_MIN_PULSE_US,
     SERVO_MAX_PULSE_US,
+    SERVO_RANGE_DEG,
 )
 
-# Candidate pulse ranges (min_us, max_us) to try. Wider range = more travel per command,
-# but pushing past the servo's electrical limits makes it buzz/stall at the extremes —
-# if that happens, back off immediately (enter 135) and try a narrower range.
-PULSE_PRESETS = [
-    (500, 2500),   # typical 270° spec (current default)
-    (600, 2400),
-    (750, 2250),   # adafruit_servokit default (typical 180° spec)
-    (450, 2550),
-    (400, 2600),
-]
-
-
-def choose_pulse_range():
-    print("\nPulse-width presets:")
-    for i, (lo, hi) in enumerate(PULSE_PRESETS, start=1):
-        mark = "  <- current default" if (lo, hi) == (SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US) else ""
-        print(f"  {i}) {lo}-{hi} us{mark}")
-    print("  or type a custom range like: 550 2450")
-    raw = input("pick preset number or custom range [Enter = keep current]: ").strip()
-    if not raw:
-        return SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US
-    parts = raw.split()
-    try:
-        if len(parts) == 1:
-            return PULSE_PRESETS[int(parts[0]) - 1]
-        if len(parts) == 2:
-            lo, hi = int(parts[0]), int(parts[1])
-            if 300 <= lo < hi <= 3000:
-                return lo, hi
-    except (ValueError, IndexError):
-        pass
-    print("  didn't understand that — keeping current range.")
-    return SERVO_MIN_PULSE_US, SERVO_MAX_PULSE_US
+ACTUATION_PRESETS = [180, 200, 220, 240, 270]
+PULSE_PRESETS = [(500, 2500), (600, 2400), (750, 2250), (450, 2550), (400, 2600)]
+NEUTRAL = [135.0] * 5
 
 
 def main():
     act = ArmActuator()
-    print("=" * 64)
-    print(" SERVO TRAVEL TEST")
-    print(f" startup pulse-width range: {SERVO_MIN_PULSE_US}-{SERVO_MAX_PULSE_US} us")
-    print(" Put a protractor on the joint. Command vs physical angle should match.")
-    print("=" * 64)
+    print("=" * 66)
+    print(" SERVO CALIBRATION TOOL")
+    print(f" startup: actuation_range={SERVO_RANGE_DEG}°, pulse={SERVO_MIN_PULSE_US}-{SERVO_MAX_PULSE_US}us")
+    print("=" * 66)
 
     try:
-        ch = int(input("\nWhich channel to test? (1-6): ").strip())
+        ch = int(input("\nWhich channel to test? (1-6) [2 is best for scale]: ").strip())
     except ValueError:
         print("invalid channel")
         return
@@ -82,79 +51,115 @@ def main():
         print("channel must be 1-6")
         return
     idx = ch - 1
+    # Track the actuation_range currently applied to this channel.
+    state = {"range": float(SERVO_RANGE_DEG)}
+
+    def home():
+        for i, a in enumerate(NEUTRAL):
+            act.kit.servo[i].angle = a
 
     def write(angle):
-        act.kit.servo[idx].angle = max(0.0, min(270.0, float(angle)))
-        print(f"  -> commanded CH{ch} = {angle}°")
+        angle = max(0.0, min(state["range"], float(angle)))
+        act.kit.servo[idx].angle = angle
+        print(f"  -> commanded CH{ch} = {angle}°  (max={state['range']:.0f})")
+        return angle
 
-    def find_limits():
-        """Step outward from center until the servo stops responding (saturation).
-        No protractor needed — you only answer whether it MOVED."""
-        print("\n[limit finder] I'll step 15° at a time. After each step answer:")
-        print("   f = moved a FULL step   s = moved but SMALLER   n = did NOT move")
-        results = {}
-        for direction, steps in (("UP", range(150, 271, 15)), ("DOWN", range(120, -1, -15))):
-            write(135)
-            input(f"\ncentered at 135 — Enter to start stepping {direction}... ")
-            last_full = 135
-            prev = 135
+    def scale_check():
+        print("\n--- SCALE CHECK (right-angle method) ---")
+        home()
+        print("All servos -> 135. The arm should now stand VERTICAL (straight up).")
+        input("Confirm it's vertical, then press Enter... ")
+        print("\nNow bring CH%d so the arm segment is exactly HORIZONTAL (level with the"
+              " table). Type a command number to move it; type 'h' when it's level." % ch)
+        print("(vertical was command 135; just type values like 90, 70, 50 ... and watch)")
+        last = 135.0
+        while True:
+            s = input("  CH command / 'h'=now horizontal / 'q'=abort: ").strip().lower()
+            if s == "q":
+                home()
+                return
+            if s == "h":
+                delta = abs(last - 135.0)
+                if delta < 5:
+                    print("  that's barely off vertical — move it to truly horizontal first.")
+                    continue
+                scale = 90.0 / delta
+                recommended = round(state["range"] * 90.0 / delta)
+                print("\n  ===== RESULT =====")
+                print(f"  vertical@135 -> horizontal@{last:.0f}: command moved {delta:.0f}°"
+                      f" to make a real 90°.")
+                print(f"  command:physical scale = {scale:.2f}"
+                      f"  ({'≈1.0 = already correct!' if 0.9 <= scale <= 1.1 else 'NOT 1:1'})")
+                print(f"  -> recommended actuation_range ≈ {recommended}° "
+                      f"(servo's true travel; currently set to {state['range']:.0f}).")
+                print("  Tell me this number for ALL three joints (or once if same servo model).")
+                home()
+                return
+            try:
+                last = write(float(s))
+            except ValueError:
+                print("  type a number, or 'h' / 'q'.")
+
+    def set_range(r):
+        state["range"] = float(r)
+        act.kit.servo[idx].actuation_range = float(r)
+        print(f"  CH{ch} actuation_range set to {r}° (neutral is now {r/2:.0f}).")
+
+    def range_experiment():
+        print("\nactuation_range presets:", ", ".join(str(x) for x in ACTUATION_PRESETS))
+        raw = input("pick a value (or custom number): ").strip()
+        try:
+            set_range(float(raw))
+        except ValueError:
+            print("  not a number."); return
+        print("Now re-run the scale check with this range to see if it's 1:1.")
+        scale_check()
+
+    def pulse_experiment():
+        print("\npulse presets:")
+        for i, (lo, hi) in enumerate(PULSE_PRESETS, 1):
+            print(f"  {i}) {lo}-{hi} us")
+        raw = input("pick number or 'lo hi': ").strip().split()
+        try:
+            lo, hi = (PULSE_PRESETS[int(raw[0]) - 1] if len(raw) == 1
+                      else (int(raw[0]), int(raw[1])))
+            act.kit.servo[idx].set_pulse_width_range(lo, hi)
+            print(f"  CH{ch} pulse range -> {lo}-{hi} us")
+        except (ValueError, IndexError):
+            print("  bad input."); return
+        scale_check()
+
+    def limit_finder():
+        print("\n--- LIMIT FINDER ---  answer: f=full step  s=smaller  n=no move")
+        for label, steps in (("UP", range(150, int(state["range"]) + 1, 15)),
+                             ("DOWN", range(120, -1, -15))):
+            home()
+            input(f"centered — Enter to step {label}... ")
+            last_full, prev = 135, 135
             for a in steps:
                 write(a)
-                ans = input("   f / s / n ? ").strip().lower()
+                ans = input("   f/s/n? ").strip().lower()
                 if ans == "f":
                     last_full = a
                 elif ans in ("s", "n"):
-                    print(f"   -> saturation between command {prev} and {a}")
+                    print(f"   -> saturates between {prev} and {a}")
                     break
                 prev = a
-            results[direction] = last_full
-        write(135)
-        up, down = results.get("UP", 135), results.get("DOWN", 135)
-        print("\n=== LIMIT FINDER RESULT ===")
-        print(f"  CH{ch} responds fully for commands ~{down} to ~{up}"
-              f"  (= {up - down}° of command range)")
-        print(f"  -> report these two numbers to set the IK joint bounds correctly.")
+            print(f"   {label} fully-responding to ~{last_full}")
+        home()
 
-    if input("\nRun the LIMIT FINDER first? (no protractor needed) [Y/n]: ").strip().lower() != "n":
-        find_limits()
-        if input("\nContinue to pulse-range experiments? [y/N]: ").strip().lower() != "y":
-            return
-
+    actions = {"s": scale_check, "r": range_experiment,
+               "p": pulse_experiment, "l": limit_finder}
     while True:
-        lo, hi = choose_pulse_range()
-        act.kit.servo[idx].set_pulse_width_range(lo, hi)
-        print(f"\n### CH{ch} now using pulse range {lo}-{hi} us ###")
-        write(135)
-        input("centered at 135 — mark/note the physical direction, then Enter... ")
-
-        print("\n[scale check] 135 -> 225 should physically move EXACTLY 90°:")
-        write(225)
-        input("   measure the physical movement, then Enter... ")
-        write(135)
-
-        print("\n[full sweep] watch each step (45° expected per step except as labeled):")
-        for a, expect in ((90, "135->90: 45°"), (180, "90->180: 90°"), (225, "180->225: 45°"),
-                          (250, "225->250: 25°"), (270, "250->270: 20°"), (135, "back to center")):
-            write(a)
-            input(f"   expect {expect}; check angle + buzzing/stall/collision, then Enter... ")
-
-        if input("\nTest the 0° extreme too? (may hit mechanical stops) [y/N]: ").strip().lower() == "y":
-            for a in (0, 135):
-                write(a)
-                input("   read protractor, then Enter... ")
-
-        again = input("\nTry ANOTHER pulse range on this channel? [y/N]: ").strip().lower()
-        if again != "y":
+        choice = input("\nmenu [s=scale  r=range  p=pulse  l=limits  q=quit]: ").strip().lower()
+        if choice == "q":
+            home()
             break
-
-    print("\nHOW TO READ THE RESULT:")
-    print(" * 135->225 moves exactly 90° but the whole range points the wrong way")
-    print("   -> OFFSET problem: remount the servo horn / adjust zero. Pulses won't help.")
-    print(" * steps consistently SHORT -> try a WIDER pulse range (rerun and pick one).")
-    print(" * steps correct in 90-180 but short only near 225-270 -> servo/linkage limit:")
-    print("   note the angle where it stops; we narrow the IK bounds to match.")
-    print(" * found a range where steps are exact? -> tell me the numbers and I'll set")
-    print("   SERVO_MIN/MAX_PULSE_US in pca9685_driver.py permanently.")
+        action = actions.get(choice)
+        if action:
+            action()
+        else:
+            print("  pick s / r / p / l / q")
 
 
 if __name__ == "__main__":
