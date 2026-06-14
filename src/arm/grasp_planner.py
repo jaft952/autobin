@@ -1,4 +1,5 @@
 ﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, SERVO_NEUTRAL_CMD
+from src.arm.analytical_ik import AnalyticalArmIK
 from src.hardware.actuators.pca9685_driver import ArmActuator
 
 # Neutral/stow servo commands [CH1..CH5] = the model-zero (arm straight up) pose.
@@ -25,21 +26,26 @@ class GraspPlanner:
     the actuator interface without talking to I2C/SPI directly.
     """
     def __init__(self):
-        self.kinematics = ArmKinematics()
-        self.actuator = ArmActuator()  # Grabs hardware connection
+        self.ik = AnalyticalArmIK()           # primary: closed-form solver
+        self.kinematics = ArmKinematics()     # backup: numerical ikpy solver
+        self.actuator = ArmActuator()         # Grabs hardware connection
 
-    def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN):
+    def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic"):
         """
         Calculates and moves the arm to the (x, y, z) position in meters.
         By default the gripper is kept pointing DOWN (tool_direction=GRIPPER_DOWN);
         pass tool_direction=None for pure position IK.
+        solver="analytic" uses the closed-form IK (default); solver="ikpy" uses the
+        numerical backup.
         """
-        print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ...")
+        print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ({solver}) ...")
 
-        # Compute angles using ikpy (This already applies proper Offsets and Physical Bounds via kinematics.py)
-        servo_angles = self.kinematics.calculate_servo_angles(target_xyz, tool_direction)
+        if solver == "ikpy":
+            servo_angles = self.kinematics.calculate_servo_angles(target_xyz, tool_direction)
+        else:
+            servo_angles = self.ik.solve(target_xyz, grasp_down=(tool_direction is not None))
 
-        # None means IK did not converge — do NOT move the arm and report honestly.
+        # None means no reachable solution — do NOT move the arm and report honestly.
         if servo_angles is None:
             print(f"[GraspPlanner] ⚠️ No reachable IK solution for {target_xyz}; arm NOT moved.")
             return False
