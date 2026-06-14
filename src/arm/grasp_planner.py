@@ -1,6 +1,12 @@
 ﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN
 from src.hardware.actuators.pca9685_driver import ArmActuator
 
+# Hardcoded servo pose [CH1..CH5] that drops a can into the bin mounted on the chassis.
+# The bin is fixed relative to the arm base, so this pose never changes -> no IK needed.
+# CAPTURE IT: jog the arm over the bin with tests/servo_jog.py, press 'p', and paste the
+# CH1-5 numbers here. (Still neutral = placeholder; update before relying on dump_to_bin.)
+BIN_DROP_ANGLES = [135.0, 135.0, 135.0, 135.0, 135.0]
+
 class GraspPlanner:
     """
     Executes specific arm trajectories, converting 3D target coordinates
@@ -44,6 +50,18 @@ class GraspPlanner:
         print("[GraspPlanner] Homing to neutral pose (servo-level, no IK)...")
         self.actuator.set_arm_angles([135.0, 135.0, 135.0, 135.0, 135.0])
         self.kinematics.reset_warm_start()
+        return True
+
+    def dump_to_bin(self):
+        """
+        Move to the fixed bin-drop pose and release the can. The bin is mounted on
+        the chassis at a fixed spot, so this is a hardcoded servo pose (BIN_DROP_ANGLES),
+        not an IK target. Capture/update those angles with tests/servo_jog.py.
+        """
+        print("[GraspPlanner] Moving to bin-drop pose (hardcoded, no IK)...")
+        self.actuator.set_arm_angles(BIN_DROP_ANGLES)
+        self.kinematics.reset_warm_start()
+        self.control_gripper("open")  # release the can into the bin
         return True
 
     def control_gripper(self, action: str):
