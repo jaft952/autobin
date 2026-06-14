@@ -3,21 +3,24 @@ from ikpy.chain import Chain
 from ikpy.link import OriginLink, URDFLink
 
 
-# Constants for YF-6125MG Servos
-# Joints 1-5: physical 0° to 270°, neutral at 135°, IK bounds = ±135°
-# Gripper (Joint 6): physical 60° to 180°, neutral at 120°. Handled as a separate action,
-# but we define its physical length as a fixed offset (TCP).
-JOINT_OFFSET_DEG = [0, 135, 135, 135, 135, 135, 120]  # index 0 is OriginLink
+# ── Servo calibration (YF-6125MG) ────────────────────────────────────────────
+# These servos are labelled "270°" but actually travel only ~180° with the 500-2500us
+# pulse range, so the system uses actuation_range = 180 (see SERVO_RANGE_DEG in
+# pca9685_driver.py — the two MUST match). With actuation_range = 180, one servo command
+# unit equals one physical degree (1:1):
+SERVO_CMD_MAX = 180.0      # servo command spans 0..180 (== actuation_range)
+CMD_PER_DEG = 1.0          # command units per physical degree
+# Servo command at each joint's MODEL-ZERO ("straight up") pose. Measured by jogging the
+# whole arm vertical (tests/servo_jog.py) at the old actuation_range=270 — angles were
+# CH1-5 = [145,145,150,135,145] — then converted to actuation_range=180 (x180/270).
+# CH2/CH3/CH4 (pitch) determine reach and are solid; CH1 (yaw azimuth-zero) and CH5 (roll)
+# aren't pinned down by verticality, so re-check those if the x/y direction looks rotated.
+SERVO_NEUTRAL_CMD = [0.0, 96.7, 96.7, 100.0, 90.0, 96.7, 80.0]  # index 0 = OriginLink, 6 = gripper
 
-# Joints whose physical servo is mounted in the reversed direction.
-# This ONLY flips the servo command (output mapping); it does NOT change the IK model.
-# Determined empirically per-joint via tests/calibrate_fk.py (guided single-joint test):
-# CH1/CH2/CH4 rotate opposite to the model; CH3 matches the model; CH5 is roll (no
-# position effect). Re-verify with calibrate_fk if the arm is rewired/remounted.
-REVERSED_JOINTS = {1, 2, 4}  # set of joint indices (1-based) that are physically reversed
-
-# Joint limit shared by CH1-CH5 (±135° around the neutral 135° position).
-JOINT_BOUND_RAD = np.radians(135)
+# Joints whose physical servo is mounted in the reversed direction (negative physical
+# motion for positive model angle). Determined per-joint via tests/calibrate_fk.py:
+# CH1/CH2/CH4 are reversed; CH3 matches the model; CH5 is roll (no position effect).
+REVERSED_JOINTS = {1, 2, 4}  # 1-based joint indices
 
 # IK is considered converged only if the solution's forward kinematics lands within
 # this distance of the requested target. A genuinely converged solve is sub-mm; 1 cm
@@ -27,8 +30,19 @@ IK_POSITION_TOLERANCE = 0.01  # meters
 # Mid-range starting pose for shoulder/elbow/wrist used when seeding the solver.
 # Deliberately NOT on any joint bound, so the local optimizer has room to converge.
 SEED_SHOULDER_RAD = np.radians(45)
-SEED_ELBOW_RAD = np.radians(-90)
+SEED_ELBOW_RAD = np.radians(-60)
 SEED_WRIST_RAD = np.radians(45)
+
+
+def joint_half_range_deg(i: int) -> float:
+    """Reachable half-range (degrees) of joint i, set by how far its servo command can
+    swing from neutral within the physical 0..SERVO_CMD_MAX command window (1:1 scale)."""
+    n = SERVO_NEUTRAL_CMD[i]
+    return min(n, SERVO_CMD_MAX - n) / CMD_PER_DEG
+
+
+def joint_bound_rad(i: int) -> float:
+    return np.radians(joint_half_range_deg(i))
 
 # Default tool approach direction: gripper pointing straight DOWN (world -Z).
 # Position-only IK on this redundant 5-DOF arm picks arbitrary wrist poses (gripper may
@@ -60,7 +74,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.042],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
+                bounds=(-joint_bound_rad(1), joint_bound_rad(1)),
             ),
 
             URDFLink(
@@ -68,7 +82,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.105],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
+                bounds=(-joint_bound_rad(2), joint_bound_rad(2)),
             ),
 
             URDFLink(
@@ -76,7 +90,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.1275],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
+                bounds=(-joint_bound_rad(3), joint_bound_rad(3)),
             ),
 
             URDFLink(
@@ -84,7 +98,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.070],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
+                bounds=(-joint_bound_rad(4), joint_bound_rad(4)),
             ),
 
             URDFLink(
@@ -92,7 +106,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.031],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-JOINT_BOUND_RAD, JOINT_BOUND_RAD),
+                bounds=(-joint_bound_rad(5), joint_bound_rad(5)),
             ),
 
             # Tool Center Point (TCP). It represents the tip of the gripper.
@@ -128,9 +142,9 @@ class ArmKinematics:
         x, y, _z = target_xyz
         phi = np.arctan2(y, x)
         theta1 = phi - family * (np.pi / 2.0)
-        # Wrap to [-pi, pi] then clamp into the joint's reachable range.
+        # Wrap to [-pi, pi] then clamp into CH1's reachable range.
         theta1 = (theta1 + np.pi) % (2 * np.pi) - np.pi
-        theta1 = float(np.clip(theta1, -JOINT_BOUND_RAD, JOINT_BOUND_RAD))
+        theta1 = float(np.clip(theta1, -joint_bound_rad(1), joint_bound_rad(1)))
 
         return [
             0.0,                # OriginLink (fixed)
@@ -146,29 +160,29 @@ class ArmKinematics:
     # Angle <-> servo mapping (single source of truth for both directions)
     # ------------------------------------------------------------------ #
     def _ik_to_servo(self, ik_angles_rad) -> list:
-        """Map ikpy's ±135° internal angles to physical 0°-270° servo targets."""
+        """
+        Map ikpy's internal joint angles (radians, 0 = model-zero pose) to physical
+        servo commands. Applies per-joint neutral, the measured command-per-degree
+        scale, and the reversed-mount direction:  servo = neutral ± ik_deg * scale.
+        """
         servo_angles_deg = []
         for i in range(1, 6):  # CH1 .. CH5
-            angle_deg = np.degrees(ik_angles_rad[i]) + JOINT_OFFSET_DEG[i]
-            if i in REVERSED_JOINTS:
-                angle_deg = 270.0 - angle_deg
-            angle_deg = max(0.0, min(270.0, angle_deg))
-            servo_angles_deg.append(round(angle_deg, 2))
+            direction = -1.0 if i in REVERSED_JOINTS else 1.0
+            cmd = SERVO_NEUTRAL_CMD[i] + direction * np.degrees(ik_angles_rad[i]) * CMD_PER_DEG
+            cmd = max(0.0, min(SERVO_CMD_MAX, cmd))
+            servo_angles_deg.append(round(cmd, 2))
         return servo_angles_deg
 
     def _servo_to_ik(self, servo_deg: list) -> list:
         """
-        Inverse of _ik_to_servo: physical servo degrees -> ikpy 7-vector (radians).
+        Inverse of _ik_to_servo: physical servo commands -> ikpy 7-vector (radians).
         Used by the calibration tooling to predict where a given servo pose lands.
         (Hardware clamping at 0/270 is not invertible; assumes values within range.)
         """
         ik = [0.0]  # OriginLink
         for idx, i in enumerate(range(1, 6)):
-            servo = servo_deg[idx]
-            if i in REVERSED_JOINTS:
-                ik_deg = 270.0 - servo - JOINT_OFFSET_DEG[i]
-            else:
-                ik_deg = servo - JOINT_OFFSET_DEG[i]
+            direction = -1.0 if i in REVERSED_JOINTS else 1.0
+            ik_deg = direction * (servo_deg[idx] - SERVO_NEUTRAL_CMD[i]) / CMD_PER_DEG
             ik.append(np.radians(ik_deg))
         ik.append(0.0)  # TCP
         return ik

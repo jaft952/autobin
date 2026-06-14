@@ -25,6 +25,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.hardware.actuators.pca9685_driver import ArmActuator
+from src.arm.kinematics import SERVO_NEUTRAL_CMD
 
 # Forward kinematics is optional (needs ikpy). If unavailable we still jog/print.
 try:
@@ -34,7 +35,8 @@ except Exception as e:  # pragma: no cover
     _kin = None
     print(f"[note] forward-kinematics preview disabled ({e})")
 
-NEUTRAL = [135.0, 135.0, 135.0, 135.0, 135.0, 120.0]  # CH1-5 arm, CH6 gripper
+# Neutral commands (actuation_range=180): CH1-5 from the calibrated model-zero, CH6 gripper.
+NEUTRAL = [SERVO_NEUTRAL_CMD[i] for i in range(1, 7)]  # CH1-5 arm, CH6 gripper
 POSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_poses.txt")
 
 
