@@ -1,21 +1,24 @@
-﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, SERVO_NEUTRAL_CMD
+﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN
 from src.arm.analytical_ik import AnalyticalArmIK
 from src.hardware.actuators.pca9685_driver import ArmActuator
 
-# Neutral/stow servo commands [CH1..CH5] = the model-zero (arm straight up) pose.
-# With actuation_range=180 these are ~90 (CH2 vertical is 95), NOT the old 135.
-HOME_ANGLES = [SERVO_NEUTRAL_CMD[i] for i in range(1, 6)]
 
-# Hardcoded servo pose [CH1..CH5] that drops a can into the bin mounted on the chassis.
-# The bin is fixed relative to the arm base, so this pose never changes -> no IK needed.
-# CAPTURE IT: jog the arm over the bin with tests/servo_jog.py, press 'p', and paste the
-# CH1-5 numbers here. (Still neutral = placeholder; update before relying on dump_to_bin.)
-BIN_DROP_ANGLES = list(HOME_ANGLES)
 
-# Gripper commands (actuation_range=180). Tune on hardware if grip is too loose/tight.
+HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]    
+BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]    
+GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]  
+
 GRIPPER_OPEN = 120.0
 GRIPPER_CLOSED = 40.0
 GRIPPER_NEUTRAL = 80.0
+GRIPPER_GRASP = 30.0     # tighter close used at the sweet-point grasp pose
+
+# Registry so the test tooling can jog to a full pose (arm + gripper) by name.
+NAMED_POSES = {
+    "home":   (HOME_ANGLES, GRIPPER_OPEN),
+    "bin":    (BIN_DROP_ANGLES, GRIPPER_OPEN),
+    "sweet1": (GRAB_ANGLES, GRIPPER_GRASP),
+}
 
 class GraspPlanner:
     """
@@ -56,15 +59,42 @@ class GraspPlanner:
         self.actuator.set_arm_angles(servo_angles)
         return True
 
+    def goto_named_pose(self, name: str):
+        """Jog to one of the hardcoded NAMED_POSES (arm + gripper) by name —
+        no IK, just servo commands. Used by tests/test_kinematics.py."""
+        pose = NAMED_POSES.get(name)
+        if pose is None:
+            print(f"[GraspPlanner] Unknown pose '{name}'. Known: {list(NAMED_POSES)}")
+            return False
+        arm_angles, gripper = pose
+        print(f"[GraspPlanner] Moving to '{name}': arm={arm_angles}, gripper={gripper}")
+        self.actuator.set_arm_angles(arm_angles)
+        self.actuator.set_gripper_angle(gripper)
+        self.kinematics.reset_warm_start()
+        return True
+
     def home(self):
         """
-        Return to the neutral stow pose (all joints centered, arm straight up).
-        Commands the servos directly — the straight-up pose cannot satisfy the
-        gripper-down constraint, so routing it through IK would (correctly) fail.
+        Return to the hardcoded home/stow pose (HOME_ANGLES) and open the gripper.
+        Commands the servos directly (no IK).
         """
-        print("[GraspPlanner] Homing to neutral pose (servo-level, no IK)...")
+        print("[GraspPlanner] Homing to stow pose (servo-level, no IK)...")
         self.actuator.set_arm_angles(HOME_ANGLES)
+        self.actuator.set_gripper_angle(GRIPPER_OPEN)
         self.kinematics.reset_warm_start()
+        return True
+
+    def grab(self):
+        """
+        Pick up a can at the fixed, chassis-centred grasp spot using a hardcoded,
+        sag-compensated pose (GRAB_ANGLES) — NOT IK. Opens, moves to the pose, closes.
+        Tune GRAB_ANGLES on the real arm with tests/servo_jog.py.
+        """
+        print("[GraspPlanner] Grabbing at hardcoded grasp pose (no IK)...")
+        self.control_gripper("open")
+        self.actuator.set_arm_angles(GRAB_ANGLES)
+        self.kinematics.reset_warm_start()
+        self.control_gripper("close")
         return True
 
     def dump_to_bin(self):

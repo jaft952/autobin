@@ -1,29 +1,3 @@
-"""
-src/arm/analytical_ik.py
-
-Closed-form inverse kinematics tailored to this 5-DOF arm. Replaces the numerical
-ikpy solver for normal use (ikpy ArmKinematics is kept as a backup). Why custom:
-  * the arm is simple enough for an exact geometric solution (no convergence failures);
-  * we get ALL solution branches, so we can pick the most COMFORTABLE one (joints far
-    from their limits) -> less strain / sag;
-  * the gripper approach angle is an explicit input, so "point down" (or any tilt) is
-    a parameter, not something we coax out of an optimizer.
-
-Structure (matches the ikpy chain + calibration in kinematics.py exactly):
-  * CH1 (yaw, Z) sets the azimuth: theta1 = atan2(y, x) - 90deg.
-  * CH2/CH3/CH4 (pitch, X) form a PLANAR 3-link arm in the vertical plane, reaching
-    the planar point (r = hypot(x,y), z) with a chosen end pitch phi4 (the gripper
-    approach angle). Lengths: shoulder at height H_SHOULDER, links L1, L2, then L3 to
-    the TCP. Solved by the standard wrist-partition + 2-link law of cosines (two elbow
-    branches).
-  * CH5 (roll, Z) does not affect position -> left at 0.
-
-Angle convention (same as the ikpy model): at model-zero all angles are 0 and the arm
-points straight up (+Z). A segment whose cumulative pitch (sum of CH2..CHi) is phi points
-in the planar direction (-sin phi, cos phi) = (horizontal, vertical). Straight DOWN is
-phi4 = -180deg.
-"""
-
 from __future__ import annotations
 import numpy as np
 

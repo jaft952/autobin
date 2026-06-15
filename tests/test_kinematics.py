@@ -14,7 +14,9 @@ def print_menu():
     print("  'free'  : POSITION-ONLY mode (no orientation, comfortable poses)")
     print("  'g'     : grasp (close gripper)")
     print("  'r'     : release (open gripper)")
-    print("  'h'     : home (return to neutral, arm straight up)")
+    print("  'h'     : home ")
+    print("  'bin'   : throw-to-bin pose")
+    print("  'sweet' : sweet point 1 grasp pose")
     print("  'q'     : quit the test program")
     print("-"*40)
     print("  x,y,z are SIGNED components in meters (x=right, y=forward, z=up),")
@@ -65,6 +67,16 @@ def main():
             elif user_input == 'r':
                 print("executing release command ...")
                 planner.control_gripper("open")
+                continue
+
+            elif user_input == 'bin':
+                print("moving to throw-to-bin pose ...")
+                planner.goto_named_pose("bin")
+                continue
+
+            elif user_input in ('sweet', 's1', 'sweet1'):
+                print("moving to sweet point 1 ...")
+                planner.goto_named_pose("sweet1")
                 continue
 
             parts = user_input.split()
