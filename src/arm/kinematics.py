@@ -1,40 +1,19 @@
-import numpy as np
+﻿import numpy as np
 from ikpy.chain import Chain
 from ikpy.link import OriginLink, URDFLink
 
 
 # ── Servo calibration (YF-6125MG) ────────────────────────────────────────────
-# These servos are labelled "270°" but actually travel only ~180° with the 500-2500us
-# pulse range, so the system uses actuation_range = 180 (see SERVO_RANGE_DEG in
-# pca9685_driver.py — the two MUST match). With actuation_range = 180, one servo command
-# unit equals one physical degree (1:1):
 SERVO_CMD_MAX = 180.0      # servo command spans 0..180 (== actuation_range)
 CMD_PER_DEG = 1.0          # command units per physical degree
-# Servo command at each joint's MODEL-ZERO ("straight up") pose, read directly with
-# tests/servo_jog.py at actuation_range=180 (CH1-5 = [96.7, 96.7, 100.0, 100.0, 90.0]).
-# CH2/CH3/CH4 (pitch) determine reach and are solid; CH1 (yaw azimuth-zero) and CH5 (roll)
-# aren't pinned down by verticality, so re-check those if the x/y direction looks rotated.
 SERVO_NEUTRAL_CMD = [0.0, 96.7, 96.7, 100.0, 100.0, 90.0, 80.0]  # index 0 = OriginLink, 6 = gripper
-
-# Joints whose physical servo is mounted in the reversed direction (negative physical
-# motion for positive model angle). Determined per-joint via tests/calibrate_fk.py:
-# CH1/CH2/CH4 are reversed; CH3 matches the model; CH5 is roll (no position effect).
-REVERSED_JOINTS = {1, 2, 4}  # 1-based joint indices
-
-# IK is considered converged only if the solution's forward kinematics lands within
-# this distance of the requested target. A genuinely converged solve is sub-mm; 1 cm
-# cleanly separates "reached it" from "solver railed against a joint limit".
+REVERSED_JOINTS = {1, 2, 4} 
 IK_POSITION_TOLERANCE = 0.01  # meters
 
-# Mid-range starting pose for shoulder/elbow/wrist used when seeding the solver.
-# Deliberately NOT on any joint bound, so the local optimizer has room to converge.
+
 SEED_SHOULDER_RAD = np.radians(45)
 SEED_ELBOW_RAD = np.radians(-60)
 SEED_WRIST_RAD = np.radians(45)
-
-
-# Keep IK solutions this far (deg) off each joint's physical limit. Poses sitting exactly
-# on a limit are mechanically marginal (the servo hunts/strains under gravity -> trembling).
 JOINT_BOUND_MARGIN_DEG = 5.0
 
 
@@ -49,19 +28,8 @@ def joint_half_range_deg(i: int) -> float:
 def joint_bound_rad(i: int) -> float:
     return np.radians(joint_half_range_deg(i))
 
-# Default tool approach direction: gripper pointing straight DOWN (world -Z).
-# Position-only IK on this redundant 5-DOF arm picks arbitrary wrist poses (gripper may
-# face up/sideways -> cannot grasp, and its length skews the measured tip). Constraining
-# the tool axis to point down makes the pose unique and graspable. Pass tool_direction=None
-# to fall back to pure position IK.
 GRIPPER_DOWN = [0.0, 0.0, -1.0]
-
-# When GRIPPER_DOWN is requested but straight-down is unreachable, retry with the
-# approach tilted outward (toward the target azimuth) by these angles, in order.
-# A vertical gripper costs its full 11.4cm of length in height budget; tilting ~45°
-# recovers a lot of horizontal reach while still grasping top-down-ish.
 APPROACH_TILTS_DEG = (0.0, 25.0, 45.0)
-# If the achieved tool axis deviates from the requested direction by more than this, warn.
 ORIENTATION_WARN_DEG = 20.0
 
 
@@ -133,17 +101,6 @@ class ArmKinematics:
     # Seeding
     # ------------------------------------------------------------------ #
     def _make_seed(self, target_xyz: list, family: int = 1) -> list:
-        """
-        Build a full IK seed vector aimed at the target.
-
-        The base joint (CH1) is the only DOF that produces horizontal azimuth, so a
-        bad CH1 seed is what previously railed the solver against its ±135° bound. We
-        point CH1 straight at the target azimuth instead of starting near a bound.
-
-        family = +1 / -1 selects which of the two mirror solution branches to seed
-        (arm reaching "forward" vs "backward"), letting the caller retry the other
-        branch if the first fails.
-        """
         x, y, _z = target_xyz
         phi = np.arctan2(y, x)
         theta1 = phi - family * (np.pi / 2.0)
@@ -152,24 +109,19 @@ class ArmKinematics:
         theta1 = float(np.clip(theta1, -joint_bound_rad(1), joint_bound_rad(1)))
 
         return [
-            0.0,                # OriginLink (fixed)
+            0.0,                # OriginLink 
             theta1,             # CH1: aimed at target azimuth
             SEED_SHOULDER_RAD,  # CH2
             SEED_ELBOW_RAD,     # CH3
             SEED_WRIST_RAD,     # CH4
             0.0,                # CH5 (roll — no effect on position)
-            0.0,                # TCP (fixed)
+            0.0,                # TCP 
         ]
 
     # ------------------------------------------------------------------ #
     # Angle <-> servo mapping (single source of truth for both directions)
     # ------------------------------------------------------------------ #
     def _ik_to_servo(self, ik_angles_rad) -> list:
-        """
-        Map ikpy's internal joint angles (radians, 0 = model-zero pose) to physical
-        servo commands. Applies per-joint neutral, the measured command-per-degree
-        scale, and the reversed-mount direction:  servo = neutral ± ik_deg * scale.
-        """
         servo_angles_deg = []
         for i in range(1, 6):  # CH1 .. CH5
             direction = -1.0 if i in REVERSED_JOINTS else 1.0
@@ -179,11 +131,6 @@ class ArmKinematics:
         return servo_angles_deg
 
     def _servo_to_ik(self, servo_deg: list) -> list:
-        """
-        Inverse of _ik_to_servo: physical servo commands -> ikpy 7-vector (radians).
-        Used by the calibration tooling to predict where a given servo pose lands.
-        (Hardware clamping at 0/270 is not invertible; assumes values within range.)
-        """
         ik = [0.0]  # OriginLink
         for idx, i in enumerate(range(1, 6)):
             direction = -1.0 if i in REVERSED_JOINTS else 1.0
@@ -193,11 +140,6 @@ class ArmKinematics:
         return ik
 
     def predict_tip(self, servo_deg: list) -> list:
-        """
-        Calibration helper: given 5 physical servo angles (CH1-CH5), return the
-        model's predicted TCP position [x, y, z] in meters. Compare against a ruler
-        to validate/repair link lengths, zero offsets and rotation-axis directions.
-        """
         ik = self._servo_to_ik(servo_deg)
         tip = self.chain.forward_kinematics(ik)[:3, 3]
         return [round(float(v), 4) for v in tip]
@@ -231,22 +173,6 @@ class ArmKinematics:
 
     def calculate_servo_angles(self, target_xyz: list, tool_direction=GRIPPER_DOWN,
                                orientation_mode="Z") -> list | None:
-        """
-        Solve IK for target_xyz (meters) and map the result to physical 0°-270°
-        servo angles [CH1..CH5].
-
-        By default the gripper is constrained to point DOWN (tool_direction=GRIPPER_DOWN,
-        orientation_mode="Z"), which removes the wrist redundancy so the pose is unique and
-        graspable. If straight-down is unreachable, the approach is retried tilted outward
-        per APPROACH_TILTS_DEG (still top-down enough to grasp, much larger workspace).
-        Pass tool_direction=None for pure position IK.
-
-        Robustness: try several seeds per direction and accept the first whose forward
-        kinematics lands within IK_POSITION_TOLERANCE of the target.
-
-        Returns the 5 servo angles, or None if nothing converges (target unreachable /
-        outside the joint-limited workspace). None means "do not move the arm".
-        """
         target = np.asarray(target_xyz, dtype=float)
 
         # Candidate approach directions: the tilt ladder for the default grasp mode,
