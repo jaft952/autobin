@@ -85,16 +85,11 @@ class GraspPlanner:
         return True
 
     def grab(self):
-        """
-        Pick up a can at the fixed, chassis-centred grasp spot using a hardcoded,
-        sag-compensated pose (GRAB_ANGLES) — NOT IK. Opens, moves to the pose, closes.
-        Tune GRAB_ANGLES on the real arm with tests/servo_jog.py.
-        """
         print("[GraspPlanner] Grabbing at hardcoded grasp pose (no IK)...")
         self.control_gripper("open")
         self.actuator.set_arm_angles(GRAB_ANGLES)
         self.kinematics.reset_warm_start()
-        self.control_gripper("close")
+        self.control_gripper("open")
         return True
 
     def dump_to_bin(self):
