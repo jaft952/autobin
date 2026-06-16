@@ -103,15 +103,17 @@ def offline():
 
 
 def live():
+    import cv2
     from src.perception.detector import AluminiumCanDetector
 
     detector = AluminiumCanDetector(device="cpu")  # Pi has no CUDA
     detector.start()
     centering = IBVSCentering()
-    print("\nLive centering — Ctrl+C to stop.")
+    print("\nLive centering — press 'q' in the video window (or Ctrl+C) to stop.")
     print("To calibrate the sweet spot: put a tin at the arm's best grasp point,")
     print("read center=(px,py) below, set CenteringConfig.target_x = px/width,")
     print("target_y = py/height.\n")
+    show = True  # auto-disabled below if there's no display (headless SSH)
     try:
         while True:
             result = detector.detect()
@@ -119,10 +121,22 @@ def live():
             px = f"center={status.target_px}" if status.target_px else "center=none"
             print(f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
                   f"move={status.move.value:<14} stable={status.stable}  | {status.message}")
+            if show:
+                frame = detector.get_annotated_frame(result)
+                if frame is not None:
+                    try:
+                        cv2.imshow("IBVS centering (press q to quit)", frame)
+                        if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                            break
+                    except cv2.error:
+                        print("[!] no display available — continuing text-only "
+                              "(run on the Pi's desktop, not headless SSH, to see video)")
+                        show = False
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
         detector.stop()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
