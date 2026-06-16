@@ -11,8 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-import cv2
-from ultralytics import YOLO
+# NOTE: cv2 and ultralytics (which pulls in torch + numpy) are imported lazily
+# inside the methods that need them — see _load_model / _open_camera /
+# get_annotated_frame. This keeps the pure-Python data classes below importable
+# WITHOUT loading any native library, so the offline logic tests run anywhere and
+# a broken cv2/torch/numpy wheel (e.g. the Raspberry Pi "Illegal instruction"
+# SIGILL) can't crash code that only uses BoundingBox / DetectionResult.
 
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
@@ -99,7 +103,10 @@ class AluminiumCanDetector:
         detector.stop()
     """
 
-    DEFAULT_MODEL_PATH = "ai/training/scripts/runs/detect/yolov8s_aluminum_can/weights/best.pt"
+    # Promoted "production" copy of the trained weights. NOTE: .pt files are
+    # git-ignored, so this 22 MB file must be copied to the Pi manually (it does
+    # not arrive via `git pull`). See the README / deploy notes.
+    DEFAULT_MODEL_PATH = "ai/models/subsystem2/production/aluminum_can_detector_best.pt"
 
     def __init__(
         self,
@@ -181,6 +188,7 @@ class AluminiumCanDetector:
         Returns the last captured frame with bounding boxes drawn.
         Useful for cv2.imshow() during debugging.
         """
+        import cv2  # lazy: only used when drawing debug overlays
         if self._last_frame is None:
             return None
 
@@ -210,6 +218,7 @@ class AluminiumCanDetector:
     # ── Private Helpers ───────────────────────────────────────────────────
 
     def _load_model(self):
+        from ultralytics import YOLO  # lazy: only when running live inference
         if not self._model_path.exists():
             raise FileNotFoundError(
                 f"Model not found: {self._model_path}\n"
@@ -219,6 +228,7 @@ class AluminiumCanDetector:
         print(f"✓ Model loaded: {self._model_path}")
 
     def _open_camera(self):
+        import cv2  # lazy: only when opening a real camera
         # CAP_DSHOW is required on Windows for stable C270 connection
         self._cap = cv2.VideoCapture(self._camera_index, cv2.CAP_DSHOW)
 
