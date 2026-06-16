@@ -7,6 +7,7 @@ Returns structured DetectionResult to the sensor interface.
 """
 
 from __future__ import annotations
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -229,8 +230,11 @@ class AluminiumCanDetector:
 
     def _open_camera(self):
         import cv2  # lazy: only when opening a real camera
-        # CAP_DSHOW is required on Windows for stable C270 connection
-        self._cap = cv2.VideoCapture(self._camera_index, cv2.CAP_DSHOW)
+        # Pick the capture backend per OS: DirectShow on Windows (needed for a
+        # stable C270 connection), V4L2 on Linux/Raspberry Pi. CAP_DSHOW does not
+        # exist on Linux, so using it there makes VideoCapture fail to open.
+        backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
+        self._cap = cv2.VideoCapture(self._camera_index, backend)
 
         if not self._cap.isOpened():
             raise RuntimeError(
