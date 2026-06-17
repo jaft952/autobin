@@ -8,10 +8,14 @@ Two modes:
 
   python tests/test_ibvs_centering.py --live
       LIVE mode on the Pi: opens the camera + YOLO (on CPU), prints the centering
-      status every frame, and prints the tin's pixel center so you can calibrate
-      the sweet spot (CenteringConfig.target_x / target_y).
-      Put a tin at the arm's comfortable grasp position, read the printed
-      "center=(px,py)", divide by the frame size, and set target_x/y to that.
+      status every frame, and shows the annotated video.
+
+  python tests/test_ibvs_centering.py --sim
+      SIM mode on the Pi: real camera feed but NO YOLO. A fake "upright tin"
+      bounding box wanders around the frame; the suggested action (FORWARD /
+      BACKWARD / LEFT / RIGHT / CATCH ...) is drawn bottom-left, relative to the
+      calibrated sweet spot. Lets you watch/verify the centering logic against a
+      live image without the slow, flaky detector. r = respawn the tin, q = quit.
 """
 import os
 import sys
@@ -141,8 +145,127 @@ def live():
         cv2.destroyAllWindows()
 
 
+def _action_label(status) -> str:
+    """Map a CenteringStatus to a short action word for the overlay."""
+    if status.stable:
+        return "CATCH"
+    words = {
+        ChassisMove.FORWARD: "FORWARD",
+        ChassisMove.BACKWARD: "BACKWARD",
+        ChassisMove.TURN_LEFT: "LEFT",
+        ChassisMove.TURN_RIGHT: "RIGHT",
+        ChassisMove.FORWARD_LEFT: "FORWARD + LEFT",
+        ChassisMove.FORWARD_RIGHT: "FORWARD + RIGHT",
+        ChassisMove.BACKWARD_LEFT: "BACKWARD + LEFT",
+        ChassisMove.BACKWARD_RIGHT: "BACKWARD + RIGHT",
+        ChassisMove.HOLD: "HOLD (aligning...)",
+        ChassisMove.SEARCH: "SEARCH",
+    }
+    return words.get(status.move, status.move.value.upper())
+
+
+def sim():
+    """Real camera feed, FAKE detection (no YOLO). A simulated upright tin
+    wanders around the frame; the suggested chassis action is drawn bottom-left,
+    relative to the calibrated sweet spot. Run on the Pi desktop (needs a display)."""
+    import random
+    import cv2
+    from src.perception.detector import open_camera_capture
+
+    cap, fw, fh, fps = open_camera_capture(0, W, H)
+    print(f"✓ Camera opened: {fw}x{fh} @ {fps:.0f}FPS  (SIM — fake tin, no YOLO)")
+    centering = IBVSCentering()  # loads the calibrated sweet spot from the YAML
+    # Simulated upright tin. Its size scales with depth: nearer the BOTTOM of the
+    # frame = closer to the robot = bigger (near=big, far=small). Size is purely
+    # cosmetic — centering tracks the base point, which is size-independent.
+    ASPECT = 0.38            # width / height of an upright tin
+    H_FAR, H_NEAR = 90, 280  # tin height in px when far (top) vs near (bottom)
+
+    # base-center position + velocity of the fake tin (smooth random walk)
+    bx = by = 0.0
+    vx = vy = 0.0
+
+    def respawn():
+        nonlocal bx, by, vx, vy
+        bx = random.uniform(80, fw - 80)
+        by = random.uniform(fh * 0.15, fh - 5)
+        vx = random.choice((-1, 1)) * random.uniform(3, 7)
+        vy = random.choice((-1, 1)) * random.uniform(2, 5)
+
+    respawn()
+    win = "IBVS sim  (fake tin, no YOLO)  -  r=respawn  q=quit"
+    cv2.namedWindow(win)
+    print("\nSimulated tin wandering — no camera detection involved.")
+    print("r = new random spot, q = quit.\n")
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                print("⚠ failed to read frame from camera")
+                break
+
+            # Move the fake tin: nudge velocity, integrate, then bounce so the
+            # BASE (the tracked point) stays on screen.
+            vx = max(-8.0, min(8.0, vx + random.uniform(-0.6, 0.6)))
+            vy = max(-6.0, min(6.0, vy + random.uniform(-0.4, 0.4)))
+            bx += vx
+            by += vy
+            lo_y, hi_y = fh * 0.12, fh - 3.0
+            if by < lo_y or by > hi_y:
+                vy = -vy
+                by = min(max(by, lo_y), hi_y)
+
+            # Size from depth: lower in the frame (larger by) = nearer = bigger.
+            t = (by - lo_y) / (hi_y - lo_y)          # 0 at top/far .. 1 at bottom/near
+            th = int(H_FAR + t * (H_NEAR - H_FAR))
+            tw = int(th * ASPECT)
+
+            lo_x, hi_x = tw / 2.0, fw - tw / 2.0
+            if bx < lo_x or bx > hi_x:
+                vx = -vx
+                bx = min(max(bx, lo_x), hi_x)
+
+            ibx, iby = int(bx), int(by)
+            x1, y1, x2, y2 = ibx - tw // 2, iby - th, ibx + tw // 2, iby
+            box = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=0.99)
+            result = DetectionResult(detections=[box], frame_width=fw, frame_height=fh)
+            status = centering.update(result)
+
+            # Sweet spot (target) from the loaded config — yellow cross.
+            tx = int(centering.config.target_x * fw)
+            ty = int(centering.config.target_y * fh)
+            cv2.drawMarker(frame, (tx, ty), (0, 255, 255), cv2.MARKER_CROSS, 26, 2)
+            cv2.putText(frame, "sweet spot", (tx + 10, ty - 10), font, 0.5, (0, 255, 255), 1)
+
+            # Fake tin box (green) + tracked base point (red dot).
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, "fake tin", (x1, max(y1 - 8, 14)), font, 0.6, (0, 255, 0), 2)
+            cv2.circle(frame, (ibx, iby), 6, (0, 0, 255), -1)
+
+            # Suggested action, bottom-left (black outline + colored fill).
+            action = _action_label(status)
+            color = (0, 255, 0) if status.stable else (0, 165, 255)
+            cv2.putText(frame, action, (20, fh - 25), font, 1.2, (0, 0, 0), 6)
+            cv2.putText(frame, action, (20, fh - 25), font, 1.2, color, 2)
+
+            cv2.imshow(win, frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            if key == ord("r"):
+                respawn()
+    except KeyboardInterrupt:
+        print("\nstopped.")
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 if __name__ == "__main__":
     if "--live" in sys.argv:
         live()
+    elif "--sim" in sys.argv:
+        sim()
     else:
         offline()
