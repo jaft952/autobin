@@ -1,0 +1,10 @@
+# IBVS chassis-centering config.
+#
+# Sweet spot = the pixel where a tin sits when the arm can grasp it comfortably,
+# stored in NORMALIZED image coords (0..1). (0.5, 0.5) = exact image center.
+#
+# Calibrate with:  python src/visual_servoing/calibrate_sweet_spot.py
+#   (click the tin at the grasp position, press 's' — it overwrites the two
+#    values below). IBVSCentering loads this automatically on startup.
+target_x: 0.5
+target_y: 0.5

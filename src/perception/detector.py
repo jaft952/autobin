@@ -87,6 +87,45 @@ class DetectionResult:
         return (nx, ny)
 
 
+# ── Camera helper ────────────────────────────────────────────────────────────
+
+def open_camera_capture(camera_index: int = 0,
+                        frame_width: int = 1280,
+                        frame_height: int = 720):
+    """
+    Open a cv2.VideoCapture with the correct per-OS backend and the C270's
+    high-FPS MJPG setup, then request the given resolution.
+
+    Backend: DirectShow on Windows (needed for a stable C270 connection), V4L2
+    on Linux/Raspberry Pi (CAP_DSHOW does not exist there and makes VideoCapture
+    fail to open).
+
+    Returns (cap, actual_width, actual_height, actual_fps); the actual values may
+    differ from what was requested. Raises RuntimeError if the camera won't open.
+
+    Shared by AluminiumCanDetector and the sweet-spot calibrator so both capture
+    with identical geometry — the C270 crops differently per resolution, so
+    normalized pixel coords only transfer when the resolution matches.
+    """
+    import cv2  # lazy: native lib only loaded when a real camera is needed
+    backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
+    cap = cv2.VideoCapture(camera_index, backend)
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"Cannot open camera at index {camera_index}. "
+            f"Try changing camera_index to 1."
+        )
+    # MJPG codec — required to reach 30FPS on C270 (default YUYV = 10FPS)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
+    return cap, actual_w, actual_h, actual_fps
+
+
 # ── Detector ─────────────────────────────────────────────────────────────────
 
 class AluminiumCanDetector:
@@ -229,32 +268,10 @@ class AluminiumCanDetector:
         print(f"✓ Model loaded: {self._model_path}")
 
     def _open_camera(self):
-        import cv2  # lazy: only when opening a real camera
-        # Pick the capture backend per OS: DirectShow on Windows (needed for a
-        # stable C270 connection), V4L2 on Linux/Raspberry Pi. CAP_DSHOW does not
-        # exist on Linux, so using it there makes VideoCapture fail to open.
-        backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
-        self._cap = cv2.VideoCapture(self._camera_index, backend)
-
-        if not self._cap.isOpened():
-            raise RuntimeError(
-                f"Cannot open camera at index {self._camera_index}. "
-                f"Try changing camera_index to 1."
-            )
-
-        # Set MJPG codec — required to reach 30FPS on C270 (default YUYV = 10FPS)
-        self._cap.set(cv2.CAP_PROP_FOURCC,
-                      cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._frame_width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._frame_height)
-        self._cap.set(cv2.CAP_PROP_FPS, 30)
-
-        actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
-
+        self._cap, actual_w, actual_h, actual_fps = open_camera_capture(
+            self._camera_index, self._frame_width, self._frame_height
+        )
         # Update actual resolution (may differ from requested)
         self._frame_width = actual_w
         self._frame_height = actual_h
-
         print(f"✓ Camera opened: {actual_w}x{actual_h} @ {actual_fps:.0f}FPS")
