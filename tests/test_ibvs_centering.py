@@ -11,11 +11,12 @@ Two modes:
       status every frame, and shows the annotated video.
 
   python tests/test_ibvs_centering.py --sim
-      SIM mode on the Pi: real camera feed but NO YOLO. A fake "upright tin"
-      bounding box wanders around the frame; the suggested action (FORWARD /
-      BACKWARD / LEFT / RIGHT / CATCH ...) is drawn bottom-left, relative to the
-      calibrated sweet spot. Lets you watch/verify the centering logic against a
-      live image without the slow, flaky detector. r = respawn the tin, q = quit.
+      SIM mode on the Pi: real camera feed but NO YOLO. You place a fake "upright
+      tin" with the mouse (click or drag) and it STAYS PUT, like a real tin on the
+      floor — nothing drifts on its own. The suggested action (FORWARD / BACKWARD /
+      LEFT / RIGHT / CATCH ...) is drawn bottom-left, relative to the calibrated
+      sweet spot. Lets you verify the centering logic against a live image without
+      the slow, flaky detector. q = quit.
 """
 import os
 import sys
@@ -165,38 +166,39 @@ def _action_label(status) -> str:
 
 
 def sim():
-    """Real camera feed, FAKE detection (no YOLO). A simulated upright tin
-    wanders around the frame; the suggested chassis action is drawn bottom-left,
-    relative to the calibrated sweet spot. Run on the Pi desktop (needs a display)."""
-    import random
+    """Real camera feed, FAKE detection (no YOLO). You place a simulated upright
+    tin with the mouse (click or drag) and it STAYS PUT — like a real tin sitting
+    on the floor. The suggested chassis action is drawn bottom-left, relative to
+    the calibrated sweet spot. Run on the Pi desktop (needs a display)."""
     import cv2
     from src.perception.detector import open_camera_capture
 
     cap, fw, fh, fps = open_camera_capture(0, W, H)
     print(f"✓ Camera opened: {fw}x{fh} @ {fps:.0f}FPS  (SIM — fake tin, no YOLO)")
     centering = IBVSCentering()  # loads the calibrated sweet spot from the YAML
-    # Simulated upright tin. Its size scales with depth: nearer the BOTTOM of the
-    # frame = closer to the robot = bigger (near=big, far=small). Size is purely
-    # cosmetic — centering tracks the base point, which is size-independent.
+    # Simulated upright tin. Its size scales with depth: lower in the frame =
+    # closer to the robot = bigger (near=big, far=small). Size is purely cosmetic
+    # — centering tracks the base point, which is size-independent.
     ASPECT = 0.38            # width / height of an upright tin
     H_FAR, H_NEAR = 90, 280  # tin height in px when far (top) vs near (bottom)
+    lo_y, hi_y = fh * 0.12, fh - 3.0
 
-    # base-center position + velocity of the fake tin (smooth random walk)
-    bx = by = 0.0
-    vx = vy = 0.0
+    # The tin's base point (where it meets the floor). A real tin doesn't move on
+    # its own — you reposition it with the mouse and it stays there.
+    pos = {"bx": fw / 2.0, "by": (lo_y + hi_y) / 2.0}
 
-    def respawn():
-        nonlocal bx, by, vx, vy
-        bx = random.uniform(80, fw - 80)
-        by = random.uniform(fh * 0.15, fh - 5)
-        vx = random.choice((-1, 1)) * random.uniform(3, 7)
-        vy = random.choice((-1, 1)) * random.uniform(2, 5)
+    def on_mouse(event, x, y, flags, param):
+        dragging = event == cv2.EVENT_LBUTTONDOWN or (
+            event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_LBUTTON))
+        if dragging:
+            pos["bx"] = float(x)
+            pos["by"] = float(min(max(y, lo_y), hi_y))
 
-    respawn()
-    win = "IBVS sim  (fake tin, no YOLO)  -  r=respawn  q=quit"
+    win = "IBVS sim  (click/drag to place tin, q=quit)"
     cv2.namedWindow(win)
-    print("\nSimulated tin wandering — no camera detection involved.")
-    print("r = new random spot, q = quit.\n")
+    cv2.setMouseCallback(win, on_mouse)
+    print("\nClick or drag in the window to place the fake tin (it stays put).")
+    print("q = quit.\n")
     font = cv2.FONT_HERSHEY_SIMPLEX
     try:
         while True:
@@ -205,26 +207,12 @@ def sim():
                 print("⚠ failed to read frame from camera")
                 break
 
-            # Move the fake tin: nudge velocity, integrate, then bounce so the
-            # BASE (the tracked point) stays on screen.
-            vx = max(-8.0, min(8.0, vx + random.uniform(-0.6, 0.6)))
-            vy = max(-6.0, min(6.0, vy + random.uniform(-0.4, 0.4)))
-            bx += vx
-            by += vy
-            lo_y, hi_y = fh * 0.12, fh - 3.0
-            if by < lo_y or by > hi_y:
-                vy = -vy
-                by = min(max(by, lo_y), hi_y)
-
+            bx, by = pos["bx"], pos["by"]
             # Size from depth: lower in the frame (larger by) = nearer = bigger.
             t = (by - lo_y) / (hi_y - lo_y)          # 0 at top/far .. 1 at bottom/near
             th = int(H_FAR + t * (H_NEAR - H_FAR))
             tw = int(th * ASPECT)
-
-            lo_x, hi_x = tw / 2.0, fw - tw / 2.0
-            if bx < lo_x or bx > hi_x:
-                vx = -vx
-                bx = min(max(bx, lo_x), hi_x)
+            bx = min(max(bx, tw / 2.0), fw - tw / 2.0)
 
             ibx, iby = int(bx), int(by)
             x1, y1, x2, y2 = ibx - tw // 2, iby - th, ibx + tw // 2, iby
@@ -242,6 +230,8 @@ def sim():
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(frame, "fake tin", (x1, max(y1 - 8, 14)), font, 0.6, (0, 255, 0), 2)
             cv2.circle(frame, (ibx, iby), 6, (0, 0, 255), -1)
+            cv2.putText(frame, "click/drag to move", (x1, min(y2 + 20, fh - 8)),
+                        font, 0.45, (210, 210, 210), 1)
 
             # Suggested action, bottom-left (black outline + colored fill).
             action = _action_label(status)
@@ -250,11 +240,8 @@ def sim():
             cv2.putText(frame, action, (20, fh - 25), font, 1.2, color, 2)
 
             cv2.imshow(win, frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
-            if key == ord("r"):
-                respawn()
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
