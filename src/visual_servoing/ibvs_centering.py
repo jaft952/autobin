@@ -37,9 +37,14 @@ from __future__ import annotations
 import enum
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Tuple
 
 from src.perception.detector import DetectionResult
+
+# Sweet-spot calibration is saved here by calibrate_sweet_spot.py and loaded by
+# CenteringConfig.load(). See src/visual_servoing/config/centering_config.yaml.
+CENTERING_CONFIG_PATH = Path(__file__).parent / "config" / "centering_config.yaml"
 
 
 # ── Output types ─────────────────────────────────────────────────────────────
@@ -97,6 +102,26 @@ class CenteringConfig:
     # How many consecutive missed frames before declaring the tin lost.
     lost_after: int = 10
 
+    @classmethod
+    def load(cls, path: Optional[Path] = None) -> "CenteringConfig":
+        """Return a config with defaults, overridden by any matching keys found
+        in the YAML at `path` (default: config/centering_config.yaml next to this
+        module). A missing file just yields plain defaults.
+
+        Typically the file only holds target_x / target_y written by
+        calibrate_sweet_spot.py, but any CenteringConfig field is accepted.
+        `yaml` is imported lazily so the offline logic test can import this module
+        without PyYAML installed (it always passes an explicit config)."""
+        cfg = cls()
+        p = path or CENTERING_CONFIG_PATH
+        if p.exists():
+            import yaml
+            data = yaml.safe_load(p.read_text()) or {}
+            for key, value in data.items():
+                if hasattr(cfg, key):
+                    setattr(cfg, key, value)
+        return cfg
+
 
 # ── Controller ───────────────────────────────────────────────────────────────
 
@@ -108,7 +133,8 @@ class IBVSCentering:
     """
 
     def __init__(self, config: Optional[CenteringConfig] = None):
-        self.config = config or CenteringConfig()
+        # No explicit config -> pick up the calibrated sweet spot from the YAML.
+        self.config = config or CenteringConfig.load()
         self._smoothed: Optional[Tuple[float, float]] = None
         self._missed = 0
         self._aligned_streak = 0
