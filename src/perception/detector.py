@@ -45,6 +45,15 @@ class BoundingBox:
         return (self.center_x, self.center_y)
 
     @property
+    def base_center(self) -> tuple:
+        """(cx, y2): horizontal center of the bottom edge — where the tin meets
+        the floor. This is the tin's ground position, used by IBVS centering as
+        the tracked point instead of the bbox center. It is robust to tin height
+        and to a tall tin's top leaving the frame in the low, forward-looking
+        arm-base camera view."""
+        return (self.center_x, self.y2)
+
+    @property
     def width(self) -> int:
         return self.x2 - self.x1
 
@@ -237,15 +246,17 @@ class AluminiumCanDetector:
         for det in result.detections:
             # Bounding box
             cv2.rectangle(frame, (det.x1, det.y1), (det.x2, det.y2), (0, 255, 0), 2)
-            # Center dot
-            cv2.circle(frame, det.center, 6, (0, 0, 255), -1)
+            # Tracked ground-contact point (bbox bottom-center) — this is the
+            # point IBVS centering aligns to the sweet spot.
+            bx, by = det.base_center
+            cv2.circle(frame, (bx, by), 6, (0, 0, 255), -1)
             # Label
             label = f"Aluminium Can {det.confidence:.2f}"
             cv2.putText(frame, label, (det.x1, det.y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            # Coordinates
-            cv2.putText(frame, f"({det.center_x},{det.center_y})",
-                        (det.center_x + 8, det.center_y),
+            # Coordinates of the tracked ground point
+            cv2.putText(frame, f"({bx},{by})",
+                        (bx + 8, by),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
         # HUD

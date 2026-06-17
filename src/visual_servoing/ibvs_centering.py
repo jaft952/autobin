@@ -164,8 +164,13 @@ class IBVSCentering:
             )
         self._missed = 0
 
-        # Smooth the detected center to reject single-frame detection jitter.
-        cx, cy = float(best.center_x), float(best.center_y)
+        # Track the tin's GROUND-CONTACT point (bbox bottom-center), not the bbox
+        # center: it is the tin's true floor position, robust to tin height and to
+        # a tall tin's top leaving the frame in the low arm-base camera view. The
+        # sweet spot is calibrated to this same point (the tin's base on the floor).
+        bx, by = best.base_center
+        # Smooth the detected point to reject single-frame detection jitter.
+        cx, cy = float(bx), float(by)
         if self._smoothed is None:
             self._smoothed = (cx, cy)
         else:

@@ -36,8 +36,10 @@ def check(name, ok, detail=""):
 
 
 def det_at(cx, cy):
-    """Synthetic single-tin DetectionResult centered at pixel (cx, cy)."""
-    box = BoundingBox(x1=cx - 40, y1=cy - 60, x2=cx + 40, y2=cy + 60, confidence=0.9)
+    """Synthetic single-tin DetectionResult whose BASE (ground-contact point —
+    the bbox bottom-center that IBVSCentering tracks) is at pixel (cx, cy).
+    The tin stands ~120px tall upward from that base."""
+    box = BoundingBox(x1=cx - 40, y1=cy - 120, x2=cx + 40, y2=cy, confidence=0.9)
     return DetectionResult(detections=[box], frame_width=W, frame_height=H)
 
 
