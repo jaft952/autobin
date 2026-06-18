@@ -114,28 +114,40 @@ def live():
     import cv2
     from src.perception.detector import AluminiumCanDetector
 
-    detector = AluminiumCanDetector(device="cpu")  # Pi has no CUDA
+    # Pi 4 CPU perf: infer at a small image size, and run YOLO only every Nth
+    # frame while showing the camera every frame — keeps the preview smooth and
+    # keys responsive even though inference itself is slow. Tune if needed.
+    IMGSZ = 320
+    INFER_EVERY = 3
+    detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ)  # Pi has no CUDA
     detector.start()
     centering = IBVSCentering()      # loads the calibrated sweet spot from the YAML
     arm = _make_arm()                # optional: enables 'c' grab / 'h' home
     print("\nLive centering. In the video window:  c = grab,  h = home,  q = quit.")
     print("(The action shown is only a SUGGESTION — YOU decide when to press 'c'.)\n")
-    show = True  # auto-disabled below if there's no display (headless SSH)
+    show = True       # auto-disabled below if there's no display (headless SSH)
+    result = None     # last YOLO result, reused on the frames we don't infer
+    status = None
+    i = 0
     try:
         while True:
-            result = detector.detect()
-            status = centering.update(result)
-            px = f"center={status.target_px}" if status.target_px else "center=none"
-            print(f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
-                  f"move={status.move.value:<14} stable={status.stable}  | {status.message}")
-            if not show:
-                continue
-            frame = detector.get_annotated_frame(result)
+            frame = detector.read_frame()        # cheap: grab a frame, no YOLO
             if frame is None:
                 continue
-            _draw_action_overlay(frame, status, arm is not None)
+            if i % INFER_EVERY == 0:             # run YOLO only every Nth frame
+                result = detector.infer(frame)
+                status = centering.update(result)
+                px = f"center={status.target_px}" if status.target_px else "center=none"
+                print(f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
+                      f"move={status.move.value:<14} stable={status.stable}  | {status.message}")
+            i += 1
+            if not show:
+                continue
+            annotated = detector.get_annotated_frame(result) if result is not None else frame
+            if status is not None:
+                _draw_action_overlay(annotated, status, arm is not None)
             try:
-                cv2.imshow("IBVS centering  (c=grab  h=home  q=quit)", frame)
+                cv2.imshow("IBVS centering  (c=grab  h=home  q=quit)", annotated)
                 key = cv2.waitKey(1) & 0xFF
             except cv2.error:
                 print("[!] no display available — continuing text-only "
