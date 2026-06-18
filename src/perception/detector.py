@@ -129,6 +129,8 @@ def open_camera_capture(camera_index: int = 0,
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
     cap.set(cv2.CAP_PROP_FPS, 30)
+    # Keep only the newest frame so slow consumers don't read a stale backlog.
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -165,6 +167,7 @@ class AluminiumCanDetector:
         frame_width: int = 1280,
         frame_height: int = 720,
         device=0,
+        imgsz: int = 640,
     ):
         self._model_path = Path(model_path)
         self._camera_index = camera_index
@@ -173,6 +176,9 @@ class AluminiumCanDetector:
         self._frame_height = frame_height
         # 0 = CUDA GPU (training PC). Pass "cpu" on the Raspberry Pi (no CUDA).
         self._device = device
+        # YOLO inference image size. Smaller (e.g. 320) is much faster on the Pi
+        # CPU; detections are still returned in full-frame pixel coords.
+        self._imgsz = imgsz
 
         self._model: Optional[YOLO] = None
         self._cap: Optional[cv2.VideoCapture] = None
@@ -194,34 +200,34 @@ class AluminiumCanDetector:
 
     # ── Core Inference ────────────────────────────────────────────────────
 
-    def detect(self) -> DetectionResult:
+    def read_frame(self):
         """
-        Capture one frame from the camera and run YOLO inference.
-        Returns a DetectionResult. Safe to call every tick.
+        Grab one frame from the camera WITHOUT running inference (cheap). Updates
+        the stored frame used by get_annotated_frame(). Returns the BGR frame, or
+        None if the camera isn't open / the read failed. Lets callers show the
+        camera at full rate but run YOLO less often.
         """
-        result = DetectionResult(
-            frame_width=self._frame_width,
-            frame_height=self._frame_height
-        )
-
         if not self._cap or not self._cap.isOpened():
-            print("⚠ Camera not open. Call start() first.")
-            return result
-
+            return None
         ret, frame = self._cap.read()
         if not ret:
-            print("⚠ Failed to read frame from camera")
-            return result
+            return None
+        self._last_frame = frame
+        return frame
 
-        self._last_frame = frame.copy()
-
+    def infer(self, frame) -> DetectionResult:
+        """Run YOLO on an already-captured frame and return a DetectionResult."""
+        result = DetectionResult(
+            frame_width=self._frame_width,
+            frame_height=self._frame_height,
+        )
         yolo_results = self._model.predict(
             source=frame,
             conf=self._conf_threshold,
             device=self._device,
+            imgsz=self._imgsz,
             verbose=False,
         )
-
         for r in yolo_results:
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -229,8 +235,21 @@ class AluminiumCanDetector:
                 result.detections.append(
                     BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=conf)
                 )
-
         return result
+
+    def detect(self) -> DetectionResult:
+        """
+        Capture one frame from the camera and run YOLO inference.
+        Returns a DetectionResult. Safe to call every tick.
+        Convenience wrapper = read_frame() + infer().
+        """
+        frame = self.read_frame()
+        if frame is None:
+            print("⚠ Camera not open or frame read failed. Call start() first.")
+            return DetectionResult(
+                frame_width=self._frame_width, frame_height=self._frame_height
+            )
+        return self.infer(frame)
 
     def get_annotated_frame(self, result: DetectionResult):
         """
