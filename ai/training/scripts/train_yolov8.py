@@ -8,23 +8,30 @@ Presets (pick with --preset):
             visual servoing (one inference pass returns both boxes per frame).
 
 Examples:
-  python train_yolov8.py                       # original can training
+  python train_yolov8.py                       # train can detector (yolov8n) on the
+                                               # Roboflow autobin.v1i.yolov8 dataset
+  python train_yolov8.py --epochs 200 --patience 40
+  python train_yolov8.py --model-size s        # bigger/slower model
   python train_yolov8.py --preset combined     # can + gripper 2-class training
-  python train_yolov8.py --preset combined --model-size n --epochs 150
 """
 
 import argparse
+import os
+
+# Reduce CUDA memory fragmentation — helps the "plenty free but can't allocate a
+# tiny block" OOM. Must be set before torch initializes CUDA.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 from ultralytics import YOLO
 import torch
 from pathlib import Path
-import yaml
 
 
 # Per-preset configuration. data_yaml paths are relative to this script's folder.
 PRESETS = {
     "can": {
-        "data_yaml": "../../data/datasets/yolo_format/data.yaml",
-        "run_name": "yolov8s_aluminum_can",
+        "data_yaml": "../../data/datasets/autobin.v1i.yolov8/data.yaml",
+        "run_name": "yolov8n_aluminum_can",
         "single_cls": True,
         "production_name": "aluminum_can_detector_best.pt",
     },
@@ -51,13 +58,15 @@ def check_gpu():
 
 
 def train_yolov8_detector(
-    model_size='s',
-    epochs=100,
-    batch_size=16,
+    model_size='n',
+    epochs=150,
+    batch_size=8,
     img_size=640,
     device=None,
     resume=False,
     preset='can',
+    patience=30,
+    workers=4,
 ):
     """
     Train a YOLOv8 detector for the given preset (see PRESETS).
@@ -115,7 +124,8 @@ def train_yolov8_detector(
         imgsz=img_size,
         batch=batch_size,
         device=device,
-        
+        workers=workers,       # dataloader processes; lower = less RAM
+
         # Optimization
         optimizer='SGD',
         lr0=0.01,              # Initial learning rate
@@ -148,12 +158,12 @@ def train_yolov8_detector(
         
         # Validation & Checkpointing
         val=True,
-        patience=20,           # Early stopping patience
+        patience=patience,     # Early stopping patience (no val gain for N epochs)
         save=True,
         save_period=10,        # Save checkpoint every N epochs
-        
-        # Directories
-        project='runs/detect',
+
+        # Directories (absolute, so output location doesn't depend on CWD)
+        project=str(Path(__file__).resolve().parent / 'runs' / 'detect'),
         name=cfg['run_name'],
         exist_ok=False,
 
@@ -223,10 +233,15 @@ if __name__ == "__main__":
     parser.add_argument('--preset', choices=list(PRESETS), default='can',
                         help="'can' = original 1-class detector, "
                              "'combined' = 2-class can + gripper detector")
-    parser.add_argument('--model-size', default='s', choices=['n', 's', 'm', 'l', 'x'])
-    parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--model-size', default='n', choices=['n', 's', 'm', 'l', 'x'])
+    parser.add_argument('--epochs', type=int, default=150)
+    parser.add_argument('--batch-size', type=int, default=8,
+                        help="lower if you hit CUDA OOM (try 4)")
     parser.add_argument('--img-size', type=int, default=640)
+    parser.add_argument('--patience', type=int, default=30,
+                        help="early-stop if val mAP doesn't improve for N epochs")
+    parser.add_argument('--workers', type=int, default=4,
+                        help="dataloader processes; lower (e.g. 2) if low on RAM")
     parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     cfg = PRESETS[args.preset]
@@ -240,11 +255,13 @@ if __name__ == "__main__":
         device=None,                 # Auto-detect GPU/CPU
         resume=args.resume,
         preset=args.preset,
+        patience=args.patience,
+        workers=args.workers,
     )
 
     script_dir = Path(__file__).resolve().parent
     root_dir = script_dir.parent.parent
-    best_model_path = root_dir / f"runs/detect/{cfg['run_name']}/weights/best.pt"
+    best_model_path = script_dir / 'runs' / 'detect' / cfg['run_name'] / 'weights' / 'best.pt'
     data_yaml = str(script_dir / cfg['data_yaml'])
     # Evaluate on test set
     metrics = evaluate_model(model, data_yaml=data_yaml)

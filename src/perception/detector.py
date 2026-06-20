@@ -7,10 +7,13 @@ Returns structured DetectionResult to the sensor interface.
 """
 
 from __future__ import annotations
+import math
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+from src.perception.orientation import Orientation, estimate_orientation
 
 # NOTE: cv2 and ultralytics (which pulls in torch + numpy) are imported lazily
 # inside the methods that need them — see _load_model / _open_camera /
@@ -30,6 +33,7 @@ class BoundingBox:
     x2: int
     y2: int
     confidence: float
+    orientation: Optional[Orientation] = None   # filled in by detector.infer()
 
     @property
     def center_x(self) -> int:
@@ -137,6 +141,28 @@ def open_camera_capture(camera_index: int = 0,
     return cap, actual_w, actual_h, actual_fps
 
 
+def _suppress_contained_boxes(detections, contain_thresh=0.8):
+    """Drop any box whose area is >= contain_thresh contained inside a
+    higher-confidence box. Removes the 'box-inside-a-box' duplicate detections
+    that ordinary NMS keeps when the smaller box's IoU with the bigger one is
+    below the NMS threshold (common with a weak / inconsistently-labeled model).
+    """
+    kept = []
+    for d in sorted(detections, key=lambda b: b.confidence, reverse=True):
+        d_area = max(1, (d.x2 - d.x1) * (d.y2 - d.y1))
+        contained = False
+        for k in kept:
+            ix1, iy1 = max(d.x1, k.x1), max(d.y1, k.y1)
+            ix2, iy2 = min(d.x2, k.x2), min(d.y2, k.y2)
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            if inter / d_area >= contain_thresh:
+                contained = True
+                break
+        if not contained:
+            kept.append(d)
+    return kept
+
+
 # ── Detector ─────────────────────────────────────────────────────────────────
 
 class AluminiumCanDetector:
@@ -235,6 +261,11 @@ class AluminiumCanDetector:
                 result.detections.append(
                     BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=conf)
                 )
+        # Remove duplicate "box-inside-a-box" detections NMS leaves behind.
+        result.detections = _suppress_contained_boxes(result.detections)
+        # Classical-CV orientation estimate per detection (upright/lying/axial).
+        for d in result.detections:
+            d.orientation = estimate_orientation(frame, d)
         return result
 
     def detect(self) -> DetectionResult:
@@ -277,6 +308,17 @@ class AluminiumCanDetector:
             cv2.putText(frame, f"({bx},{by})",
                         (bx + 8, by),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            # Orientation (classical CV): long-axis line + class label (magenta).
+            if det.orientation is not None:
+                o = det.orientation
+                cx, cy = det.center
+                half = max(det.width, det.height) // 2
+                a = math.radians(o.angle)
+                dx, dy = int(half * math.cos(a)), int(half * math.sin(a))
+                cv2.line(frame, (cx - dx, cy - dy), (cx + dx, cy + dy), (255, 0, 255), 2)
+                cv2.putText(frame, f"{o.klass} {o.angle:.0f}deg",
+                            (det.x1, min(det.y2 + 20, frame.shape[0] - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2)
 
         # HUD
         count = len(result.detections)

@@ -117,7 +117,7 @@ def live():
     # Pi 4 CPU perf: infer at a small image size, and run YOLO only every Nth
     # frame while showing the camera every frame — keeps the preview smooth and
     # keys responsive even though inference itself is slow. Tune if needed.
-    IMGSZ = 320
+    IMGSZ = 640
     INFER_EVERY = 3
     detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ)  # Pi has no CUDA
     detector.start()

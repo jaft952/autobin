@@ -258,6 +258,7 @@ ai/models/subsystem2/experiments/
 ai/data/datasets/raw/images/
 ai/data/datasets/yolo_format/images/
 ai/data/datasets/yolo_format/labels/
+ai/data/datasets/autobin.v1i.yolov8/
 
 # Auto-generated or tuned configurations
 src/perception/config/color_config.yaml

@@ -101,6 +101,10 @@ class CenteringConfig:
     stable_frames: int = 5
     # How many consecutive missed frames before declaring the tin lost.
     lost_after: int = 10
+    # "Too close" guard: when the tin's box height reaches this fraction of the
+    # frame, it (nearly) fills the view — its base has left the frame so the base
+    # point saturates and can't signal "too close" — so force a BACKWARD move.
+    too_close_box_height: float = 0.85
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "CenteringConfig":
@@ -183,6 +187,13 @@ class IBVSCentering:
         # error_x: + = tin right of target; error_y: + = tin closer to robot than target.
         error_x = cfg.mirror_x * (sx / detection.frame_width - cfg.target_x)
         error_y = cfg.image_y_is_backward * (sy / detection.frame_height - cfg.target_y)
+
+        # "Too close" guard: a tin filling the frame has its base off-screen, so
+        # the base point saturates at the bottom and can't signal "too close".
+        # Use the box height as an independent cue and force a BACKWARD error.
+        box_h_frac = (best.height / detection.frame_height) if detection.frame_height else 0.0
+        if box_h_frac >= cfg.too_close_box_height:
+            error_y = max(error_y, cfg.tolerance + 0.2)
 
         aligned = math.hypot(error_x, error_y) <= cfg.tolerance
         self._aligned_streak = self._aligned_streak + 1 if aligned else 0
