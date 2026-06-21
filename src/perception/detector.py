@@ -300,8 +300,8 @@ class AluminiumCanDetector:
             # point IBVS centering aligns to the sweet spot.
             bx, by = det.base_center
             cv2.circle(frame, (bx, by), 6, (0, 0, 255), -1)
-            # Label
-            label = f"Aluminium Can {det.confidence:.2f}"
+            # Label (with box-height % of the frame — helps tune the too_close guard)
+            label = f"Can {det.confidence:.2f}  h{det.height / frame.shape[0]:.0%}"
             cv2.putText(frame, label, (det.x1, det.y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             # Coordinates of the tracked ground point

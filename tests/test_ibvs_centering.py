@@ -198,8 +198,8 @@ HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]      # rest pose (== grasp_planner.HO
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
 GRIPPER_OPEN = 120.0      # CH6 open: before the grab, and to release at the bin
 GRIPPER_CLOSE = 100.0     # CH6 closed on the tin (at the grasp pose)
-GRASP_STEP_DEG = 10.0     # no servo moves more than this per step (gentle, no slamming)
-GRASP_STEP_DELAY = 0.08   # seconds between steps -> slow, intermittent motion
+GRASP_STEP_DEG = 5.0      # max degrees any servo moves per step (smaller = slower/smoother)
+GRASP_STEP_DELAY = 0.15   # seconds paused between steps (bigger = slower)
 
 
 class _ArmController:

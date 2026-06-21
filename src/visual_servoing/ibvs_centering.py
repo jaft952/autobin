@@ -102,9 +102,10 @@ class CenteringConfig:
     # How many consecutive missed frames before declaring the tin lost.
     lost_after: int = 10
     # "Too close" guard: when the tin's box height reaches this fraction of the
-    # frame, it (nearly) fills the view — its base has left the frame so the base
-    # point saturates and can't signal "too close" — so force a BACKWARD move.
-    too_close_box_height: float = 0.85
+    # frame it (nearly) fills the view, so force a BACKWARD move. Keep this ABOVE
+    # the box height seen at grasp distance, or it steals the CATCH zone (watch the
+    # "h NN%" label in --live). Set to 1.0 to disable the guard entirely.
+    too_close_box_height: float = 0.95
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "CenteringConfig":
