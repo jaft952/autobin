@@ -85,8 +85,9 @@ class CenteringConfig:
     # tests/test_ibvs_centering.py --live, then divide by frame size.
     target_x: float = 0.5
     target_y: float = 0.5
-    # Normalized radius around the sweet spot that still counts as "centered".
-    tolerance: float = 0.08
+    # Normalized radius around the sweet spot that still counts as "centered"
+    # (smaller = must be more precisely aligned before CATCH). Tunable in the yaml.
+    tolerance: float = 0.05
     # Camera mounting: top of image = robot forward (+1). Use -1 if mounted
     # rotated 180°; swap left/right with mirror_x = -1.
     image_y_is_backward: int = 1     # +1: larger pixel y = closer to robot
