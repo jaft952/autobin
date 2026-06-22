@@ -254,7 +254,7 @@ ai/models/subsystem2/experiments/
 *.pt
 
 *.yaml.cache
-
+ai/data/datasets/
 ai/data/datasets/raw/images/
 ai/data/datasets/yolo_format/images/
 ai/data/datasets/yolo_format/labels/

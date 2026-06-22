@@ -1,38 +1,3 @@
-"""
-src/visual_servoing/ibvs_centering.py
-
-IBVS Stage 1 — Chassis Centering (placeholder until chassis control is merged).
-
-Pipeline position:
-    [THIS] IBVS centering: drive the CHASSIS until the tin sits in the camera's
-           "grasp sweet spot" (the image region where the arm grasps comfortably).
-    [NEXT] closed_loop_servo.py: fine ARM servoing (IK + pixel feedback) + grasp.
-
-Camera geometry assumption: the camera is mounted high (tall wheels) looking
-STRAIGHT DOWN, so image coordinates map approximately linearly to ground
-positions around the robot. By default the TOP of the image is the robot's
-FORWARD direction — if your camera is mounted rotated, set the flip flags in
-CenteringConfig instead of editing the logic.
-
-Chassis movement belongs to a teammate (not merged yet), so this module does
-NOT drive any motors. It only classifies "is the tin in the sweet spot?" and
-emits a movement SUGGESTION (discrete ChassisMove + a continuous
-(forward, steer) vector in the same convention as subsumption ActionCommand
-motion vectors) for the chassis layer to consume later.
-
-Usage:
-    from src.perception.detector import AluminiumCanDetector
-    from src.visual_servoing.ibvs_centering import IBVSCentering
-
-    detector = AluminiumCanDetector(...)
-    centering = IBVSCentering()
-    while True:
-        status = centering.update(detector.detect())
-        print(status.message)
-        if status.stable:
-            break   # hand over to ClosedLoopServo for the arm approach
-"""
-
 from __future__ import annotations
 import enum
 import math
@@ -42,12 +7,9 @@ from typing import Optional, Tuple
 
 from src.perception.detector import DetectionResult
 
-# Sweet-spot calibration is saved here by calibrate_sweet_spot.py and loaded by
-# CenteringConfig.load(). See src/visual_servoing/config/centering_config.yaml.
 CENTERING_CONFIG_PATH = Path(__file__).parent / "config" / "centering_config.yaml"
 
 
-# ── Output types ─────────────────────────────────────────────────────────────
 
 class ChassisMove(enum.Enum):
     """Discrete movement suggestion for the (future) chassis layer."""
@@ -80,20 +42,15 @@ class CenteringStatus:
 
 @dataclass
 class CenteringConfig:
-    # Sweet spot center, normalized image coords (0..1). Calibrate by placing a
-    # tin at the arm's comfortable grasp point and reading its pixel center with
-    # tests/test_ibvs_centering.py --live, then divide by frame size.
+
     target_x: float = 0.5
     target_y: float = 0.5
-    # Normalized radius around the sweet spot that still counts as "centered"
-    # (smaller = must be more precisely aligned before CATCH). Tunable in the yaml.
+
     tolerance: float = 0.05
-    # Camera mounting: top of image = robot forward (+1). Use -1 if mounted
-    # rotated 180°; swap left/right with mirror_x = -1.
+
     image_y_is_backward: int = 1     # +1: larger pixel y = closer to robot
     mirror_x: int = 1                # -1 if the image is mirrored left/right
-    # Suggestion gains: normalized error -> (forward, steer) magnitudes (unitless,
-    # 0..~1, the chassis layer decides what they mean physically).
+
     gain_forward: float = 1.0
     gain_steer: float = 1.0
     # Exponential smoothing of the detected center (0 = no smoothing, 0.6 = heavy).
@@ -102,22 +59,11 @@ class CenteringConfig:
     stable_frames: int = 5
     # How many consecutive missed frames before declaring the tin lost.
     lost_after: int = 10
-    # "Too close" guard: when the tin's box height reaches this fraction of the
-    # frame it (nearly) fills the view, so force a BACKWARD move. Keep this ABOVE
-    # the box height seen at grasp distance, or it steals the CATCH zone (watch the
-    # "h NN%" label in --live). Set to 1.0 to disable the guard entirely.
+
     too_close_box_height: float = 0.95
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "CenteringConfig":
-        """Return a config with defaults, overridden by any matching keys found
-        in the YAML at `path` (default: config/centering_config.yaml next to this
-        module). A missing file just yields plain defaults.
-
-        Typically the file only holds target_x / target_y written by
-        calibrate_sweet_spot.py, but any CenteringConfig field is accepted.
-        `yaml` is imported lazily so the offline logic test can import this module
-        without PyYAML installed (it always passes an explicit config)."""
         cfg = cls()
         p = path or CENTERING_CONFIG_PATH
         if p.exists():
@@ -132,14 +78,10 @@ class CenteringConfig:
 # ── Controller ───────────────────────────────────────────────────────────────
 
 class IBVSCentering:
-    """
-    Image-based centering monitor. Feed it DetectionResults every tick;
-    it answers "is the tin where the arm can grasp it?" and, if not,
-    suggests how the chassis should move. Stateless about hardware.
-    """
+
 
     def __init__(self, config: Optional[CenteringConfig] = None):
-        # No explicit config -> pick up the calibrated sweet spot from the YAML.
+
         self.config = config or CenteringConfig.load()
         self._smoothed: Optional[Tuple[float, float]] = None
         self._missed = 0
@@ -170,12 +112,8 @@ class IBVSCentering:
             )
         self._missed = 0
 
-        # Track the tin's GROUND-CONTACT point (bbox bottom-center), not the bbox
-        # center: it is the tin's true floor position, robust to tin height and to
-        # a tall tin's top leaving the frame in the low arm-base camera view. The
-        # sweet spot is calibrated to this same point (the tin's base on the floor).
         bx, by = best.base_center
-        # Smooth the detected point to reject single-frame detection jitter.
+       
         cx, cy = float(bx), float(by)
         if self._smoothed is None:
             self._smoothed = (cx, cy)
@@ -185,14 +123,10 @@ class IBVSCentering:
                               a * self._smoothed[1] + (1 - a) * cy)
         sx, sy = self._smoothed
 
-        # Normalized error from the sweet spot.
-        # error_x: + = tin right of target; error_y: + = tin closer to robot than target.
         error_x = cfg.mirror_x * (sx / detection.frame_width - cfg.target_x)
         error_y = cfg.image_y_is_backward * (sy / detection.frame_height - cfg.target_y)
 
-        # "Too close" guard: a tin filling the frame has its base off-screen, so
-        # the base point saturates at the bottom and can't signal "too close".
-        # Use the box height as an independent cue and force a BACKWARD error.
+        
         box_h_frac = (best.height / detection.frame_height) if detection.frame_height else 0.0
         if box_h_frac >= cfg.too_close_box_height:
             error_y = max(error_y, cfg.tolerance + 0.2)
@@ -203,8 +137,7 @@ class IBVSCentering:
 
         move = self._classify(error_x, error_y, aligned)
 
-        # Continuous suggestion, same shape as ActionCommand.motion_vector
-        # (forward, strafe, steer). Strafe is 0: differential chassis can't strafe.
+  
         if aligned:
             motion = (0.0, 0.0, 0.0)
         else:
@@ -230,9 +163,7 @@ class IBVSCentering:
     # ── helpers ──────────────────────────────────────────────────────────
 
     def _classify(self, error_x: float, error_y: float, aligned: bool) -> ChassisMove:
-        """Map the normalized error to a discrete suggestion. Each axis only
-        contributes if its own component exceeds the (per-axis) tolerance,
-        so a tiny lateral error doesn't cause needless turning."""
+
         if aligned:
             return ChassisMove.HOLD
         tol = self.config.tolerance

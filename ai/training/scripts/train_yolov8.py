@@ -1,20 +1,3 @@
-"""
-YOLOv8 Training Script
-Train YOLOv8 models for the autobin perception stack.
-
-Presets (pick with --preset):
-  can       single-class aluminum can detector (original behavior, default)
-  combined  2-class detector: aluminum_can + gripper, ONE model for closed-loop
-            visual servoing (one inference pass returns both boxes per frame).
-
-Examples:
-  python train_yolov8.py                       # train can detector (yolov8n) on the
-                                               # Roboflow autobin.v1i.yolov8 dataset
-  python train_yolov8.py --epochs 200 --patience 40
-  python train_yolov8.py --model-size s        # bigger/slower model
-  python train_yolov8.py --preset combined     # can + gripper 2-class training
-"""
-
 import argparse
 import os
 
@@ -30,10 +13,10 @@ from pathlib import Path
 # Per-preset configuration. data_yaml paths are relative to this script's folder.
 PRESETS = {
     "can": {
-        "data_yaml": "../../data/datasets/autobin.v1i.yolov8/data.yaml",
-        "run_name": "yolov8n_aluminum_can",
+        "data_yaml": "../../data/datasets/autobinv2.yolov8/data.yaml",
+        "run_name": "yolov8n_aluminum_can_v2",
         "single_cls": True,
-        "production_name": "aluminum_can_detector_best.pt",
+        "production_name": "aluminum_can_detector_v2_best.pt",
     },
     "combined": {
         "data_yaml": "../../data/datasets/yolo_format_combined/data.yaml",
