@@ -1,6 +1,0 @@
-channel 1: base rotation
-channel 2: shoulder
-channel 3: elbow
-channel 4: wrist pitch
-channel 5：wrist rotate
-channel 6: gripper

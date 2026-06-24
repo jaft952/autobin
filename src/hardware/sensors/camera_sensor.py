@@ -24,7 +24,7 @@ class CameraSensor(SensorInterface):
 
     def __init__(
         self,
-        model_path: str = "ai/training/scripts/runs/detect/yolov8s_aluminum_can/weights/best.pt",
+        model_path: str = "src/models/inference_20062026.pt",
         camera_index: int = 0,
         conf_threshold: float = 0.5,
     ):
