@@ -12,6 +12,11 @@ from pathlib import Path
 import cv2
 from ultralytics import YOLO
 
+# Repo-root anchor so the default model path works no matter where this runs from.
+# This file is at ai/training/scripts/subsystem1/ -> parents[4] is the repo root.
+_ROOT = Path(__file__).resolve().parents[4]
+_DEFAULT_MODEL = _ROOT / "ai" / "models" / "subsystem1" / "production" / "inference_20062026.pt"
+
 # ─────────────────────────── logging setup ────────────────────────────────────
 
 def setup_logger() -> logging.Logger:
@@ -45,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="YOLOv8 live detection with logging")
     p.add_argument(
         "--model",
-        default="../src/models/inference_20062026.pt",
+        default=str(_DEFAULT_MODEL),
         help="Path to the .pt model file",
     )
     p.add_argument(
