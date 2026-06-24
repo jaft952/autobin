@@ -90,7 +90,7 @@ def offline():
     sys.exit(0)
 
 
-def live(auto=False):
+def live(auto=False, drive=False):
     import cv2
     from src.perception.detector import AluminiumCanDetector
 
@@ -100,10 +100,15 @@ def live(auto=False):
     detector.start()
     centering = IBVSCentering()      # loads the calibrated sweet spot from the YAML
     arm = _make_arm()                # optional: enables 'c' grab / 'h' home
-    print(f"\nLive centering. grab mode = {'AUTO' if auto else 'MANUAL'}.")
-    print("Keys:  a = toggle auto/manual,  c = grab now,  h = home,  q = quit.")
-    print("(AUTO grabs by itself at CATCH; MANUAL waits for you to press 'c'.)\n")
-    show = True       # auto-disabled below if there's no display 
+    chassis = _make_chassis()        # optional: enables real driving toward the tin
+    driving = drive and chassis is not None   # safety: motion stays OFF until enabled
+    print(f"\nLive centering. grab={'AUTO' if auto else 'MANUAL'}, "
+          f"drive={'ON' if driving else 'OFF'}.")
+    print("Keys:  a = grab auto/manual,  m = drive on/off,  c = grab now,  "
+          "h = home,  q = quit.")
+    print("(drive ON makes the base actually chase the tin and HOLD when centered;\n"
+          " SEARCH rotates in place when no tin is visible.)\n")
+    show = True       # auto-disabled below if there's no display
     armed = True      # auto: re-arms after the can leaves CATCH -> one grab per approach
     result = None     # last YOLO result, reused on the frames we don't infer
     status = None
@@ -119,8 +124,12 @@ def live(auto=False):
                 px = f"center={status.target_px}" if status.target_px else "center=none"
                 print(f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
                       f"move={status.move.value:<14} stable={status.stable}  | {status.message}")
+                if driving:                      # close the loop: actually drive the base
+                    chassis.apply(status.move)   # HOLD (aligned) stops; SEARCH rotates to scan
                 if auto and arm is not None:     # auto-grab once when centered
                     if status.stable and armed:
+                        if driving:
+                            chassis.stop()       # make sure the base is still before grabbing
                         print("[auto] CATCH -> grabbing")
                         arm.grasp()
                         armed = False
@@ -131,9 +140,10 @@ def live(auto=False):
                 continue
             annotated = detector.get_annotated_frame(result) if result is not None else frame
             if status is not None:
-                _draw_action_overlay(annotated, status, arm is not None, auto)
+                _draw_action_overlay(annotated, status, arm is not None, auto,
+                                     driving if chassis is not None else None)
             try:
-                cv2.imshow("IBVS centering  (a=auto/manual  c=grab  h=home  q=quit)", annotated)
+                cv2.imshow("IBVS centering  (a=auto/manual  m=drive  c=grab  h=home  q=quit)", annotated)
                 key = cv2.waitKey(1) & 0xFF
             except cv2.error:
                 print("[!] no display available — continuing text-only "
@@ -146,6 +156,11 @@ def live(auto=False):
                 auto = not auto
                 armed = True
                 print(f"[mode] grab = {'AUTO' if auto else 'MANUAL'}")
+            if key == ord("m") and chassis is not None:
+                driving = not driving
+                if not driving:
+                    chassis.stop()
+                print(f"[mode] drive = {'ON' if driving else 'OFF'}")
             if key == ord("c") and arm is not None:
                 arm.grasp()
             if key == ord("h") and arm is not None:
@@ -154,6 +169,8 @@ def live(auto=False):
         print("\nstopped.")
     finally:
         detector.stop()
+        if chassis is not None:
+            chassis.close()
         cv2.destroyAllWindows()
 
 
@@ -236,7 +253,22 @@ def _make_arm():
         return None
 
 
-def _draw_action_overlay(frame, status, can_grab, auto=False):
+def _make_chassis():
+    """Build the chassis controller that actually drives the base toward the tin.
+
+    Returns None if the motion stack can't be brought up, so the loop keeps
+    running as a pure suggestion display (old behaviour)."""
+    try:
+        from src.visual_servoing.chassis_controller import ChassisController
+        chassis = ChassisController()
+        print("[drive] chassis ready — press 'm' to toggle motion on/off.")
+        return chassis
+    except Exception as exc:
+        print(f"[drive] chassis not available ({exc}); motion disabled.")
+        return None
+
+
+def _draw_action_overlay(frame, status, can_grab, auto=False, driving=None):
     import cv2
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -245,6 +277,12 @@ def _draw_action_overlay(frame, status, can_grab, auto=False):
     mcol = (0, 220, 0) if auto else (0, 165, 255)
     cv2.putText(frame, f"grab:{mode} (a=toggle)", (fw - 300, 32), font, 0.6, (0, 0, 0), 4)
     cv2.putText(frame, f"grab:{mode} (a=toggle)", (fw - 300, 32), font, 0.6, mcol, 1)
+
+    if driving is not None:   # None = no chassis available -> hide the badge
+        dmode = "ON" if driving else "OFF"
+        dcol = (0, 220, 0) if driving else (0, 165, 255)
+        cv2.putText(frame, f"drive:{dmode} (m=toggle)", (fw - 300, 58), font, 0.6, (0, 0, 0), 4)
+        cv2.putText(frame, f"drive:{dmode} (m=toggle)", (fw - 300, 58), font, 0.6, dcol, 1)
 
     action = _action_label(status)
     color = (0, 255, 0) if status.stable else (0, 165, 255)
@@ -256,7 +294,7 @@ def _draw_action_overlay(frame, status, can_grab, auto=False):
         cv2.putText(frame, cue, (20, fh - 72), font, 0.7, (0, 255, 0), 2)
 
 
-def sim(auto=False):
+def sim(auto=False, drive=False):
     import cv2
     from src.perception.detector import open_camera_capture
 
@@ -264,6 +302,8 @@ def sim(auto=False):
     print(f"✓ Camera opened: {fw}x{fh} @ {fps:.0f}FPS  (SIM — fake tin, no YOLO)")
     centering = IBVSCentering()  # loads the calibrated sweet spot from the YAML
     arm = _make_arm()            # optional: enables 'c' grab / 'h' home
+    chassis = _make_chassis()    # optional: drive the base from the fake tin (bench test)
+    driving = drive and chassis is not None
     armed = True                 # auto: one grab per approach (re-arms when not stable)
     ASPECT = 0.38            # width / height of an upright tin
     H_FAR, H_NEAR = 90, 280  # tin height in px when far (top) vs near (bottom)
@@ -303,8 +343,12 @@ def sim(auto=False):
             box = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=0.99)
             result = DetectionResult(detections=[box], frame_width=fw, frame_height=fh)
             status = centering.update(result)
+            if driving:                      # close the loop: actually drive the base
+                chassis.apply(status.move)   # HOLD (aligned) stops; SEARCH rotates to scan
             if auto and arm is not None:     # auto-grab once when centered
                 if status.stable and armed:
+                    if driving:
+                        chassis.stop()       # make sure the base is still before grabbing
                     print("[auto] CATCH -> grabbing")
                     arm.grasp()
                     armed = False
@@ -325,7 +369,8 @@ def sim(auto=False):
                         font, 0.45, (210, 210, 210), 1)
 
             # Suggested action + grab-mode badge + cue.
-            _draw_action_overlay(frame, status, arm is not None, auto)
+            _draw_action_overlay(frame, status, arm is not None, auto,
+                                 driving if chassis is not None else None)
 
             cv2.imshow(win, frame)
             key = cv2.waitKey(1) & 0xFF
@@ -335,6 +380,11 @@ def sim(auto=False):
                 auto = not auto
                 armed = True
                 print(f"[mode] grab = {'AUTO' if auto else 'MANUAL'}")
+            if key == ord("m") and chassis is not None:
+                driving = not driving
+                if not driving:
+                    chassis.stop()
+                print(f"[mode] drive = {'ON' if driving else 'OFF'}")
             if key == ord("c") and arm is not None:
                 arm.grasp()
             if key == ord("h") and arm is not None:
@@ -343,14 +393,17 @@ def sim(auto=False):
         print("\nstopped.")
     finally:
         cap.release()
+        if chassis is not None:
+            chassis.close()
         cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    auto = "--auto" in sys.argv     # start in auto-grab mode (toggle live with 'a')
+    auto = "--auto" in sys.argv      # start in auto-grab mode (toggle live with 'a')
+    drive = "--drive" in sys.argv    # start with chassis motion ON (toggle live with 'm')
     if "--live" in sys.argv:
-        live(auto)
+        live(auto, drive)
     elif "--sim" in sys.argv:
-        sim(auto)
+        sim(auto, drive)
     else:
         offline()

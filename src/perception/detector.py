@@ -180,10 +180,7 @@ class AluminiumCanDetector:
         detector.stop()
     """
 
-    # Promoted "production" copy of the trained weights. NOTE: .pt files are
-    # git-ignored, so this 22 MB file must be copied to the Pi manually (it does
-    # not arrive via `git pull`). See the README / deploy notes.
-    DEFAULT_MODEL_PATH = "ai/models/subsystem2/production/aluminum_can_detector_best.pt"
+    DEFAULT_MODEL_PATH = "src/models/inference_20062026.pt"
 
     def __init__(
         self,
