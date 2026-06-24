@@ -17,9 +17,14 @@ Commands (type, then Enter):
   q            quit (servos left where they are)
 
 Run:  python tests/servo_jog.py
+
+Note: each move is SLOW/stepped (same gentle speed as the grasp in
+test_ibvs_centering.py), not an instant jump — tune STEP_DEG / STEP_DELAY below.
 """
+import math
 import os
 import sys
+import time
 from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,6 +44,11 @@ except Exception as e:  # pragma: no cover
 NEUTRAL = [SERVO_NEUTRAL_CMD[i] for i in range(1, 7)]  # CH1-5 arm, CH6 gripper
 POSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_poses.txt")
 
+# Slow, stepped servo motion — same speed as the grasp in tests/test_ibvs_centering.py
+# (GRASP_STEP_DEG / GRASP_STEP_DELAY). Keep these in sync if you retune the grasp.
+STEP_DEG = 5.0      # max degrees a servo moves per step (smaller = slower/smoother)
+STEP_DELAY = 0.15   # seconds paused between steps (bigger = slower)
+
 
 def main():
     act = ArmActuator()
@@ -47,8 +57,14 @@ def main():
     step = 5.0
 
     def apply(i, val):
+        """Move CH(i+1) to val SLOWLY — in <= STEP_DEG steps with a pause between
+        each, the same gentle speed as the grasp (instead of jumping instantly)."""
         val = max(0.0, min(270.0, float(val)))
-        act.kit.servo[i].angle = val
+        start = angles[i]
+        steps = max(1, int(math.ceil(abs(val - start) / STEP_DEG)))
+        for k in range(1, steps + 1):
+            act.kit.servo[i].angle = start + (val - start) * k / steps
+            time.sleep(STEP_DELAY)
         angles[i] = val
         print(f"  CH{i + 1} = {val:.1f}°")
 

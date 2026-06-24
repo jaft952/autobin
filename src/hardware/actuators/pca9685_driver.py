@@ -18,7 +18,7 @@ except ImportError:
     class DummyServo:
         def __init__(self):
             self.angle = 90
-            self.actuation_range = 180
+            self.actuation_range = SERVO_RANGE_DEG
 
         def set_pulse_width_range(self, min_pulse, max_pulse):
             self._pulse = (min_pulse, max_pulse)
