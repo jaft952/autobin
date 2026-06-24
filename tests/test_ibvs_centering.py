@@ -1,26 +1,6 @@
-"""
-Verification for IBVS Stage-1 chassis centering (src/visual_servoing/ibvs_centering.py).
-
-Two modes:
-  python tests/test_ibvs_centering.py
-      OFFLINE logic checks with synthetic detections — no camera, no YOLO model,
-      runs anywhere. Exit code 0 = all passed.
-
-  python tests/test_ibvs_centering.py --live
-      LIVE mode on the Pi: camera + YOLO (CPU). Shows the annotated video with the
-      suggested action (FORWARD / BACKWARD / LEFT / RIGHT / CATCH ...) bottom-left.
-      The action is only a SUGGESTION — grasping is MANUAL: press 'c' to grab,
-      'h' to home, 'q' to quit. (Needs the arm/servos for c/h; vision still runs
-      without them.)
-
-  python tests/test_ibvs_centering.py --sim
-      SIM mode on the Pi: real camera feed but NO YOLO. You place a fake "upright
-      tin" with the mouse (click or drag) and it STAYS PUT, like a real tin on the
-      floor — nothing drifts on its own. Same action overlay + manual grab as live
-      (c = grab, h = home, q = quit) — a safe way to test the grasp without YOLO.
-"""
 import os
 import sys
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -110,22 +90,21 @@ def offline():
     sys.exit(0)
 
 
-def live():
+def live(auto=False):
     import cv2
     from src.perception.detector import AluminiumCanDetector
 
-    # Pi 4 CPU perf: infer at a small image size, and run YOLO only every Nth
-    # frame while showing the camera every frame — keeps the preview smooth and
-    # keys responsive even though inference itself is slow. Tune if needed.
     IMGSZ = 640
     INFER_EVERY = 3
     detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ)  # Pi has no CUDA
     detector.start()
     centering = IBVSCentering()      # loads the calibrated sweet spot from the YAML
     arm = _make_arm()                # optional: enables 'c' grab / 'h' home
-    print("\nLive centering. In the video window:  c = grab,  h = home,  q = quit.")
-    print("(The action shown is only a SUGGESTION — YOU decide when to press 'c'.)\n")
-    show = True       # auto-disabled below if there's no display (headless SSH)
+    print(f"\nLive centering. grab mode = {'AUTO' if auto else 'MANUAL'}.")
+    print("Keys:  a = toggle auto/manual,  c = grab now,  h = home,  q = quit.")
+    print("(AUTO grabs by itself at CATCH; MANUAL waits for you to press 'c'.)\n")
+    show = True       # auto-disabled below if there's no display 
+    armed = True      # auto: re-arms after the can leaves CATCH -> one grab per approach
     result = None     # last YOLO result, reused on the frames we don't infer
     status = None
     i = 0
@@ -140,14 +119,21 @@ def live():
                 px = f"center={status.target_px}" if status.target_px else "center=none"
                 print(f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
                       f"move={status.move.value:<14} stable={status.stable}  | {status.message}")
+                if auto and arm is not None:     # auto-grab once when centered
+                    if status.stable and armed:
+                        print("[auto] CATCH -> grabbing")
+                        arm.grasp()
+                        armed = False
+                    elif not status.stable:
+                        armed = True
             i += 1
             if not show:
                 continue
             annotated = detector.get_annotated_frame(result) if result is not None else frame
             if status is not None:
-                _draw_action_overlay(annotated, status, arm is not None)
+                _draw_action_overlay(annotated, status, arm is not None, auto)
             try:
-                cv2.imshow("IBVS centering  (c=grab  h=home  q=quit)", annotated)
+                cv2.imshow("IBVS centering  (a=auto/manual  c=grab  h=home  q=quit)", annotated)
                 key = cv2.waitKey(1) & 0xFF
             except cv2.error:
                 print("[!] no display available — continuing text-only "
@@ -156,6 +142,10 @@ def live():
                 continue
             if key == ord("q"):
                 break
+            if key == ord("a"):
+                auto = not auto
+                armed = True
+                print(f"[mode] grab = {'AUTO' if auto else 'MANUAL'}")
             if key == ord("c") and arm is not None:
                 arm.grasp()
             if key == ord("h") and arm is not None:
@@ -186,29 +176,18 @@ def _action_label(status) -> str:
     return words.get(status.move, status.move.value.upper())
 
 
-# ── Manual grasp (CH1-5 arm + CH6 gripper), triggered by 'c' in --live / --sim ──
-# "sweet point 3" — a hand-tuned grasp pose: CH1..CH5 arm angles, then gripper(CH6).
-GRASP_ARM = [103.0, 145.0, 75.0, 168.0, 90.0]   # arm angles at the grasp point
-BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]      # arm pose over the bin (== grasp_planner.BIN_DROP_ANGLES)
-HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]      # rest pose (== grasp_planner.HOME_ANGLES)
-# "Straight up" transit pose, used before/after big moves so the arm doesn't drag
-# or sweep low. These are the upright/neutral angles from kinematics.py
-# (SERVO_NEUTRAL_CMD indices 1-5; its gripper value 80 is ignored here — gripper
-# state is managed per phase in grasp()).
+
+GRASP_ARM = [103.0, 145.0, 75.0, 168.0, 90.0]   
+BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]      
+HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]      
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
-GRIPPER_OPEN = 120.0      # CH6 open: before the grab, and to release at the bin
-GRIPPER_CLOSE = 80.0     # CH6 closed on the tin (at the grasp pose)
-GRASP_STEP_DEG = 5.0      # max degrees any servo moves per step (smaller = slower/smoother)
-GRASP_STEP_DELAY = 0.15   # seconds paused between steps (bigger = slower)
+GRIPPER_OPEN = 120.0     
+GRIPPER_CLOSE = 80.0     
+GRASP_STEP_DEG = 5.0      # max degrees any servo moves per step 
+GRASP_STEP_DELAY = 0.15   # seconds paused between steps 
 
 
 class _ArmController:
-    """Gentle manual arm control for the test. Moves servos to a target pose in
-    small steps (<= GRASP_STEP_DEG each, pausing between) so nothing slams.
-
-    Tracks the last-commanded pose in software and ASSUMES the arm starts at HOME,
-    so have the arm at its home pose before launching — otherwise the first move
-    may be bigger than one step."""
 
     def __init__(self):
         from src.hardware.actuators.pca9685_driver import ArmActuator
@@ -217,9 +196,6 @@ class _ArmController:
         self.gripper = GRIPPER_OPEN    # assumed current gripper
 
     def move_to(self, target_arm, target_gripper, label=""):
-        """Interpolate from the current pose to the target so no single servo
-        jumps more than GRASP_STEP_DEG per step."""
-        import time
         start_arm, start_grip = list(self.arm), self.gripper
         deltas = [abs(t - s) for t, s in zip(target_arm, start_arm)]
         deltas.append(abs(target_gripper - start_grip))
@@ -235,9 +211,6 @@ class _ArmController:
         self.arm, self.gripper = list(target_arm), float(target_gripper)
 
     def grasp(self):
-        """Full gentle pick-and-place, all moves in <= GRASP_STEP_DEG steps.
-        Raises to the upright transit pose (LIFT_ARM) before descending, before
-        swinging to the bin, and after releasing, so the arm never drags low."""
         print("[grasp] pick-and-place...")
         self.move_to(LIFT_ARM, GRIPPER_OPEN, "raise upright (ready)")
         self.move_to(GRASP_ARM, GRIPPER_OPEN, "descend (gripper open)")
@@ -254,8 +227,6 @@ class _ArmController:
 
 
 def _make_arm():
-    """Best-effort create the arm controller; return None (and explain) if the
-    arm/servo hardware isn't available, so vision still runs without it."""
     try:
         arm = _ArmController()
         print("[grasp] arm ready — press 'c' to grab, 'h' to home.")
@@ -265,26 +236,27 @@ def _make_arm():
         return None
 
 
-def _draw_action_overlay(frame, status, can_grab):
-    """Draw the suggested action bottom-left; cue the manual grab when stable."""
+def _draw_action_overlay(frame, status, can_grab, auto=False):
     import cv2
-    fh = frame.shape[0]
+    fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
+
+    mode = "AUTO" if auto else "MANUAL"
+    mcol = (0, 220, 0) if auto else (0, 165, 255)
+    cv2.putText(frame, f"grab:{mode} (a=toggle)", (fw - 300, 32), font, 0.6, (0, 0, 0), 4)
+    cv2.putText(frame, f"grab:{mode} (a=toggle)", (fw - 300, 32), font, 0.6, mcol, 1)
+
     action = _action_label(status)
     color = (0, 255, 0) if status.stable else (0, 165, 255)
     cv2.putText(frame, action, (20, fh - 25), font, 1.2, (0, 0, 0), 6)
     cv2.putText(frame, action, (20, fh - 25), font, 1.2, color, 2)
     if status.stable and can_grab:
-        cue = "press 'c' to grab"
+        cue = "AUTO grabbing..." if auto else "press 'c' to grab"
         cv2.putText(frame, cue, (20, fh - 72), font, 0.7, (0, 0, 0), 4)
         cv2.putText(frame, cue, (20, fh - 72), font, 0.7, (0, 255, 0), 2)
 
 
-def sim():
-    """Real camera feed, FAKE detection (no YOLO). You place a simulated upright
-    tin with the mouse (click or drag) and it STAYS PUT — like a real tin sitting
-    on the floor. The suggested chassis action is drawn bottom-left, relative to
-    the calibrated sweet spot. Run on the Pi desktop (needs a display)."""
+def sim(auto=False):
     import cv2
     from src.perception.detector import open_camera_capture
 
@@ -292,15 +264,11 @@ def sim():
     print(f"✓ Camera opened: {fw}x{fh} @ {fps:.0f}FPS  (SIM — fake tin, no YOLO)")
     centering = IBVSCentering()  # loads the calibrated sweet spot from the YAML
     arm = _make_arm()            # optional: enables 'c' grab / 'h' home
-    # Simulated upright tin. Its size scales with depth: lower in the frame =
-    # closer to the robot = bigger (near=big, far=small). Size is purely cosmetic
-    # — centering tracks the base point, which is size-independent.
+    armed = True                 # auto: one grab per approach (re-arms when not stable)
     ASPECT = 0.38            # width / height of an upright tin
     H_FAR, H_NEAR = 90, 280  # tin height in px when far (top) vs near (bottom)
     lo_y, hi_y = fh * 0.12, fh - 3.0
 
-    # The tin's base point (where it meets the floor). A real tin doesn't move on
-    # its own — you reposition it with the mouse and it stays there.
     pos = {"bx": fw / 2.0, "by": (lo_y + hi_y) / 2.0}
 
     def on_mouse(event, x, y, flags, param):
@@ -325,7 +293,7 @@ def sim():
 
             bx, by = pos["bx"], pos["by"]
             # Size from depth: lower in the frame (larger by) = nearer = bigger.
-            t = (by - lo_y) / (hi_y - lo_y)          # 0 at top/far .. 1 at bottom/near
+            t = (by - lo_y) / (hi_y - lo_y)          # 0 at top/far, 1 at bottom/near
             th = int(H_FAR + t * (H_NEAR - H_FAR))
             tw = int(th * ASPECT)
             bx = min(max(bx, tw / 2.0), fw - tw / 2.0)
@@ -335,6 +303,13 @@ def sim():
             box = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=0.99)
             result = DetectionResult(detections=[box], frame_width=fw, frame_height=fh)
             status = centering.update(result)
+            if auto and arm is not None:     # auto-grab once when centered
+                if status.stable and armed:
+                    print("[auto] CATCH -> grabbing")
+                    arm.grasp()
+                    armed = False
+                elif not status.stable:
+                    armed = True
 
             # Sweet spot (target) from the loaded config — yellow cross.
             tx = int(centering.config.target_x * fw)
@@ -349,13 +324,17 @@ def sim():
             cv2.putText(frame, "click/drag to move", (x1, min(y2 + 20, fh - 8)),
                         font, 0.45, (210, 210, 210), 1)
 
-            # Suggested action + manual-grab cue, bottom-left.
-            _draw_action_overlay(frame, status, arm is not None)
+            # Suggested action + grab-mode badge + cue.
+            _draw_action_overlay(frame, status, arm is not None, auto)
 
             cv2.imshow(win, frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            if key == ord("a"):
+                auto = not auto
+                armed = True
+                print(f"[mode] grab = {'AUTO' if auto else 'MANUAL'}")
             if key == ord("c") and arm is not None:
                 arm.grasp()
             if key == ord("h") and arm is not None:
@@ -368,9 +347,10 @@ def sim():
 
 
 if __name__ == "__main__":
+    auto = "--auto" in sys.argv     # start in auto-grab mode (toggle live with 'a')
     if "--live" in sys.argv:
-        live()
+        live(auto)
     elif "--sim" in sys.argv:
-        sim()
+        sim(auto)
     else:
         offline()
