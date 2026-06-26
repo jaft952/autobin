@@ -59,17 +59,16 @@ def main():
     step = 5.0
 
     def apply(i, val):
-        """Move CH(i+1) to val. CH1-5 ease SLOWLY (<= STEP_DEG per step, the same
-        gentle speed as the grasp); CH6 (gripper) snaps instantly."""
+        """Move CH(i+1) to val SLOWLY — in <= STEP_DEG steps with a pause between
+        each (gentle, small current draw), the same speed as the grasp. ALL
+        channels are stepped, including CH6: an instant gripper move spikes the
+        current and can brown out the shared 6V rail -> whole-arm twitch."""
         val = max(0.0, min(270.0, float(val)))
-        if i == 5:                       # CH6 gripper — no easing, snap it
-            act.kit.servo[i].angle = val
-        else:
-            start = angles[i]
-            steps = max(1, int(math.ceil(abs(val - start) / STEP_DEG)))
-            for k in range(1, steps + 1):
-                act.kit.servo[i].angle = start + (val - start) * k / steps
-                time.sleep(STEP_DELAY)
+        start = angles[i]
+        steps = max(1, int(math.ceil(abs(val - start) / STEP_DEG)))
+        for k in range(1, steps + 1):
+            act.kit.servo[i].angle = start + (val - start) * k / steps
+            time.sleep(STEP_DELAY)
         angles[i] = val
         print(f"  CH{i + 1} = {val:.1f}°")
 
