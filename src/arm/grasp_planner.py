@@ -8,16 +8,14 @@ HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]
 BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]    
 GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]  
 
-GRIPPER_OPEN = 120.0
-GRIPPER_CLOSED = 40.0
-GRIPPER_NEUTRAL = 80.0
-GRIPPER_GRASP = 30.0     # tighter close used at the sweet-point grasp pose
+GRIPPER_OPEN = 0.0       # jaws open / rest position
+GRIPPER_CLOSED = 30.0    # jaws closed on the can (also the grasp/hold position)
 
 # Registry so the test tooling can jog to a full pose (arm + gripper) by name.
 NAMED_POSES = {
     "home":   (HOME_ANGLES, GRIPPER_OPEN),
     "bin":    (BIN_DROP_ANGLES, GRIPPER_OPEN),
-    "sweet1": (GRAB_ANGLES, GRIPPER_GRASP),
+    "sweet1": (GRAB_ANGLES, GRIPPER_CLOSED),
 }
 
 class GraspPlanner:
@@ -105,18 +103,14 @@ class GraspPlanner:
         return True
 
     def control_gripper(self, action: str):
-        """
-        Separated gripper logic: open, close, stow (commands for actuation_range=180).
-        """
-        if action == "open":
-            print("[GraspPlanner] Opening Gripper...")
-            self.actuator.set_gripper_angle(GRIPPER_OPEN)
-        elif action == "close":
+        """Separated gripper logic. 'close' closes on the can; 'open'/'neutral'/'stow'
+        all open the jaws (same position on this gripper)."""
+        if action == "close":
             print("[GraspPlanner] Closing Gripper...")
             self.actuator.set_gripper_angle(GRIPPER_CLOSED)
-        elif action == "neutral" or action == "stow":
-            print("[GraspPlanner] Gripper to Neutral...")
-            self.actuator.set_gripper_angle(GRIPPER_NEUTRAL)
+        elif action in ("open", "neutral", "stow"):
+            print("[GraspPlanner] Opening Gripper...")
+            self.actuator.set_gripper_angle(GRIPPER_OPEN)
 
 
 # If the module is run independently, execute a test script 

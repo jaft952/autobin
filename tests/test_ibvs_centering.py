@@ -198,8 +198,11 @@ GRASP_ARM = [103.0, 145.0, 75.0, 168.0, 90.0]
 BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]      
 HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]      
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
-GRIPPER_OPEN = 120.0     
-GRIPPER_CLOSE = 80.0     
+# Ordered descend-to-grasp: each (CH index, angle) moves ONE joint at a time, in
+# THIS exact order — the hand-tuned path to the can. The lift retraces it reversed.
+GRASP_SEQUENCE = [(0, 103.0), (2, 20.0), (3, 30.0), (1, 180.0), (2, 35.0)]
+GRIPPER_OPEN = 0.0
+GRIPPER_CLOSE = 30.0
 GRASP_STEP_DEG = 5.0      # max degrees any servo moves per step 
 GRASP_STEP_DELAY = 0.15   # seconds paused between steps 
 
@@ -229,13 +232,27 @@ class _ArmController:
 
     def grasp(self):
         print("[grasp] pick-and-place...")
-        self.move_to(LIFT_ARM, GRIPPER_OPEN, "raise upright (ready)")
-        self.move_to(GRASP_ARM, GRIPPER_OPEN, "descend (gripper open)")
-        self.move_to(GRASP_ARM, GRIPPER_CLOSE, "close on tin")
-        self.move_to(LIFT_ARM, GRIPPER_CLOSE, "raise upright (carry)")
-        self.move_to(BIN_ARM, GRIPPER_CLOSE, "move to bin (holding)")
+        # 1. open the gripper before descending
+        self.move_to(LIFT_ARM, GRIPPER_OPEN, "ready pose")
+        self.move_to(self.arm, GRIPPER_OPEN, "open gripper")
+        # 2. descend to the can ONE joint at a time (tuned order); remember each
+        #    joint's previous value so we can retrace the exact path back up.
+        undo = []
+        for ch, ang in GRASP_SEQUENCE:
+            undo.append((ch, self.arm[ch]))
+            target = list(self.arm)
+            target[ch] = ang
+            self.move_to(target, self.gripper, f"descend CH{ch + 1} -> {ang:.0f}")
+        # 3. close on the can
+        self.move_to(self.arm, GRIPPER_CLOSE, "close on can")
+        # 4. lift the can out by retracing the descent in reverse (same safe path)
+        for ch, prev in reversed(undo):
+            target = list(self.arm)
+            target[ch] = prev
+            self.move_to(target, self.gripper, f"lift CH{ch + 1} -> {prev:.0f}")
+        # 5. carry to the bin and release
+        self.move_to(BIN_ARM, self.gripper, "move to bin (holding)")
         self.move_to(BIN_ARM, GRIPPER_OPEN, "release into bin")
-        self.move_to(LIFT_ARM, GRIPPER_OPEN, "raise upright (done)")
         print("[grasp] done. press 'h' to return home.")
 
     def home(self):
