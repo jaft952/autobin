@@ -180,7 +180,7 @@ class AluminiumCanDetector:
         detector.stop()
     """
 
-    DEFAULT_MODEL_PATH = "src/models/inference_20062026.pt"
+    DEFAULT_MODEL_PATH = "src/models/best.pt"
 
     def __init__(
         self,
