@@ -8,7 +8,9 @@ the SAME as the real system — the angles you read here are directly usable in
 GraspPlanner.set_arm_angles().
 
 Commands (type, then Enter):
-  2 160        set CH2 to 160°   (channel 1-6, angle 0-270; gripper CH6 0-270)
+  2 160        set CH2 to 160°   (channel 1-16, angle 0-270) — e.g. move the
+               gripper plug to a spare channel to test if a fault is the servo
+               or the PCA9685 channel
   +2 / -2      nudge the LAST-touched channel by +/- step (default 5°)
   step 2       change the nudge step to 2°
   p            PRINT all 6 current angles (and where the model thinks the tip is)
@@ -44,6 +46,7 @@ except Exception as e:  # pragma: no cover
 
 # Neutral commands (actuation_range=180): CH1-5 from the calibrated model-zero, CH6 gripper.
 NEUTRAL = [SERVO_NEUTRAL_CMD[i] for i in range(1, 7)]  # CH1-5 arm, CH6 gripper
+NUM_CH = 16   # PCA9685 has 16 channels — allow jogging any of them (hardware testing)
 POSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_poses.txt")
 
 # Slow, stepped servo motion — same speed as the grasp in tests/test_ibvs_centering.py
@@ -54,7 +57,7 @@ STEP_DELAY = 0.15   # seconds paused between steps (bigger = slower)
 
 def main():
     act = ArmActuator()
-    angles = list(NEUTRAL)
+    angles = list(NEUTRAL) + [90.0] * (NUM_CH - len(NEUTRAL))  # CH7-16 default to mid
     last_ch = 0
     step = 5.0
 
@@ -73,8 +76,8 @@ def main():
         print(f"  CH{i + 1} = {val:.1f}°")
 
     def print_pose():
-        print("\n  current servo angles (CH1-6):")
-        print("   ", [round(a, 1) for a in angles])
+        print("\n  current servo angles (CH1-7):")
+        print("   ", [round(a, 1) for a in angles[:7]])
         print("    arm only (CH1-5):", [round(a, 1) for a in angles[:5]])
         if _kin is not None:
             try:
@@ -132,22 +135,22 @@ def main():
         elif cmd.startswith(("+", "-")) and len(cmd) > 1 and cmd[1:].isdigit():
             # "+2" / "-3": nudge that channel by +/- step
             ch = int(cmd[1:])
-            if 1 <= ch <= 6:
+            if 1 <= ch <= NUM_CH:
                 last_ch = ch - 1
                 delta = step if cmd[0] == "+" else -step
                 apply(last_ch, angles[last_ch] + delta)
             else:
-                print("  channel must be 1-6")
+                print(f"  channel must be 1-{NUM_CH}")
         elif len(parts) == 2 and parts[0].isdigit():
             ch = int(parts[0])
-            if 1 <= ch <= 6:
+            if 1 <= ch <= NUM_CH:
                 try:
                     last_ch = ch - 1
                     apply(last_ch, float(parts[1]))
                 except ValueError:
                     print("  angle must be a number 0-270")
             else:
-                print("  channel must be 1-6")
+                print(f"  channel must be 1-{NUM_CH}")
         else:
             print("  commands: 'CH angle' | '+CH'/'-CH' | 'step N' | p | s name | h | q")
 
