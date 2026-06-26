@@ -31,7 +31,7 @@ import cv2
 from ultralytics import YOLO
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = ROOT / "ai/training/scripts/runs/detect/yolov8n_aluminum_can2/weights/best.pt"
+DEFAULT_MODEL = ROOT / "src/models/best.pt" 
 
 # Per-mode capture / inference settings.
 MODE_SETTINGS = {
@@ -187,7 +187,10 @@ def main():
     model = YOLO(str(model_path))
     # This model was trained with class 0 labeled "item"; show it as "tin" instead.
     # (Cosmetic only — the class id is unchanged, so detection/grasping is unaffected.)
-    model.names = {i: ("tin" if i == 0 else n) for i, n in model.names.items()}
+    # Newer ultralytics makes model.names a read-only property, so mutate the
+    # underlying names dict IN PLACE instead of reassigning model.names.
+    if 0 in model.names:
+        model.names[0] = "tin"
     print(f"Classes       : {model.names}")   # the labels baked into THIS model
     print(f"Conf threshold: {args.conf}")
     print("✓ Model loaded")
