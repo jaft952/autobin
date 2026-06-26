@@ -13,6 +13,8 @@ Commands (type, then Enter):
   step 2       change the nudge step to 2°
   p            PRINT all 6 current angles (and where the model thinks the tip is)
   s name       SAVE current angles to tests/captured_poses.txt under 'name'
+  r            RELEASE all servos — cut PWM so the arm goes LIMP (stops twitching,
+               and won't snap back when servo power returns). Set a channel to re-engage.
   h            home all to neutral (135, gripper 120)
   q            quit (servos left where they are)
 
@@ -103,6 +105,13 @@ def main():
 
         if cmd == "q":
             break
+        elif cmd == "r":
+            # Cut PWM to every channel: duty 0 -> no pulse -> servos go limp.
+            # Stops twitching, and nothing is held so power-cycling won't snap back.
+            for i in range(6):
+                act.kit.servo[i].angle = None
+            print("  RELEASED all servos (no signal — arm is limp). "
+                  "Set any channel to re-engage.")
         elif cmd == "h":
             for i, a in enumerate(NEUTRAL):
                 apply(i, a)
@@ -143,7 +152,7 @@ def main():
         else:
             print("  commands: 'CH angle' | '+CH'/'-CH' | 'step N' | p | s name | h | q")
 
-    print("done (servos left in place).")
+    print("done (servos still holding — press 'r' before 'q' to leave the arm limp).")
 
 
 if __name__ == "__main__":
