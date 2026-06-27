@@ -1,6 +1,6 @@
 ﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN
 from src.arm.analytical_ik import AnalyticalArmIK
-from src.hardware.actuators.pca9685_driver import ArmActuator
+from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
 
 
@@ -30,6 +30,16 @@ class GraspPlanner:
         self.ik = AnalyticalArmIK()           # primary: closed-form solver
         self.kinematics = ArmKinematics()     # backup: numerical ikpy solver
         self.actuator = ArmActuator()         # Grabs hardware connection
+        self._arm = list(HOME_ANGLES)         # assumed current pose (for gentle moves)
+        self._gripper = GRIPPER_OPEN
+
+    def _move_stepped(self, target_arm, target_gripper):
+        """Gently drive CH1-5 (stepped together) + CH6 gripper (instant) to a pose
+        via the shared stepped_move, tracking the new pose for the next call."""
+        start = list(self._arm) + [self._gripper]
+        target = list(target_arm) + [target_gripper]
+        stepped_move(self.actuator, start, target, instant=(5,))
+        self._arm, self._gripper = list(target_arm), float(target_gripper)
 
     def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic"):
         """
@@ -53,8 +63,8 @@ class GraspPlanner:
 
         print("[GraspPlanner] Kinematics Solved! Target Degrees (CH1-5):", servo_angles)
 
-        # Send physical 0~270 angles to actuator
-        self.actuator.set_arm_angles(servo_angles)
+        # Send physical angles to the actuator as a gentle stepped move.
+        self._move_stepped(servo_angles, self._gripper)
         return True
 
     def goto_named_pose(self, name: str):
@@ -66,8 +76,7 @@ class GraspPlanner:
             return False
         arm_angles, gripper = pose
         print(f"[GraspPlanner] Moving to '{name}': arm={arm_angles}, gripper={gripper}")
-        self.actuator.set_arm_angles(arm_angles)
-        self.actuator.set_gripper_angle(gripper)
+        self._move_stepped(arm_angles, gripper)
         self.kinematics.reset_warm_start()
         return True
 
@@ -77,17 +86,14 @@ class GraspPlanner:
         Commands the servos directly (no IK).
         """
         print("[GraspPlanner] Homing to stow pose (servo-level, no IK)...")
-        self.actuator.set_arm_angles(HOME_ANGLES)
-        self.actuator.set_gripper_angle(GRIPPER_OPEN)
+        self._move_stepped(HOME_ANGLES, GRIPPER_OPEN)
         self.kinematics.reset_warm_start()
         return True
 
     def grab(self):
         print("[GraspPlanner] Grabbing at hardcoded grasp pose (no IK)...")
-        self.control_gripper("open")
-        self.actuator.set_arm_angles(GRAB_ANGLES)
+        self._move_stepped(GRAB_ANGLES, GRIPPER_OPEN)
         self.kinematics.reset_warm_start()
-        self.control_gripper("open")
         return True
 
     def dump_to_bin(self):
@@ -97,7 +103,7 @@ class GraspPlanner:
         not an IK target. Capture/update those angles with tests/servo_jog.py.
         """
         print("[GraspPlanner] Moving to bin-drop pose (hardcoded, no IK)...")
-        self.actuator.set_arm_angles(BIN_DROP_ANGLES)
+        self._move_stepped(BIN_DROP_ANGLES, self._gripper)   # carry there, still holding
         self.kinematics.reset_warm_start()
         self.control_gripper("open")  # release the can into the bin
         return True
@@ -107,10 +113,13 @@ class GraspPlanner:
         all open the jaws (same position on this gripper)."""
         if action == "close":
             print("[GraspPlanner] Closing Gripper...")
-            self.actuator.set_gripper_angle(GRIPPER_CLOSED)
+            self._gripper = GRIPPER_CLOSED
         elif action in ("open", "neutral", "stow"):
             print("[GraspPlanner] Opening Gripper...")
-            self.actuator.set_gripper_angle(GRIPPER_OPEN)
+            self._gripper = GRIPPER_OPEN
+        else:
+            return
+        self.actuator.set_gripper_angle(self._gripper)
 
 
 # If the module is run independently, execute a test script 

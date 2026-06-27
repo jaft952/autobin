@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -210,24 +209,19 @@ GRASP_STEP_DELAY = 0.15   # seconds paused between steps
 class _ArmController:
 
     def __init__(self):
-        from src.hardware.actuators.pca9685_driver import ArmActuator
+        from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
         self.actuator = ArmActuator()
+        self._step = stepped_move      # shared gentle-move helper (arm stepped, CH6 snaps)
         self.arm = list(HOME_ARM)      # assumed current arm pose (not commanded here)
         self.gripper = GRIPPER_OPEN    # assumed current gripper
 
     def move_to(self, target_arm, target_gripper, label=""):
-        start_arm = list(self.arm)
-        # The ARM (CH1-5) is stepped; the gripper (CH6) is NOT — it snaps straight
-        # to its target. Step count is sized from the arm joints only.
-        deltas = [abs(t - s) for t, s in zip(target_arm, start_arm)]
-        steps = max(1, int((max(deltas) + GRASP_STEP_DEG - 1e-6) // GRASP_STEP_DEG))
-        print(f"[grasp] {label}: {steps} step(s), <= {GRASP_STEP_DEG:.0f} deg each")
-        self.actuator.set_gripper_angle(target_gripper)   # CH6 snaps (not stepped)
-        for k in range(1, steps + 1):
-            f = k / steps
-            arm = [s + (t - s) * f for s, t in zip(start_arm, target_arm)]
-            self.actuator.set_arm_angles(arm)
-            time.sleep(GRASP_STEP_DELAY)
+        # Arm (CH1-5) steps together; the gripper (CH6) snaps. Shared stepped_move.
+        print(f"[grasp] {label}")
+        start = list(self.arm) + [self.gripper]
+        target = list(target_arm) + [target_gripper]
+        self._step(self.actuator, start, target, GRASP_STEP_DEG, GRASP_STEP_DELAY,
+                   instant=(5,))
         self.arm, self.gripper = list(target_arm), float(target_gripper)
 
     def grasp(self):
