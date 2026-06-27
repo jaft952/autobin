@@ -216,17 +216,17 @@ class _ArmController:
         self.gripper = GRIPPER_OPEN    # assumed current gripper
 
     def move_to(self, target_arm, target_gripper, label=""):
-        start_arm, start_grip = list(self.arm), self.gripper
+        start_arm = list(self.arm)
+        # The ARM (CH1-5) is stepped; the gripper (CH6) is NOT — it snaps straight
+        # to its target. Step count is sized from the arm joints only.
         deltas = [abs(t - s) for t, s in zip(target_arm, start_arm)]
-        deltas.append(abs(target_gripper - start_grip))
         steps = max(1, int((max(deltas) + GRASP_STEP_DEG - 1e-6) // GRASP_STEP_DEG))
         print(f"[grasp] {label}: {steps} step(s), <= {GRASP_STEP_DEG:.0f} deg each")
+        self.actuator.set_gripper_angle(target_gripper)   # CH6 snaps (not stepped)
         for k in range(1, steps + 1):
             f = k / steps
             arm = [s + (t - s) * f for s, t in zip(start_arm, target_arm)]
-            grip = start_grip + (target_gripper - start_grip) * f
             self.actuator.set_arm_angles(arm)
-            self.actuator.set_gripper_angle(grip)
             time.sleep(GRASP_STEP_DELAY)
         self.arm, self.gripper = list(target_arm), float(target_gripper)
 
