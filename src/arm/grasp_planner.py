@@ -8,8 +8,8 @@ HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]
 BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]    
 GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]  
 
-GRIPPER_OPEN = 0.0       # jaws open / rest position
-GRIPPER_CLOSED = 30.0    # jaws closed on the can (also the grasp/hold position)
+GRIPPER_OPEN = 0.0       
+GRIPPER_CLOSED = 40.0    
 
 # Registry so the test tooling can jog to a full pose (arm + gripper) by name.
 NAMED_POSES = {
