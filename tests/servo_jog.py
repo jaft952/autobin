@@ -25,15 +25,13 @@ Run:  python tests/servo_jog.py
 Note: each move is SLOW/stepped (same gentle speed as the grasp in
 test_ibvs_centering.py), not an instant jump — tune STEP_DEG / STEP_DELAY below.
 """
-import math
 import os
 import sys
-import time
 from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.hardware.actuators.pca9685_driver import ArmActuator
+from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 from src.arm.kinematics import SERVO_NEUTRAL_CMD
 
 # Forward kinematics is optional (needs ikpy). If unavailable we still jog/print.
@@ -62,16 +60,12 @@ def main():
     step = 5.0
 
     def apply(i, val):
-        """Move CH(i+1) to val SLOWLY — in <= STEP_DEG steps with a pause between
-        each (gentle, small current draw), the same speed as the grasp. ALL
-        channels are stepped, including CH6: an instant gripper move spikes the
-        current and can brown out the shared 6V rail -> whole-arm twitch."""
+        """Move CH(i+1) to val SLOWLY via the shared stepped_move (only this channel
+        moves; the others have zero delta and are skipped)."""
         val = max(0.0, min(270.0, float(val)))
-        start = angles[i]
-        steps = max(1, int(math.ceil(abs(val - start) / STEP_DEG)))
-        for k in range(1, steps + 1):
-            act.kit.servo[i].angle = start + (val - start) * k / steps
-            time.sleep(STEP_DELAY)
+        target = list(angles)
+        target[i] = val
+        stepped_move(act, angles, target, STEP_DEG, STEP_DELAY)
         angles[i] = val
         print(f"  CH{i + 1} = {val:.1f}°")
 
@@ -115,8 +109,14 @@ def main():
             print("  RELEASED all servos (no signal — arm is limp). "
                   "Set any channel to re-engage.")
         elif cmd == "h":
+            # Home all 6 arm/gripper channels TOGETHER (not one channel at a time).
+            target = list(angles)
             for i, a in enumerate(NEUTRAL):
-                apply(i, a)
+                target[i] = a
+            stepped_move(act, angles, target, STEP_DEG, STEP_DELAY)
+            for i, a in enumerate(NEUTRAL):
+                angles[i] = a
+            print(f"  homed CH1-6 -> {[round(a, 1) for a in NEUTRAL]}")
             last_ch = 0
         elif cmd == "p":
             print_pose()

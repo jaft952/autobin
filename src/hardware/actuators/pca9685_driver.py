@@ -66,3 +66,38 @@ class ArmActuator:
         self.kit.servo[5].angle = angle
         print(f"[Actuator] CH6 (Gripper) hardware written angle: {angle:.1f}°")
 
+
+def stepped_move(actuator, start, target, step_deg=5.0, step_delay=0.15, instant=()):
+    """Drive servos from `start` to `target` angle lists (index 0 = CH1) gently.
+
+    Every NON-`instant` channel steps TOGETHER so none moves more than `step_deg`
+    per step, pausing `step_delay` between steps (low current draw, no slamming).
+    Channels listed in `instant` snap straight to their target — e.g. the gripper
+    (CH6) — and channels whose angle doesn't change are skipped. Returns a copy of
+    `target` so the caller can track the new pose.
+
+    Shared by the grasp (test_ibvs_centering), the servo jog tool, and GraspPlanner
+    so they all move the arm at one consistent, gentle speed. Writes are clamped to
+    [0, SERVO_RANGE_DEG].
+    """
+    import time
+    n = min(len(start), len(target))
+
+    def write(ch, val):
+        actuator.kit.servo[ch].angle = max(0.0, min(SERVO_RANGE_DEG, val))
+
+    for ch in instant:
+        if ch < n:
+            write(ch, target[ch])
+    moving = [ch for ch in range(n)
+              if ch not in instant and abs(target[ch] - start[ch]) > 1e-9]
+    if moving:
+        span = max(abs(target[ch] - start[ch]) for ch in moving)
+        steps = max(1, int((span + step_deg - 1e-6) // step_deg))
+        for k in range(1, steps + 1):
+            f = k / steps
+            for ch in moving:
+                write(ch, start[ch] + (target[ch] - start[ch]) * f)
+            time.sleep(step_delay)
+    return list(target)
+
