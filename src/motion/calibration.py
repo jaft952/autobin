@@ -29,4 +29,12 @@ class MotionCalibration:
     motor_a_turn_trim: float = 1.0
     motor_b_turn_trim: float = 1.0
 
+    # Motor wiring polarity. The wheels turned OPPOSITE to the commanded move
+    # (FORWARD drove backward, LEFT turned right), so both motors are wired
+    # reversed -> flip each one in software. If only TURNS are reversed (forward
+    # is fine) the motors are swapped left<->right instead: set both back to
+    # False and swap the in1/in2 pins with in3/in4 in MotorPins.
+    invert_left: bool = True
+    invert_right: bool = True
+
     arc_inner_wheel_ratio: float = 0.3

@@ -90,6 +90,13 @@ class PWMActuator:
         left_speed = max(-100.0, min(100.0, left_speed))
         right_speed = max(-100.0, min(100.0, right_speed))
 
+        # Fix reversed motor wiring: flip polarity so the wheel turns the way the
+        # command (and the on-screen suggestion) means it to.
+        if self.cal.invert_left:
+            left_speed = -left_speed
+        if self.cal.invert_right:
+            right_speed = -right_speed
+
         self._set_left(left_speed)
         self._set_right(right_speed)
 
