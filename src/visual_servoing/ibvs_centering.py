@@ -47,7 +47,6 @@ class CenteringConfig:
     target_y: float = 0.5
 
     tolerance: float = 0.01
-
     image_y_is_backward: int = 1     # +1: larger pixel y = closer to robot
     mirror_x: int = 1                # -1 if the image is mirrored left/right
 

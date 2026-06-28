@@ -224,7 +224,7 @@ HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
 # Ordered descend-to-grasp: each (CH index, angle) moves ONE joint at a time, in
 # THIS exact order — the hand-tuned path to the can. The lift retraces it reversed.
-GRASP_SEQUENCE = [(0, 100.0), (2, 20.0), (3, 30.0), (1, 180.0), (2, 35.0)]
+GRASP_SEQUENCE = [(0, 100.0), (2, 20.0), (3, 30.0), (1, 170.0)]
 GRIPPER_OPEN = 0.0
 GRIPPER_CLOSE = 40.0
 GRASP_STEP_DEG = 5.0      # max degrees any servo moves per step 
