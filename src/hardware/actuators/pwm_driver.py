@@ -97,6 +97,11 @@ class PWMActuator:
         if self.cal.invert_right:
             right_speed = -right_speed
 
+        # Motors plugged into each other's channels -> send each speed to the
+        # other side so LEFT/RIGHT turns match the command.
+        if self.cal.swap_left_right:
+            left_speed, right_speed = right_speed, left_speed
+
         self._set_left(left_speed)
         self._set_right(right_speed)
 

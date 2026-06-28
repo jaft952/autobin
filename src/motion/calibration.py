@@ -18,7 +18,7 @@ class MotionCalibration:
     # turning overshoots the most. If the base won't move at all, raise these; if
     # it still overshoots, shorten DRIVE_PULSE_S in chassis_controller.py instead.
     forward_speed: float = 40.0
-    backward_speed: float = 40.0
+    backward_speed: float = 50.0
     turn_speed: float = 40.0
     arc_speed: float = 50.0
 
@@ -30,11 +30,14 @@ class MotionCalibration:
     motor_b_turn_trim: float = 1.0
 
     # Motor wiring polarity. The wheels turned OPPOSITE to the commanded move
-    # (FORWARD drove backward, LEFT turned right), so both motors are wired
-    # reversed -> flip each one in software. If only TURNS are reversed (forward
-    # is fine) the motors are swapped left<->right instead: set both back to
-    # False and swap the in1/in2 pins with in3/in4 in MotorPins.
+    # (FORWARD drove backward), so both motors are wired reversed -> flip each
+    # one in software.
     invert_left: bool = True
     invert_right: bool = True
+
+    # The two drive motors are plugged into each other's channels (A on the right,
+    # B on the left), so FORWARD looked fine but LEFT/RIGHT turns came out reversed.
+    # Swap the left/right wheel speeds in software to undo it.
+    swap_left_right: bool = True
 
     arc_inner_wheel_ratio: float = 0.3
