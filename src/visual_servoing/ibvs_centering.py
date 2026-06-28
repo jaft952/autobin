@@ -61,6 +61,13 @@ class CenteringConfig:
     lost_after: int = 10
 
     too_close_box_height: float = 0.95
+    # Lying-tin sweet spot (centering tracks the tin's CENTER for a lying tin) + how
+    # a lying tin counts as aligned: "point" = center must reach (x, y); "line" =
+    # only the Y (distance) matters, left/right ignored. Set via
+    # calibrate_sweet_spot.py --lying [--point|--line].
+    lying_target_x: float = 0.5
+    lying_target_y: float = 0.85
+    lying_mode: str = "point"
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "CenteringConfig":
@@ -112,8 +119,16 @@ class IBVSCentering:
             )
         self._missed = 0
 
-        bx, by = best.base_center
-       
+        # Orientation decides the tracked point + sweet spot + align rule.
+        ori = getattr(best, "orientation", None)
+        is_lying = ori is not None and ori.klass in ("lying", "axial")
+        if is_lying:
+            bx, by = best.center                  # grasp the MIDDLE of a lying tin
+            target_x, target_y = cfg.lying_target_x, cfg.lying_target_y
+        else:
+            bx, by = best.base_center             # upright: the floor-contact base
+            target_x, target_y = cfg.target_x, cfg.target_y
+
         cx, cy = float(bx), float(by)
         if self._smoothed is None:
             self._smoothed = (cx, cy)
@@ -123,12 +138,15 @@ class IBVSCentering:
                               a * self._smoothed[1] + (1 - a) * cy)
         sx, sy = self._smoothed
 
-        error_x = cfg.mirror_x * (sx / detection.frame_width - cfg.target_x)
-        error_y = cfg.image_y_is_backward * (sy / detection.frame_height - cfg.target_y)
+        error_x = cfg.mirror_x * (sx / detection.frame_width - target_x)
+        error_y = cfg.image_y_is_backward * (sy / detection.frame_height - target_y)
+        if is_lying and cfg.lying_mode == "line":   # line mode: only Y (distance) matters
+            error_x = 0.0
 
         
+        # "Too close" guard — UPRIGHT only (a lying tin's box height isn't distance).
         box_h_frac = (best.height / detection.frame_height) if detection.frame_height else 0.0
-        if box_h_frac >= cfg.too_close_box_height:
+        if not is_lying and box_h_frac >= cfg.too_close_box_height:
             error_y = max(error_y, cfg.tolerance + 0.2)
 
         aligned = math.hypot(error_x, error_y) <= cfg.tolerance

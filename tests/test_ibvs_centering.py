@@ -4,6 +4,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.perception.detector import BoundingBox, DetectionResult
+from src.perception.orientation import Orientation
 from src.visual_servoing.ibvs_centering import (
     ChassisMove,
     CenteringConfig,
@@ -25,6 +26,15 @@ def det_at(cx, cy):
     the bbox bottom-center that IBVSCentering tracks) is at pixel (cx, cy).
     The tin stands ~120px tall upward from that base."""
     box = BoundingBox(x1=cx - 40, y1=cy - 120, x2=cx + 40, y2=cy, confidence=0.9)
+    return DetectionResult(detections=[box], frame_width=W, frame_height=H)
+
+
+def det_lying_at(cx, cy, klass="lying"):
+    """Synthetic LYING tin: a wide box whose CENTER (the point IBVSCentering tracks
+    for a lying tin) is at pixel (cx, cy), tagged with a lying orientation."""
+    box = BoundingBox(x1=cx - 100, y1=cy - 30, x2=cx + 100, y2=cy + 30,
+                      confidence=0.9,
+                      orientation=Orientation(angle=0.0, aspect=3.3, klass=klass))
     return DetectionResult(detections=[box], frame_width=W, frame_height=H)
 
 
@@ -81,6 +91,21 @@ def offline():
     s = cm.update(det_at(int(W * 0.15), H // 2))
     check("mirrored: left pixel -> TURN_RIGHT", s.move is ChassisMove.TURN_RIGHT, s.message)
 
+    print("\n[H] lying tin tracks CENTER + lying sweet spot -> aligned when centered")
+    cl = IBVSCentering(CenteringConfig(ema_alpha=0.0, lying_target_x=0.5,
+                                       lying_target_y=0.5, lying_mode="point"))
+    s = cl.update(det_lying_at(W // 2, H // 2))
+    check("lying centered -> aligned", s.aligned, s.message)
+
+    print("\n[I] lying X-off: POINT mode NOT aligned, LINE mode aligned (Y only)")
+    det = det_lying_at(int(W * 0.2), H // 2)   # center X off, Y on the target
+    sp = IBVSCentering(CenteringConfig(ema_alpha=0.0, lying_target_x=0.5,
+                                       lying_target_y=0.5, lying_mode="point")).update(det)
+    check("lying POINT: X off -> NOT aligned", not sp.aligned, f"err=({sp.error_x},{sp.error_y})")
+    sli = IBVSCentering(CenteringConfig(ema_alpha=0.0, lying_target_x=0.5,
+                                        lying_target_y=0.5, lying_mode="line")).update(det)
+    check("lying LINE: X off but Y on -> aligned", sli.aligned, f"err=({sli.error_x},{sli.error_y})")
+
     print("\n" + "=" * 60)
     if failures:
         print(f"RESULT: {len(failures)} check(s) FAILED -> {failures}")
@@ -105,8 +130,8 @@ def live(auto=False, drive=False):
           f"drive={'ON' if driving else 'OFF'}.")
     print("Keys:  a = grab auto/manual,  m = drive on/off,  c = grab now,  "
           "h = home,  q = quit.")
-    print("(drive ON makes the base actually chase the tin and HOLD when centered;\n"
-          " SEARCH rotates in place when no tin is visible.)\n")
+    print("(drive ON nudges the base toward the tin in short pulses and HOLDs when\n"
+          " centered; it STOPS instead of spinning when no tin is visible.)\n")
     show = True       # auto-disabled below if there's no display
     armed = True      # auto: re-arms after the can leaves CATCH -> one grab per approach
     result = None     # last YOLO result, reused on the frames we don't infer
@@ -124,13 +149,13 @@ def live(auto=False, drive=False):
                 print(f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
                       f"move={status.move.value:<14} stable={status.stable}  | {status.message}")
                 if driving:                      # close the loop: actually drive the base
-                    chassis.apply(status.move)   # HOLD (aligned) stops; SEARCH rotates to scan
+                    chassis.pulse(status.move)   # short nudge then stop; HOLD/SEARCH just stop
                 if auto and arm is not None:     # auto-grab once when centered
                     if status.stable and armed:
                         if driving:
                             chassis.stop()       # make sure the base is still before grabbing
                         print("[auto] CATCH -> grabbing")
-                        arm.grasp()
+                        arm.grasp(result.best.orientation if (result is not None and result.best) else None)
                         armed = False
                     elif not status.stable:
                         armed = True
@@ -161,7 +186,7 @@ def live(auto=False, drive=False):
                     chassis.stop()
                 print(f"[mode] drive = {'ON' if driving else 'OFF'}")
             if key == ord("c") and arm is not None:
-                arm.grasp()
+                arm.grasp(result.best.orientation if (result is not None and result.best) else None)
             if key == ord("h") and arm is not None:
                 arm.home()
     except KeyboardInterrupt:
@@ -206,6 +231,15 @@ GRASP_STEP_DEG = 5.0      # max degrees any servo moves per step
 GRASP_STEP_DELAY = 0.15   # seconds paused between steps 
 
 
+# Lying-tin grasp (hand-tuned). CH1-4 position the gripper over a lying tin; CH5
+# (wrist roll) comes from the detected angle. NEEDS PI CALIBRATION — jog to find
+# the roll, then tune the mapping (one tuned point isn't enough to fix the sign).
+LYING_ARM = [103.0, 167.0, 75.0, 150.0]   # CH1-4 for a lying tin
+LYING_ROLL_REF_ANGLE = 0.0   # detected image angle (deg) this roll was tuned at
+LYING_ROLL_REF = 180.0       # CH5 roll at the reference angle (your "横" pose)
+LYING_ROLL_SIGN = -1.0       # +1/-1: which way CH5 turns as the angle grows (TUNE)
+
+
 class _ArmController:
 
     def __init__(self):
@@ -224,8 +258,33 @@ class _ArmController:
                    instant=(5,))
         self.arm, self.gripper = list(target_arm), float(target_gripper)
 
-    def grasp(self):
-        print("[grasp] pick-and-place...")
+    def grasp(self, orientation=None):
+        """Auto-pick the grasp from the detected orientation: lying/axial -> lying
+        grasp (roll the gripper to the tin's angle); otherwise the upright grasp."""
+        klass = getattr(orientation, "klass", None)
+        if klass in ("lying", "axial"):
+            self._grasp_lying(float(getattr(orientation, "angle", 0.0) or 0.0))
+        else:
+            self._grasp_upright()
+
+    def _grasp_lying(self, angle):
+        """Grasp a lying tin: descend to LYING_ARM with CH5 rolled to the tin's
+        angle, close, carry to the bin, release. First pass — verify on the Pi
+        (sim first); the CH5 roll mapping still needs calibrating."""
+        ch5 = max(0.0, min(180.0,
+                  LYING_ROLL_REF + LYING_ROLL_SIGN * (angle - LYING_ROLL_REF_ANGLE)))
+        print(f"[grasp] LYING pick-and-place (angle={angle:.0f} deg -> CH5={ch5:.0f})...")
+        self.move_to(LIFT_ARM, GRIPPER_OPEN, "ready pose")
+        pose = LYING_ARM + [ch5]
+        self.move_to(pose, GRIPPER_OPEN, "descend to lying pose")
+        self.move_to(pose, GRIPPER_CLOSE, "close on can")
+        self.move_to(LIFT_ARM, GRIPPER_CLOSE, "lift (holding)")
+        self.move_to(BIN_ARM, GRIPPER_CLOSE, "move to bin (holding)")
+        self.move_to(BIN_ARM, GRIPPER_OPEN, "release into bin")
+        print("[grasp] done. press 'h' to return home.")
+
+    def _grasp_upright(self):
+        print("[grasp] UPRIGHT pick-and-place...")
         # 1. open the gripper before descending
         self.move_to(LIFT_ARM, GRIPPER_OPEN, "ready pose")
         self.move_to(self.arm, GRIPPER_OPEN, "open gripper")
@@ -355,13 +414,13 @@ def sim(auto=False, drive=False):
             result = DetectionResult(detections=[box], frame_width=fw, frame_height=fh)
             status = centering.update(result)
             if driving:                      # close the loop: actually drive the base
-                chassis.apply(status.move)   # HOLD (aligned) stops; SEARCH rotates to scan
+                chassis.pulse(status.move)   # short nudge then stop; HOLD/SEARCH just stop
             if auto and arm is not None:     # auto-grab once when centered
                 if status.stable and armed:
                     if driving:
                         chassis.stop()       # make sure the base is still before grabbing
                     print("[auto] CATCH -> grabbing")
-                    arm.grasp()
+                    arm.grasp(result.best.orientation if (result is not None and result.best) else None)
                     armed = False
                 elif not status.stable:
                     armed = True
@@ -397,7 +456,7 @@ def sim(auto=False, drive=False):
                     chassis.stop()
                 print(f"[mode] drive = {'ON' if driving else 'OFF'}")
             if key == ord("c") and arm is not None:
-                arm.grasp()
+                arm.grasp(result.best.orientation if (result is not None and result.best) else None)
             if key == ord("h") and arm is not None:
                 arm.home()
     except KeyboardInterrupt:

@@ -13,10 +13,14 @@ class MotorPins:
 
 @dataclass(frozen=True)
 class MotionCalibration:
-    forward_speed: float = 65.0
-    backward_speed: float = 65.0
-    turn_speed: float = 60.0
-    arc_speed: float = 65.0
+    # Duty-cycle % per move. Kept high enough to overcome motor stall, but slower
+    # than before so each pulsed nudge is gentle. turn_speed is the lowest because
+    # turning overshoots the most. If the base won't move at all, raise these; if
+    # it still overshoots, shorten DRIVE_PULSE_S in chassis_controller.py instead.
+    forward_speed: float = 40.0
+    backward_speed: float = 40.0
+    turn_speed: float = 40.0
+    arc_speed: float = 50.0
 
     motor_a_forward_trim: float = 1.0
     motor_b_forward_trim: float = 1.0
