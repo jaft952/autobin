@@ -3,12 +3,12 @@ Servo jog & pose capture — line-based, works on the Pi (and Windows sim).
 
 Purpose: hand-jog the arm to a fixed pose (e.g. the trash-bin drop position that
 sits on the chassis), then PRINT/SAVE the exact servo angles so you can hardcode
-them. Uses ArmActuator, so the 270° actuation_range + pulse-width calibration are
+them. Uses ArmActuator, so the 180° actuation_range + pulse-width calibration are
 the SAME as the real system — the angles you read here are directly usable in
 GraspPlanner.set_arm_angles().
 
 Commands (type, then Enter):
-  2 160        set CH2 to 160°   (channel 1-16, angle 0-270) — e.g. move the
+  2 160        set CH2 to 160°   (channel 1-16, angle 0-180) — e.g. move the
                gripper plug to a spare channel to test if a fault is the servo
                or the PCA9685 channel
   +2 / -2      nudge the LAST-touched channel by +/- step (default 5°)
@@ -17,13 +17,15 @@ Commands (type, then Enter):
   s name       SAVE current angles to tests/captured_poses.txt under 'name'
   r            RELEASE all servos — cut PWM so the arm goes LIMP (stops twitching,
                and won't snap back when servo power returns). Set a channel to re-engage.
-  h            home all to neutral (135, gripper 120)
+  h            home CH1-6 to neutral (~97°, gripper 80°)
   q            quit (servos left where they are)
 
 Run:  python tests/servo_jog.py
 
-Note: each move is SLOW/stepped (same gentle speed as the grasp in
-test_ibvs_centering.py), not an instant jump — tune STEP_DEG / STEP_DELAY below.
+Note: the arm CH1-5 move SLOW/stepped (same gentle speed as the grasp in
+test_ibvs_centering.py); CH6 (gripper) SNAPS straight to its target. Tune
+STEP_DEG / STEP_DELAY below. The arm homes to neutral at startup so jogs ramp
+from a known pose (these servos have no position feedback).
 """
 import os
 import sys
@@ -31,7 +33,7 @@ from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
+from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move, SERVO_RANGE_DEG
 from src.arm.kinematics import SERVO_NEUTRAL_CMD
 
 # Forward kinematics is optional (needs ikpy). If unavailable we still jog/print.
@@ -59,13 +61,30 @@ def main():
     last_ch = 0
     step = 5.0
 
+    def cur(ch):
+        """The servo's last-commanded angle (hardware truth), falling back to the
+        tracked value when it was never set / was released. These servos have NO
+        position feedback, so the true angle is unknown until we command it once —
+        hence the startup home below, so ramps start from a real position."""
+        a = act.kit.servo[ch].angle
+        return float(a) if a is not None else float(angles[ch])
+
+    # Home CH1-6 to neutral at startup so the tracked angles match the real arm.
+    # Without this, the first jog of each channel ramps from a GUESSED start and the
+    # servo snaps to it (the "fast jump then stepped") before stepping smoothly.
+    print("  homing CH1-6 to neutral so jogs start from a known pose...")
+    for ch, a in enumerate(NEUTRAL):
+        act.kit.servo[ch].angle = max(0.0, min(SERVO_RANGE_DEG, a))
+
     def apply(i, val):
-        """Move CH(i+1) to val SLOWLY via the shared stepped_move (only this channel
-        moves; the others have zero delta and are skipped)."""
-        val = max(0.0, min(270.0, float(val)))
-        target = list(angles)
+        """Move CH(i+1) to val, ramping from the servo's ACTUAL current angle so it
+        doesn't snap. CH1-5 step slowly; CH6 (gripper) snaps via instant=(5,)."""
+        val = max(0.0, min(SERVO_RANGE_DEG, float(val)))
+        start = [cur(c) for c in range(NUM_CH)]
+        target = list(start)
         target[i] = val
-        stepped_move(act, angles, target, STEP_DEG, STEP_DELAY)
+        stepped_move(act, start, target, STEP_DEG, STEP_DELAY, instant=(5,))
+        angles[:] = start
         angles[i] = val
         print(f"  CH{i + 1} = {val:.1f}°")
 
@@ -109,13 +128,12 @@ def main():
             print("  RELEASED all servos (no signal — arm is limp). "
                   "Set any channel to re-engage.")
         elif cmd == "h":
-            # Home all 6 arm/gripper channels TOGETHER (not one channel at a time).
-            target = list(angles)
+            # Home to neutral ONE CHANNEL AT A TIME, in order CH1 -> CH6 (not all
+            # together). apply() ramps each channel slowly from its actual angle;
+            # CH6 (gripper) snaps. Each channel finishes before the next starts.
+            print("  homing CH1 -> CH6 in sequence...")
             for i, a in enumerate(NEUTRAL):
-                target[i] = a
-            stepped_move(act, angles, target, STEP_DEG, STEP_DELAY)
-            for i, a in enumerate(NEUTRAL):
-                angles[i] = a
+                apply(i, a)
             print(f"  homed CH1-6 -> {[round(a, 1) for a in NEUTRAL]}")
             last_ch = 0
         elif cmd == "p":
