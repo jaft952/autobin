@@ -17,11 +17,17 @@ for grasping in tests/test_ibvs_centering.py.
 """
 from __future__ import annotations
 
+import time
 from typing import Callable, Dict, Optional
 
 from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 from src.visual_servoing.ibvs_centering import ChassisMove
+
+# How long the base actually moves per vision tick when pulsing. The IBVS loop
+# only updates every few (slow) YOLO frames; running the motors continuously
+# between those updates overshoots. One short burst per tick = one small nudge.
+DRIVE_PULSE_S = 0.12
 
 
 class ChassisController:
@@ -51,7 +57,8 @@ class ChassisController:
         self.actuator = actuator
 
         # ChassisMove -> the DifferentialKinematics factory for its WheelCommand.
-        # HOLD maps to None (stop). SEARCH rotates in place to scan for a tin.
+        # HOLD and SEARCH both map to None (stop): HOLD = centered, SEARCH = no
+        # tin in view -> the base waits in place instead of spinning to scan.
         self._move_table: Dict[ChassisMove, Optional[Callable[[], WheelCommand]]] = {
             ChassisMove.FORWARD: self.kin.forward,
             ChassisMove.BACKWARD: self.kin.backward,
@@ -61,7 +68,7 @@ class ChassisController:
             ChassisMove.FORWARD_RIGHT: self.kin.arc_forward_right,
             ChassisMove.BACKWARD_LEFT: self.kin.arc_backward_left,
             ChassisMove.BACKWARD_RIGHT: self.kin.arc_backward_right,
-            ChassisMove.SEARCH: self.kin.turn_right,
+            ChassisMove.SEARCH: None,
             ChassisMove.HOLD: None,
         }
         self._last: Optional[ChassisMove] = None
@@ -78,6 +85,23 @@ class ChassisController:
         else:
             self.actuator.apply(make_cmd())
             self._last = move
+
+    def pulse(self, move: ChassisMove, seconds: float = DRIVE_PULSE_S) -> None:
+        """Move for one short burst, then stop — the pulsed form of apply().
+
+        Use this (not apply) when the control loop ticks slowly: at each vision
+        update the base nudges briefly and then holds still, so it can't overshoot
+        the tin and spin while waiting for the next (slow) YOLO frame. HOLD and
+        SEARCH have no motion, so this just stops for them.
+        """
+        make_cmd = self._move_table.get(move)
+        if make_cmd is None:
+            self.stop()
+            return
+        self.actuator.apply(make_cmd())
+        self._last = move
+        time.sleep(seconds)
+        self.stop()
 
     def stop(self) -> None:
         """Cut motor power and hold position (does not release GPIO)."""
