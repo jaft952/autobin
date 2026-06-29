@@ -185,7 +185,7 @@ class AluminiumCanDetector:
     def __init__(
         self,
         model_path: str = DEFAULT_MODEL_PATH,
-        camera_index: int = 0,
+        camera_index: int = 1,
         conf_threshold: float = 0.8,
         frame_width: int = 1280,
         frame_height: int = 720,
