@@ -24,10 +24,19 @@ from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 from src.visual_servoing.ibvs_centering import ChassisMove
 
-# How long the base actually moves per vision tick when pulsing. The IBVS loop
-# only updates every few (slow) YOLO frames; running the motors continuously
-# between those updates overshoots. One short burst per tick = one small nudge.
-DRIVE_PULSE_S = 0.12
+# Pulsed driving: the base moves for a short burst each vision tick, then stops, so
+# it can't overshoot while waiting for the next (slow) YOLO frame. The burst length
+# is PROPORTIONAL to how far off-center the tin is — big nudges when far, tiny ones
+# near the sweet spot — so the base settles INTO the tight tolerance band instead of
+# overshooting it and limit-cycling (the turn->forward->turn loop). Tune on the Pi:
+#   _MIN too big   -> still overshoots / oscillates near the target  (lower it)
+#   _MIN too small -> motors stall, base won't inch the last bit      (raise it)
+#   _MAX  -> burst length (≈ approach speed) when the tin is far
+#   _GAIN -> how quickly the burst grows with the error
+DRIVE_PULSE_MIN = 0.05
+DRIVE_PULSE_MAX = 0.15
+DRIVE_PULSE_GAIN = 1.0
+DRIVE_PULSE_S = 0.12   # fixed fallback for plain pulse() calls
 
 
 class ChassisController:
@@ -102,6 +111,14 @@ class ChassisController:
         self._last = move
         time.sleep(seconds)
         self.stop()
+
+    def pulse_for_error(self, move: ChassisMove, error_mag: float) -> None:
+        """Pulse with a burst length PROPORTIONAL to error_mag (the larger of the
+        normalized x/y errors, ~0..1). Far -> long burst (fast approach); near the
+        sweet spot -> short burst, so the base can settle into a tight tolerance
+        band instead of overshooting it and limit-cycling. HOLD/SEARCH just stop."""
+        seconds = max(DRIVE_PULSE_MIN, min(DRIVE_PULSE_MAX, error_mag * DRIVE_PULSE_GAIN))
+        self.pulse(move, seconds)
 
     def stop(self) -> None:
         """Cut motor power and hold position (does not release GPIO)."""

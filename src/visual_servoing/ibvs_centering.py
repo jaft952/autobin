@@ -46,6 +46,10 @@ class CenteringConfig:
     target_x: float = 0.5
     target_y: float = 0.5
 
+    # Half-size of the "aligned"/grab-ready zone (fraction of frame). Kept TIGHT
+    # (0.01 ≈ 13px) because the arm grasp only lands accurately when the base is
+    # right on the sweet spot. A tight zone needs SMALL drive nudges near the target
+    # (short DRIVE_PULSE_S) or the base overshoots it and limit-cycles.
     tolerance: float = 0.01
     image_y_is_backward: int = 1     # +1: larger pixel y = closer to robot
     mirror_x: int = 1                # -1 if the image is mirrored left/right
