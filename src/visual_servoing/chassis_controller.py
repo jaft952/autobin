@@ -43,7 +43,7 @@ from src.visual_servoing.ibvs_centering import ChassisMove
 #   SPEED_MIN too big   -> overshoots near target          (lower it)
 #   SPEED_MAX           -> approach speed when tin is far
 #   SPEED_GAIN          -> how quickly speed grows with error
-SPEED_MIN = 0.25       # minimum motor speed fraction (0..1) to prevent stall
+SPEED_MIN = 0.65       # minimum motor speed fraction (0..1) to prevent stall
 SPEED_MAX = 1.0        # maximum motor speed fraction
 SPEED_GAIN = 1.5       # multiplier: error_mag * SPEED_GAIN = raw speed
 
