@@ -102,7 +102,7 @@ class DetectionResult:
 
 # ── Camera helper ────────────────────────────────────────────────────────────
 
-def open_camera_capture(camera_index: int = 1,
+def open_camera_capture(camera_index: int = 0,
                         frame_width: int = 1280,
                         frame_height: int = 720):
     """
@@ -185,7 +185,7 @@ class AluminiumCanDetector:
     def __init__(
         self,
         model_path: str = DEFAULT_MODEL_PATH,
-        camera_index: int = 1,
+        camera_index: int = 0,
         conf_threshold: float = 0.8,
         frame_width: int = 1280,
         frame_height: int = 720,
