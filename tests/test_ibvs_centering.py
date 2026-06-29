@@ -169,7 +169,7 @@ def live(auto=False, drive=False):
 
     # Minimum error magnitude before sending a move command.
     # Filters out tiny jitter errors near the sweet spot to prevent oscillation.
-    MIN_ERROR_TO_MOVE = 0.04
+    MIN_ERROR_TO_MOVE = 0.01
 
     detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ)
     detector.start()
