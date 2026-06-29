@@ -15,7 +15,8 @@ from ultralytics import YOLO
 # Repo-root anchor so the default model path works no matter where this runs from.
 # This file is at ai/training/scripts/subsystem1/ -> parents[4] is the repo root.
 _ROOT = Path(__file__).resolve().parents[4]
-_DEFAULT_MODEL = _ROOT / "ai" / "models" / "subsystem1" / "production" / "inference_20062026.pt"
+# _DEFAULT_MODEL = _ROOT / "ai" / "models" / "subsystem1" / "production" / "inference_01072026.pt"
+_DEFAULT_MODEL = _ROOT / "src" / "models" / "inference_01072026.pt"
 
 # ─────────────────────────── logging setup ────────────────────────────────────
 
