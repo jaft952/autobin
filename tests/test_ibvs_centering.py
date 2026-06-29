@@ -475,7 +475,7 @@ def sim(auto=False, drive=False):
     driving   = drive and chassis is not None
     armed     = True
 
-    MIN_ERROR_TO_MOVE = 0.04
+    MIN_ERROR_TO_MOVE = 0.01
 
     ASPECT   = 0.38
     H_FAR, H_NEAR = 90, 280
