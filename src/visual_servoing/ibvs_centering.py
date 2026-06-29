@@ -184,15 +184,21 @@ class IBVSCentering:
         if aligned:
             return ChassisMove.HOLD
         tol = self.config.tolerance
-        lon = "forward" if error_y < -tol else "backward" if error_y > tol else ""
-        lat = "left" if error_x < -tol else "right" if error_x > tol else ""
-        if lon and lat:
-            return ChassisMove(f"{lon}_{lat}")
-        if lon:
-            return ChassisMove(lon)
-        if lat:
-            return ChassisMove(f"turn_{lat}")
-        # Inside per-axis tolerances but outside the radial one: nudge the larger axis.
-        if abs(error_y) >= abs(error_x):
-            return ChassisMove.FORWARD if error_y < 0 else ChassisMove.BACKWARD
-        return ChassisMove.TURN_LEFT if error_x < 0 else ChassisMove.TURN_RIGHT
+        # Turn-first ("aim then advance"): square up to the tin BEFORE driving. Only
+        # once the heading (X) error is within tolerance do we move forward/back to
+        # close the distance. More accurate than arcing on a slow, pulsed loop — one
+        # axis moves at a time, and the distance (Y) reading is only trusted when the
+        # base is facing the tin. (No diagonal moves are produced.)
+        if error_x < -tol:
+            return ChassisMove.TURN_LEFT
+        if error_x > tol:
+            return ChassisMove.TURN_RIGHT
+        if error_y < -tol:
+            return ChassisMove.FORWARD
+        if error_y > tol:
+            return ChassisMove.BACKWARD
+        # Within both per-axis tolerances but outside the radial one: nudge the
+        # larger axis, still turning before advancing if X is the worse of the two.
+        if abs(error_x) >= abs(error_y):
+            return ChassisMove.TURN_LEFT if error_x < 0 else ChassisMove.TURN_RIGHT
+        return ChassisMove.FORWARD if error_y < 0 else ChassisMove.BACKWARD

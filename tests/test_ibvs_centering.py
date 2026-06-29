@@ -70,13 +70,13 @@ def offline():
     check("move is BACKWARD", s.move is ChassisMove.BACKWARD, s.message)
     check("suggests negative forward", s.motion_vector[0] < 0, str(s.motion_vector))
 
-    print("\n[E] tin to the left -> TURN_LEFT; combined -> FORWARD_LEFT")
+    print("\n[E] turn-first: tin left -> TURN_LEFT; left+far still TURN_LEFT (aim before advancing)")
     c.reset()
     s = c.update(det_at(int(W * 0.15), H // 2))
     check("move is TURN_LEFT", s.move is ChassisMove.TURN_LEFT, s.message)
     c.reset()
     s = c.update(det_at(int(W * 0.15), int(H * 0.15)))
-    check("move is FORWARD_LEFT", s.move is ChassisMove.FORWARD_LEFT, s.message)
+    check("left+far -> TURN_LEFT first (no diagonal)", s.move is ChassisMove.TURN_LEFT, s.message)
 
     print("\n[F] alignment streak resets when tin moves away")
     c.reset()
