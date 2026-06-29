@@ -149,7 +149,8 @@ def live(auto=False, drive=False):
                 print(f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
                       f"move={status.move.value:<14} stable={status.stable}  | {status.message}")
                 if driving:                      # close the loop: actually drive the base
-                    chassis.pulse(status.move)   # short nudge then stop; HOLD/SEARCH just stop
+                    chassis.pulse_for_error(      # nudge shrinks as it nears the sweet spot
+                        status.move, max(abs(status.error_x), abs(status.error_y)))
                 if auto and arm is not None:     # auto-grab once when centered
                     if status.stable and armed:
                         if driving:
@@ -414,7 +415,8 @@ def sim(auto=False, drive=False):
             result = DetectionResult(detections=[box], frame_width=fw, frame_height=fh)
             status = centering.update(result)
             if driving:                      # close the loop: actually drive the base
-                chassis.pulse(status.move)   # short nudge then stop; HOLD/SEARCH just stop
+                chassis.pulse_for_error(      # nudge shrinks as it nears the sweet spot
+                    status.move, max(abs(status.error_x), abs(status.error_y)))
             if auto and arm is not None:     # auto-grab once when centered
                 if status.stable and armed:
                     if driving:

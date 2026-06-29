@@ -1,2 +1,5 @@
 target_x: 0.5203
 target_y: 0.8528
+# Aligned/grab-ready zone radius (fraction of frame). Tight (0.01) for an accurate
+# grasp; needs small drive pulses near the target so the base doesn't overshoot it.
+tolerance: 0.01
