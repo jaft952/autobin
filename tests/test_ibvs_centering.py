@@ -282,12 +282,24 @@ def live(auto=False, drive=False):
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
-        if driving and chassis is not None:
-            chassis.stop()
-        detector.stop()
-        if chassis is not None:
-            chassis.close()
-        cv2.destroyAllWindows()
+        try:
+            if driving and chassis is not None:
+                chassis.stop()
+        except Exception:
+            pass
+        try:
+            detector.stop()
+        except Exception:
+            pass
+        try:
+            if chassis is not None:
+                chassis.close()
+        except Exception:
+            pass
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
