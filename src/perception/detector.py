@@ -102,7 +102,7 @@ class DetectionResult:
 
 # ── Camera helper ────────────────────────────────────────────────────────────
 
-def open_camera_capture(camera_index: int = 0,
+def open_camera_capture(camera_index: int = 1,
                         frame_width: int = 1280,
                         frame_height: int = 720):
     """
