@@ -162,9 +162,7 @@ def live(auto=False, drive=False):
     import cv2
     from src.perception.detector import AluminiumCanDetector
 
-    # Lower imgsz speeds up YOLO inference on Pi CPU significantly.
-    # 320 is roughly 4x faster than 640 with minimal accuracy loss at close range.
-    IMGSZ = 320
+    IMGSZ = 640
     INFER_EVERY = 1     # run YOLO every frame — motor keeps moving between frames
                         # so there is no benefit to skipping frames anymore.
                         # Raise to 2 or 3 only if Pi CPU is completely maxed out.
