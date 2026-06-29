@@ -11,7 +11,7 @@ from pathlib import Path
 
 import cv2
 from ultralytics import YOLO
-from utils.root import find_repo_root
+from src.utils.root import find_repo_root
 
 # Repo-root anchor so the default model path works no matter where this runs from.
 # This file is at ai/training/scripts/subsystem1/ -> parents[4] is the repo root.
