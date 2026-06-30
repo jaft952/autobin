@@ -168,7 +168,7 @@ class ChassisController:
 
         # Turn component: signed, positive error_x (tin to the right) should
         # curve the base rightward -> slow the right wheel, speed up the left.
-        turn = error_x * STEER_GAIN
+        turn = -(error_x * STEER_GAIN)
         turn = max(-STEER_MAX_TURN, min(STEER_MAX_TURN, turn))
 
         left_fraction  = forward - turn
