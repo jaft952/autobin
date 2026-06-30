@@ -11,18 +11,16 @@ Modes:
     python test_ibvs_centering.py --live --auto    -> live + auto grab ON
 
 --- MOTION CHANGES vs OLD VERSION ---
-Old: pulse_for_error() called inside the YOLO tick -> time.sleep() blocked the
-     loop -> 1-second stutter between every movement.
-
-New: apply_for_error() is called instead. Motors run CONTINUOUSLY between YOLO
-     ticks. YOLO inference time (~0.5s on Pi CPU) IS the tick rate — the base
-     keeps moving while the next frame is being processed. Direction and speed
-     update the moment a new YOLO result arrives. Result: smooth, proportional
-     motion instead of stop-start jerky pulses.
-
-Speed is proportional to error magnitude:
-    error far from sweet spot  -> fast approach
-    error near sweet spot      -> slow and gentle, settles without overshooting
+v1: pulse_for_error() blocked the loop with time.sleep() -> 1s stutter.
+v2: apply_for_error() ran continuously but used discrete TURN_LEFT/FORWARD
+    states -> spun in place during YOLO's slow inference window -> overshoot.
+v3 (this version): drive_toward_target(move, error_x, error_y) computes wheel
+    speeds directly from the raw error signal, steering-wheel style. The base
+    drives in a continuous ARC toward the tin — both wheels always turn
+    forward, the curve tightens automatically as error_x shrinks, and the
+    approach speed scales with error_y (distance). No sleep, no spin-in-place,
+    no jerky pulsing. BACKWARD / SEARCH / HOLD still use discrete proportional
+    control since steering doesn't apply to them.
 """
 
 import os
@@ -155,17 +153,17 @@ def offline():
 
 
 # ---------------------------------------------------------------------------
-# Live mode  (real camera + real YOLO + smooth continuous motion)
+# Live mode  (real camera + real YOLO + continuous steering motion)
 # ---------------------------------------------------------------------------
 
 def live(auto=False, drive=False):
     import cv2
     from src.perception.detector import AluminiumCanDetector
 
-    IMGSZ = 640
-    INFER_EVERY = 1     # run YOLO every frame — motor keeps moving between frames
-                        # so there is no benefit to skipping frames anymore.
-                        # Raise to 2 or 3 only if Pi CPU is completely maxed out.
+    IMGSZ = 640        # model was trained at 640 — keep matching inference size
+    INFER_EVERY = 1     # run YOLO every frame; motors steer continuously between
+                        # frames using the last known error, so no benefit to
+                        # skipping. Raise to 2/3 only if Pi CPU is maxed out.
 
     # Minimum error magnitude before sending a move command.
     # Filters out tiny jitter errors near the sweet spot to prevent oscillation.
@@ -182,8 +180,8 @@ def live(auto=False, drive=False):
           f"drive={'ON' if driving else 'OFF'}.")
     print("Keys:  a = grab auto/manual,  m = drive on/off,  c = grab now,  "
           "h = home,  q = quit.")
-    print("(Smooth continuous motion: motors run between YOLO ticks, speed\n"
-          " scales with distance from sweet spot — fast approach, slow settle.)\n")
+    print("(Steering mode: continuous arcing motion toward the tin — speed and\n"
+          " curve angle both scale with error, no spin-in-place, no pulsing.)\n")
 
     show = True
     armed = True
@@ -212,9 +210,11 @@ def live(auto=False, drive=False):
 
                 if driving:
                     if error_mag > MIN_ERROR_TO_MOVE:
-                        # Smooth continuous motion: motors keep running until
-                        # next tick updates direction. No sleep, no blocking.
-                        chassis.apply_for_error(status.move, error_mag)
+                        # Steering mode: wheel speeds computed directly from
+                        # (error_x, error_y) -> continuous arc, no spin-in-place.
+                        chassis.drive_toward_target(
+                            status.move, status.error_x, status.error_y
+                        )
                     else:
                         # Very close to sweet spot: stop and let debounce settle
                         chassis.stop()
@@ -521,7 +521,9 @@ def sim(auto=False, drive=False):
 
             if driving:
                 if error_mag > MIN_ERROR_TO_MOVE:
-                    chassis.apply_for_error(status.move, error_mag)
+                    chassis.drive_toward_target(
+                        status.move, status.error_x, status.error_y
+                    )
                 else:
                     chassis.stop()
 
