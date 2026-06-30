@@ -45,7 +45,7 @@ from src.visual_servoing.ibvs_centering import ChassisMove
 #   SPEED_GAIN          -> how quickly speed grows with error
 SPEED_MIN = 0.70         # minimum motor speed fraction (0..1) to prevent stall
 SPEED_MAX = 1.0          # maximum motor speed fraction
-SPEED_MAX_TURN = 0.8     # maximum turn speed fraction (0..1) to prevent overshoot
+SPEED_MAX_TURN = 0.45     # maximum turn speed fraction (0..1) to prevent overshoot
 SPEED_GAIN = 3           # multiplier: error_mag * SPEED_GAIN = raw speed
 SPEED_MAX_BACKWARD = 0.7 # limit backward speed to prevent overshoot
 
@@ -129,12 +129,15 @@ class ChassisController:
         if make_cmd is None:
             self.stop()
             return
+        
+        if move in (ChassisMove.TURN_LEFT, ChassisMove.TURN_RIGHT):
+            seconds = max(0.02, min(0.08, error_mag * 0.15))
+            self.pulse(move, seconds)
+            return
 
         # Scale speed proportionally to error, clamped between min and max
         if move in (ChassisMove.BACKWARD, ChassisMove.BACKWARD_LEFT, ChassisMove.BACKWARD_RIGHT):
             speed_max = SPEED_MAX_BACKWARD
-        elif move in (ChassisMove.TURN_LEFT, ChassisMove.TURN_RIGHT):
-            speed_max = SPEED_MAX_TURN
         else:
             speed_max = SPEED_MAX
             
