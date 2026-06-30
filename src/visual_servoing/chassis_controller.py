@@ -75,8 +75,8 @@ STEER_DIST_GAIN = 1.2
 
 # --- Legacy discrete-move constants (still used for BACKWARD/SEARCH/HOLD and
 #     for apply()/pulse() callers that haven't switched to steering mode) ---
-SPEED_MIN = 0.70
-SPEED_MAX = 1.0
+SPEED_MIN = 0.5
+SPEED_MAX = 0.8
 SPEED_MAX_TURN = 0.45
 SPEED_GAIN = 3
 SPEED_MAX_BACKWARD = 0.7
