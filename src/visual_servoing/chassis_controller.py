@@ -43,9 +43,10 @@ from src.visual_servoing.ibvs_centering import ChassisMove
 #   SPEED_MIN too big   -> overshoots near target          (lower it)
 #   SPEED_MAX           -> approach speed when tin is far
 #   SPEED_GAIN          -> how quickly speed grows with error
-SPEED_MIN = 0.90         # minimum motor speed fraction (0..1) to prevent stall
+SPEED_MIN = 0.70         # minimum motor speed fraction (0..1) to prevent stall
 SPEED_MAX = 1.0          # maximum motor speed fraction
-SPEED_GAIN = 1.5         # multiplier: error_mag * SPEED_GAIN = raw speed
+SPEED_MAX_TURN = 0.8     # maximum turn speed fraction (0..1) to prevent overshoot
+SPEED_GAIN = 3           # multiplier: error_mag * SPEED_GAIN = raw speed
 SPEED_MAX_BACKWARD = 0.7 # limit backward speed to prevent overshoot
 
 # Legacy fallback for plain pulse() calls (kept for backward compatibility)
@@ -132,6 +133,8 @@ class ChassisController:
         # Scale speed proportionally to error, clamped between min and max
         if move in (ChassisMove.BACKWARD, ChassisMove.BACKWARD_LEFT, ChassisMove.BACKWARD_RIGHT):
             speed_max = SPEED_MAX_BACKWARD
+        elif move in (ChassisMove.TURN_LEFT, ChassisMove.TURN_RIGHT):
+            speed_max = SPEED_MAX_TURN
         else:
             speed_max = SPEED_MAX
             
