@@ -54,7 +54,7 @@ def det_at(cx, cy):
     """Synthetic single-tin DetectionResult whose BASE (ground-contact point —
     the bbox bottom-center that IBVSCentering tracks) is at pixel (cx, cy).
     The tin stands ~120px tall upward from that base."""
-    box = BoundingBox(x1=cx - 40, y1=cy - 120, x2=cx + 40, y2=cy, confidence=0.9)
+    box = BoundingBox(x1=cx - 40, y1=cy - 120, x2=cx + 40, y2=cy, confidence=0.5)
     return DetectionResult(detections=[box], frame_width=W, frame_height=H)
 
 
@@ -63,7 +63,7 @@ def det_lying_at(cx, cy, klass="lying"):
     for a lying tin) is at pixel (cx, cy), tagged with a lying orientation."""
     box = BoundingBox(
         x1=cx - 100, y1=cy - 30, x2=cx + 100, y2=cy + 30,
-        confidence=0.9,
+        confidence=0.5,
         orientation=Orientation(angle=0.0, aspect=3.3, klass=klass),
     )
     return DetectionResult(detections=[box], frame_width=W, frame_height=H)
@@ -513,7 +513,7 @@ def sim(auto=False, drive=False):
 
             ibx, iby = int(bx), int(by)
             x1, y1, x2, y2 = ibx - tw // 2, iby - th, ibx + tw // 2, iby
-            box    = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=0.99)
+            box    = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=0.5)
             result = DetectionResult(detections=[box], frame_width=fw, frame_height=fh)
             status = centering.update(result)
 
