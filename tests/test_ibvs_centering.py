@@ -364,8 +364,8 @@ LIFT_ARM  = [96.7,  96.7,  100.0, 100.0, 90.0]
 GRASP_SEQUENCE = [(0, 100.0), (2, 20.0), (3, 30.0), (1, 170.0)]
 GRIPPER_OPEN   = 0.0
 GRIPPER_CLOSE  = 40.0
-GRASP_STEP_DEG   = 5.0
-GRASP_STEP_DELAY = 0.15
+GRASP_STEP_DEG   = 3.0    # smaller = gentler move = lower peak current (weak supply)
+GRASP_STEP_DELAY = 0.3    # longer = the supply recovers between steps
 
 LYING_ARM            = [103.0, 167.0, 75.0, 150.0]
 LYING_ROLL_REF_ANGLE = 0.0
@@ -383,16 +383,26 @@ class _ArmController:
         self.gripper  = GRIPPER_OPEN
 
     def move_to(self, target_arm, target_gripper, label=""):
+        # Move ONE servo at a time (CH1..CH5, then CH6 gripper) so only one motor
+        # ever draws current at once — critical on a weak supply, where two servos
+        # moving together sag the rail and drop the arm. Each channel steps gently.
         print(f"[grasp] {label}")
-        start  = list(self.arm) + [self.gripper]
-        target = list(target_arm) + [target_gripper]
-        # All channels (incl. CH6 gripper) step gently — an instant MG996R gripper
-        # move spikes current and browns out / drops the arm.
-        self._step(
-            self.actuator, start, target,
-            GRASP_STEP_DEG, GRASP_STEP_DELAY,
-        )
-        self.arm, self.gripper = list(target_arm), float(target_gripper)
+        for ch in range(5):
+            if abs(target_arm[ch] - self.arm[ch]) > 1e-9:
+                self._one_channel(ch, target_arm[ch])
+        if abs(target_gripper - self.gripper) > 1e-9:
+            self._one_channel(5, target_gripper)
+
+    def _one_channel(self, ch, value):
+        """Step just channel `ch` to `value` — only that servo moves, the rest hold."""
+        start = list(self.arm) + [self.gripper]
+        target = list(start)
+        target[ch] = value
+        self._step(self.actuator, start, target, GRASP_STEP_DEG, GRASP_STEP_DELAY)
+        if ch < 5:
+            self.arm[ch] = value
+        else:
+            self.gripper = float(value)
 
     def grasp(self, orientation=None):
         klass = getattr(orientation, "klass", None)
