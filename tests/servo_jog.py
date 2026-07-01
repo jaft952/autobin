@@ -52,8 +52,8 @@ POSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_p
 
 # Slow, stepped servo motion — same speed as the grasp in tests/test_ibvs_centering.py
 # (GRASP_STEP_DEG / GRASP_STEP_DELAY). Keep these in sync if you retune the grasp.
-STEP_DEG = 3.0      # smaller = gentler move = lower peak current (weak supply)
-STEP_DELAY = 0.3    # longer = the supply recovers between steps
+STEP_DEG = 2.0      # smaller = gentler move = lower peak current (weak supply)
+STEP_DELAY = 0.5    # longer = the supply recovers between steps
 
 
 def main():

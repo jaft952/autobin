@@ -364,8 +364,8 @@ LIFT_ARM  = [96.7,  96.7,  100.0, 100.0, 90.0]
 GRASP_SEQUENCE = [(0, 100.0), (2, 20.0), (3, 30.0), (1, 170.0)]
 GRIPPER_OPEN   = 0.0
 GRIPPER_CLOSE  = 40.0
-GRASP_STEP_DEG   = 3.0    # smaller = gentler move = lower peak current (weak supply)
-GRASP_STEP_DELAY = 0.3    # longer = the supply recovers between steps
+GRASP_STEP_DEG   = 2.0    # smaller = gentler move = lower peak current (weak supply)
+GRASP_STEP_DELAY = 0.5    # longer = the supply recovers between steps
 
 LYING_ARM            = [103.0, 167.0, 75.0, 150.0]
 LYING_ROLL_REF_ANGLE = 0.0
