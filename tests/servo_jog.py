@@ -24,8 +24,9 @@ Run:  python tests/servo_jog.py
 
 Note: the arm CH1-5 move SLOW/stepped (same gentle speed as the grasp in
 test_ibvs_centering.py); CH6 (gripper) SNAPS straight to its target. Tune
-STEP_DEG / STEP_DELAY below. The arm homes to neutral at startup so jogs ramp
-from a known pose (these servos have no position feedback).
+STEP_DEG / STEP_DELAY below. NOTHING moves on startup — press 'h' to home. These
+servos have no position feedback, so a jogged channel ramps from its real angle,
+but an un-jogged one ramps from the assumed neutral (home first if unsure).
 """
 import os
 import sys
@@ -64,17 +65,10 @@ def main():
     def cur(ch):
         """The servo's last-commanded angle (hardware truth), falling back to the
         tracked value when it was never set / was released. These servos have NO
-        position feedback, so the true angle is unknown until we command it once —
-        hence the startup home below, so ramps start from a real position."""
+        position feedback, so the true angle is unknown until we command it once
+        (via a jog or 'h')."""
         a = act.kit.servo[ch].angle
         return float(a) if a is not None else float(angles[ch])
-
-    # Home CH1-6 to neutral at startup so the tracked angles match the real arm.
-    # Without this, the first jog of each channel ramps from a GUESSED start and the
-    # servo snaps to it (the "fast jump then stepped") before stepping smoothly.
-    print("  homing CH1-6 to neutral so jogs start from a known pose...")
-    for ch, a in enumerate(NEUTRAL):
-        act.kit.servo[ch].angle = max(0.0, min(SERVO_RANGE_DEG, a))
 
     def apply(i, val):
         """Move CH(i+1) to val, ramping from the servo's ACTUAL current angle so it
@@ -128,12 +122,14 @@ def main():
             print("  RELEASED all servos (no signal — arm is limp). "
                   "Set any channel to re-engage.")
         elif cmd == "h":
-            # Home to neutral ONE CHANNEL AT A TIME, in order CH1 -> CH6 (not all
-            # together). apply() ramps each channel slowly from its actual angle;
-            # CH6 (gripper) snaps. Each channel finishes before the next starts.
+            # Home to neutral ONE CHANNEL AT A TIME, CH1 -> CH6. apply() ramps each
+            # from its actual angle; then force-write neutral so the channel goes
+            # home even if the tracked pose already matched it (no position feedback).
             print("  homing CH1 -> CH6 in sequence...")
             for i, a in enumerate(NEUTRAL):
                 apply(i, a)
+                act.kit.servo[i].angle = max(0.0, min(SERVO_RANGE_DEG, a))
+                angles[i] = a
             print(f"  homed CH1-6 -> {[round(a, 1) for a in NEUTRAL]}")
             last_ch = 0
         elif cmd == "p":
