@@ -386,10 +386,11 @@ class _ArmController:
         print(f"[grasp] {label}")
         start  = list(self.arm) + [self.gripper]
         target = list(target_arm) + [target_gripper]
+        # All channels (incl. CH6 gripper) step gently — an instant MG996R gripper
+        # move spikes current and browns out / drops the arm.
         self._step(
             self.actuator, start, target,
             GRASP_STEP_DEG, GRASP_STEP_DELAY,
-            instant=(5,),
         )
         self.arm, self.gripper = list(target_arm), float(target_gripper)
 

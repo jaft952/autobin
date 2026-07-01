@@ -72,12 +72,13 @@ def main():
 
     def apply(i, val):
         """Move CH(i+1) to val, ramping from the servo's ACTUAL current angle so it
-        doesn't snap. CH1-5 step slowly; CH6 (gripper) snaps via instant=(5,)."""
+        doesn't snap. ALL channels (incl. CH6) step gently — an instant gripper
+        move spikes current and can brown out / drop the arm."""
         val = max(0.0, min(SERVO_RANGE_DEG, float(val)))
         start = [cur(c) for c in range(NUM_CH)]
         target = list(start)
         target[i] = val
-        stepped_move(act, start, target, STEP_DEG, STEP_DELAY, instant=(5,))
+        stepped_move(act, start, target, STEP_DEG, STEP_DELAY)
         angles[:] = start
         angles[i] = val
         print(f"  CH{i + 1} = {val:.1f}°")

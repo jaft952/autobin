@@ -38,7 +38,7 @@ class GraspPlanner:
         via the shared stepped_move, tracking the new pose for the next call."""
         start = list(self._arm) + [self._gripper]
         target = list(target_arm) + [target_gripper]
-        stepped_move(self.actuator, start, target, instant=(5,))
+        stepped_move(self.actuator, start, target)   # CH6 steps too (avoid current spike)
         self._arm, self._gripper = list(target_arm), float(target_gripper)
 
     def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic"):
