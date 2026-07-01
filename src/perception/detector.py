@@ -180,13 +180,13 @@ class AluminiumCanDetector:
         detector.stop()
     """
 
-    DEFAULT_MODEL_PATH = "src/models/best.pt"
+    DEFAULT_MODEL_PATH = "src/models/inference_01072026.pt"
 
     def __init__(
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.8,
+        conf_threshold: float = 0.5,
         frame_width: int = 1280,
         frame_height: int = 720,
         device=0,
