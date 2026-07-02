@@ -34,7 +34,9 @@ def main():
         return
 
     print_menu()
-    mode = {"tool": GRIPPER_DOWN, "name": "DOWN"}  # default: gripper points down
+    # Default is FREE (position-only, no "always point down") so you can probe the
+    # real reachable workspace. Type 'down' to re-enable the gripper-down constraint.
+    mode = {"tool": None, "name": "FREE"}
 
     while True:
         try:
