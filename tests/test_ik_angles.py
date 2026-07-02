@@ -34,23 +34,15 @@ from src.arm.analytical_ik import (
     AnalyticalArmIK, _ik_to_servo, DOWN_PITCH_RAD, GRASP_TILTS_DEG,
 )
 from src.arm.kinematics import (
-    ArmKinematics, GRIPPER_DOWN, SERVO_NEUTRAL_CMD, SERVO_CMD_MAX,
-    joint_half_range_deg, IK_POSITION_TOLERANCE,
+    ArmKinematics, joint_half_range_deg, IK_POSITION_TOLERANCE,
 )
 
 CH = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist_pitch", "CH5 roll"]
 
 
-def print_bounds():
-    print("Joint limits currently enforced by the IK (from SERVO_NEUTRAL_CMD, minus 5° margin):")
-    for i in range(1, 6):
-        n = SERVO_NEUTRAL_CMD[i]
-        half = joint_half_range_deg(i)
-        # Physical one-sided room in servo units, ignoring the symmetric IK bound.
-        room_lo, room_hi = n - 0.0, SERVO_CMD_MAX - n
-        print(f"  {CH[i-1]:<14} neutral={n:6.1f}  IK bound=±{half:5.1f}°   "
-              f"servo room: {room_lo:.0f}° down / {room_hi:.0f}° up")
-    print()
+def fmt_servo(servo):
+    """Clean, plain-number servo line: '123.3  149.4  41.3  138.6  90.0'."""
+    return "  ".join(f"{float(v):6.1f}" for v in servo)
 
 
 def diagnose(analytic, target, grasp_down):
@@ -83,52 +75,46 @@ def diagnose(analytic, target, grasp_down):
     worst, angles, usage = candidates[0]
     servo = _ik_to_servo(angles)
     over = worst > 1.0
-    print(f"  closest position-reaching pose ({'OVER joint limits' if over else 'within limits'}):")
-    print(f"    servo CH1-5 = {servo}")
+    print(f"  Closest pose that reaches the point — servo CH1-5:")
+    print(f"    {fmt_servo(servo)}")
+    print(f"  Each joint can only swing so far from its rest position; here is how")
+    print(f"  much of that allowance each one needs (over 100% = the IK forbids it):")
     for i in range(1, 6):
-        deg = np.degrees(angles[i])
         u = usage[i - 1] * 100
-        flag = "  <-- OVER LIMIT" if u > 100 else ""
-        print(f"    {CH[i-1]:<14} model {deg:7.1f}°   ({u:4.0f}% of ±{joint_half_range_deg(i):.0f}°){flag}")
+        flag = "  <-- TOO FAR, this joint blocks it" if u > 100 else ""
+        print(f"    {CH[i-1]:<14} {u:4.0f}%{flag}")
     if over:
-        print("    => a pose that REACHES the point exists, but the IK bound rejects it.")
-        print("       If the real servo can physically go there, the bound/margin is too tight.")
+        print("  => A pose that REACHES the point exists, but a joint's allowed range")
+        print("     stops the IK. If the real servo physically goes there, the limit is too tight.")
 
 
 def report(analytic, kin, target, grasp_down):
-    print("=" * 64)
+    print("=" * 56)
     print(f"TARGET {target}   mode={'DOWN' if grasp_down else 'FREE'}")
-    print("-" * 64)
+    print("-" * 56)
 
-    # 1) What the analytic solver officially returns.
     servo = analytic.solve(list(target), grasp_down=grasp_down)
-    if servo is None:
-        print("[analytic] returns None (rejected).")
-    else:
+    if servo is not None:
         tip = kin.predict_tip(servo)
         err = np.linalg.norm(np.array(tip) - np.array(target)) * 100
-        print(f"[analytic] servo CH1-5 = {servo}")
-        print(f"[analytic] model tip   = {tip}   residual {err:.2f} cm")
-
-    # 2) ikpy backup solver, for cross-check.
-    try:
-        servo2 = kin.calculate_servo_angles(list(target),
-                                            tool_direction=GRIPPER_DOWN if grasp_down else None)
-        print(f"[ikpy]     servo CH1-5 = {servo2}")
-    except Exception as e:
-        print(f"[ikpy]     error: {e}")
-
-    # 3) The diagnostic — closest reaching pose + per-joint usage.
-    print("-" * 64)
-    diagnose(analytic, target, grasp_down)
-    print("=" * 64 + "\n")
+        print("  ✅ REACHABLE")
+        print("  SERVO ANGLES to send   CH1    CH2    CH3    CH4    CH5")
+        print(f"                       {fmt_servo(servo)}")
+        landed = tuple(round(float(t), 3) for t in tip)
+        print(f"  Model says gripper lands at {landed} m  (off target by {err:.1f} cm)")
+    else:
+        print("  ❌ The IK will NOT move here. Closest it can get, and why:")
+        diagnose(analytic, target, grasp_down)
+    print("=" * 56 + "\n")
 
 
 def do_fk(kin, servo5):
     """Model tip for 5 hardcoded servo commands — the calibration comparison."""
     tip = kin.predict_tip(servo5)
-    print(f"  servo {servo5}  ->  model tip {tip} (meters)")
-    print(f"  compare that to where the REAL arm's gripper actually is with these angles.\n")
+    landed = tuple(round(float(t), 3) for t in tip)
+    print(f"  servo {fmt_servo(servo5)}")
+    print(f"  ->  model says the gripper is at {landed} m")
+    print(f"  Compare that to where the REAL gripper actually is (ruler).\n")
 
 
 def main():
@@ -138,12 +124,13 @@ def main():
     # One-shot mode: `python tests/test_ik_angles.py 0.1 0.2 0.1`
     if len(sys.argv) == 4:
         target = tuple(float(v) for v in sys.argv[1:4])
-        print_bounds()
         report(analytic, kin, target, grasp_down=False)
         return
 
-    print_bounds()
-    print("Commands: 'x y z' | 'fk c1 c2 c3 c4 c5' | 'down' | 'free' | 'q'")
+    print("Type a target 'x y z' to get the servo angles. Other commands:")
+    print("  fk c1 c2 c3 c4 c5  -> where the model thinks those servo angles land")
+    print("  down / free        -> gripper must point down, or don't care (default free)")
+    print("  q                  -> quit")
     grasp_down = False
 
     while True:
