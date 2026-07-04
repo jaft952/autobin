@@ -12,6 +12,8 @@ def print_menu():
     print("  'x y z' : move to specific position in meters (such as: 0.15 0 0.1)")
     print("  'down'  : gripper-DOWN mode (constrained, for grasping)")
     print("  'free'  : POSITION-ONLY mode (no orientation, comfortable poses)")
+    print("  'comp'  : sag compensation ON (default) - aims high to cancel tip droop")
+    print("  'raw'   : sag compensation OFF - command the raw model target")
     print("  'g'     : grasp (close gripper)")
     print("  'r'     : release (open gripper)")
     print("  'h'     : home ")
@@ -36,7 +38,7 @@ def main():
     print_menu()
     # Default is FREE (position-only, no "always point down") so you can probe the
     # real reachable workspace. Type 'down' to re-enable the gripper-down constraint.
-    mode = {"tool": None, "name": "FREE"}
+    mode = {"tool": None, "name": "FREE", "comp": True}
 
     while True:
         try:
@@ -59,6 +61,16 @@ def main():
             elif user_input == 'free':
                 mode["tool"], mode["name"] = None, "FREE"
                 print("mode: POSITION-ONLY (no orientation constraint)")
+                continue
+
+            elif user_input == 'comp':
+                mode["comp"] = True
+                print("sag compensation ON: aiming at (target - measured tip error)")
+                continue
+
+            elif user_input == 'raw':
+                mode["comp"] = False
+                print("sag compensation OFF: commanding the raw model target")
                 continue
 
             elif user_input == 'g':
@@ -86,7 +98,8 @@ def main():
                 x, y, z = [float(p) for p in parts]
                 print(f"moving to position: X={x}, Y={y}, Z={z} ({mode['name']}) ...")
 
-                success = planner.move_to([x, y, z], tool_direction=mode["tool"])
+                success = planner.move_to([x, y, z], tool_direction=mode["tool"],
+                                          compensate=mode["comp"])
                 if success:
                     print(f"✅ successfully reached target position! ({x}, {y}, {z})")
                 else:

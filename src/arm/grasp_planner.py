@@ -8,8 +8,18 @@ HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]
 BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]    
 GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]  
 
-GRIPPER_OPEN = 0.0       
-GRIPPER_CLOSED = 40.0    
+GRIPPER_OPEN = 0.0
+GRIPPER_CLOSED = 40.0
+
+# ── Real-world tip correction ────────────────────────────────────────────────
+# The real tip lands offset from the model target (mostly gravity sag), ruler-
+# measured 2026-07-04 by commanding FREE targets and measuring the real tip:
+#   cmd (20,20,20)cm -> real (18,22,13)    err (-2, +2, -7)
+#   cmd (10,20,20)cm -> real (7,22,14.5)   err (-3, +2, -5.5)
+# The error is ~constant, so move_to() aims at (target - TIP_ERROR_M) and the
+# real tip lands on target. Refine with tests/measure_ik_error.py (it measures
+# the RAW model, no correction): ADD its new mean error to these numbers.
+TIP_ERROR_M = (-0.025, 0.020, -0.0625)
 
 # Registry so the test tooling can jog to a full pose (arm + gripper) by name.
 NAMED_POSES = {
@@ -41,20 +51,29 @@ class GraspPlanner:
         stepped_move(self.actuator, start, target)   # CH6 steps too (avoid current spike)
         self._arm, self._gripper = list(target_arm), float(target_gripper)
 
-    def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic"):
+    def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic",
+                compensate: bool = True):
         """
         Calculates and moves the arm to the (x, y, z) position in meters.
         By default the gripper is kept pointing DOWN (tool_direction=GRIPPER_DOWN);
         pass tool_direction=None for pure position IK.
         solver="analytic" uses the closed-form IK (default); solver="ikpy" uses the
         numerical backup.
+        compensate=True aims at (target - TIP_ERROR_M) so the REAL tip lands on
+        target_xyz despite gravity sag; pass False to command the raw model target.
         """
-        print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ({solver}) ...")
+        goal = list(target_xyz)
+        if compensate:
+            goal = [goal[i] - TIP_ERROR_M[i] for i in range(3)]
+            print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} "
+                  f"(sag-compensated aim {[round(v, 4) for v in goal]}, {solver}) ...")
+        else:
+            print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ({solver}) ...")
 
         if solver == "ikpy":
-            servo_angles = self.kinematics.calculate_servo_angles(target_xyz, tool_direction)
+            servo_angles = self.kinematics.calculate_servo_angles(goal, tool_direction)
         else:
-            servo_angles = self.ik.solve(target_xyz, grasp_down=(tool_direction is not None))
+            servo_angles = self.ik.solve(goal, grasp_down=(tool_direction is not None))
 
         # None means no reachable solution — do NOT move the arm and report honestly.
         if servo_angles is None:
