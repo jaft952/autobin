@@ -17,16 +17,23 @@ SEED_WRIST_RAD = np.radians(45)
 JOINT_BOUND_MARGIN_DEG = 5.0
 
 
-def joint_half_range_deg(i: int) -> float:
-    """Usable half-range (degrees) of joint i: how far its command can swing from neutral
-    within the 0..SERVO_CMD_MAX window (1:1 scale), minus a safety margin off the limit."""
+def joint_range_deg(i: int) -> tuple:
+    """Usable IK-angle window (lo_deg, hi_deg) of joint i: the full 0..SERVO_CMD_MAX
+    command window mapped through neutral/direction, minus a safety margin at each end.
+    ASYMMETRIC because the neutrals aren't 90 — e.g. CH3 (neutral 100, not reversed)
+    can swing -95..+75 deg, and CH4 (neutral 100, reversed) -75..+95. The old
+    symmetric +/-min(n, 180-n) bound threw the extra ~15-20 deg away and rejected
+    physically reachable targets."""
     n = SERVO_NEUTRAL_CMD[i]
-    physical = min(n, SERVO_CMD_MAX - n) / CMD_PER_DEG
-    return max(5.0, physical - JOINT_BOUND_MARGIN_DEG)
+    direction = -1.0 if i in REVERSED_JOINTS else 1.0
+    a = direction * (JOINT_BOUND_MARGIN_DEG - n) / CMD_PER_DEG
+    b = direction * ((SERVO_CMD_MAX - JOINT_BOUND_MARGIN_DEG) - n) / CMD_PER_DEG
+    return (a, b) if a <= b else (b, a)
 
 
-def joint_bound_rad(i: int) -> float:
-    return np.radians(joint_half_range_deg(i))
+def joint_range_rad(i: int) -> tuple:
+    lo, hi = joint_range_deg(i)
+    return (np.radians(lo), np.radians(hi))
 
 GRIPPER_DOWN = [0.0, 0.0, -1.0]
 APPROACH_TILTS_DEG = (0.0, 25.0, 45.0)
@@ -52,7 +59,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.029],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-joint_bound_rad(1), joint_bound_rad(1)),
+                bounds=joint_range_rad(1),
             ),
 
             URDFLink(
@@ -60,7 +67,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.069],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-joint_bound_rad(2), joint_bound_rad(2)),
+                bounds=joint_range_rad(2),
             ),
 
             URDFLink(
@@ -68,7 +75,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.105],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-joint_bound_rad(3), joint_bound_rad(3)),
+                bounds=joint_range_rad(3),
             ),
 
             URDFLink(
@@ -76,7 +83,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.128],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
-                bounds=(-joint_bound_rad(4), joint_bound_rad(4)),
+                bounds=joint_range_rad(4),
             ),
 
             URDFLink(
@@ -84,7 +91,7 @@ class ArmKinematics:
                 origin_translation=[0, 0, 0.031],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
-                bounds=(-joint_bound_rad(5), joint_bound_rad(5)),
+                bounds=joint_range_rad(5),
             ),
 
             # Tool Center Point (TCP) = gripper tip. Completes segment D:
@@ -112,7 +119,8 @@ class ArmKinematics:
         theta1 = phi - family * (np.pi / 2.0)
         # Wrap to [-pi, pi] then clamp into CH1's reachable range.
         theta1 = (theta1 + np.pi) % (2 * np.pi) - np.pi
-        theta1 = float(np.clip(theta1, -joint_bound_rad(1), joint_bound_rad(1)))
+        lo1, hi1 = joint_range_rad(1)
+        theta1 = float(np.clip(theta1, lo1, hi1))
 
         return [
             0.0,                # OriginLink 
@@ -190,8 +198,22 @@ class ArmKinematics:
         else:
             directions = [(None, None)]
 
-        # Seed priority: azimuth-aimed branch -> last good pose (warm start) -> mirror branch.
-        seeds = [self._make_seed(target_xyz, family=1)]
+        # Seed priority: analytic closed-form solution (if one exists, the optimizer
+        # starts AT a valid pose and converges immediately) -> azimuth-aimed branch
+        # -> last good pose (warm start) -> mirror branch.
+        seeds = []
+        try:
+            # Lazy import: analytical_ik imports from this module, so a top-level
+            # import here would be circular.
+            from src.arm.analytical_ik import AnalyticalArmIK
+            servo = AnalyticalArmIK().solve(
+                list(target_xyz), grasp_down=(tool_direction is GRIPPER_DOWN)
+            )
+            if servo is not None:
+                seeds.append(self._servo_to_ik(servo))
+        except Exception:
+            pass  # analytic seeding is best-effort; numeric seeds below still apply
+        seeds.append(self._make_seed(target_xyz, family=1))
         if self._last_solution_ok and self._last_angles is not None:
             seeds.append(list(self._last_angles))
         seeds.append(self._make_seed(target_xyz, family=-1))

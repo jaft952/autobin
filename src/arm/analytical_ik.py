@@ -7,7 +7,7 @@ from src.arm.kinematics import (
     SERVO_CMD_MAX,
     REVERSED_JOINTS,
     IK_POSITION_TOLERANCE,
-    joint_bound_rad,
+    joint_range_rad,
 )
 
 # Planar geometry — MUST match the link translations in kinematics.py's chain.
@@ -40,7 +40,11 @@ class AnalyticalArmIK:
     """Closed-form IK. solve() returns physical servo angles [CH1..CH5] or None."""
 
     def __init__(self):
-        self.bounds = [0.0] + [joint_bound_rad(i) for i in range(1, 6)]  # radians, index 1..5
+        # Per-joint ASYMMETRIC angle windows (radians, index 1..5): the full servo
+        # command range mapped around each neutral — see kinematics.joint_range_deg.
+        ranges = [(0.0, 0.0)] + [joint_range_rad(i) for i in range(1, 6)]
+        self.lo = [r[0] for r in ranges]
+        self.hi = [r[1] for r in ranges]
 
     # ── public ────────────────────────────────────────────────────────────
     def solve(self, target_xyz, grasp_down: bool = True):
@@ -59,7 +63,7 @@ class AnalyticalArmIK:
 
         best = None  # (cost, angles)
         for theta1, r in self._yaw_branches(x, y):
-            if abs(theta1) > self.bounds[1] + _EPS:
+            if not (self.lo[1] - _EPS <= theta1 <= self.hi[1] + _EPS):
                 continue
             for phi4, tilt in pitches:
                 for theta2, theta3, theta4 in self._planar_solutions(r, z, phi4):
@@ -125,13 +129,25 @@ class AnalyticalArmIK:
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _max_joint_usage(self, angles):
-        """max |theta_i| / bound_i over CH1..CH5; <=1 means within limits, lower = comfier."""
+        """Worst per-joint usage over CH1..CH5 against the ASYMMETRIC windows:
+        theta/hi when swinging positive, theta/lo when negative (both ratios are
+        positive fractions of the available room in that direction).
+        <=1 means within limits, lower = comfier."""
         worst = 0.0
         for i in range(1, 6):
-            b = self.bounds[i]
-            if b <= _EPS:           # CH5 (roll) has a tiny modelled range; ignore it
-                continue
-            worst = max(worst, abs(angles[i]) / b)
+            a = angles[i]
+            if a >= 0.0:
+                room = self.hi[i]
+                if room <= _EPS:
+                    if a > _EPS:
+                        return float("inf")   # no positive travel at all
+                    continue
+                worst = max(worst, a / room)
+            else:
+                room = self.lo[i]
+                if room >= -_EPS:
+                    return float("inf")       # no negative travel at all
+                worst = max(worst, a / room)
         return worst
 
     @staticmethod

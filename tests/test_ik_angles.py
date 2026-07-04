@@ -28,13 +28,17 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Windows consoles default to cp1252, which can't encode the emoji below.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import numpy as np
 
 from src.arm.analytical_ik import (
     AnalyticalArmIK, _ik_to_servo, DOWN_PITCH_RAD, GRASP_TILTS_DEG,
 )
 from src.arm.kinematics import (
-    ArmKinematics, joint_half_range_deg, IK_POSITION_TOLERANCE,
+    ArmKinematics, joint_range_deg, IK_POSITION_TOLERANCE,
 )
 
 CH = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist_pitch", "CH5 roll"]
@@ -63,7 +67,14 @@ def diagnose(analytic, target, grasp_down):
                 tip = analytic._fk(angles)
                 if np.linalg.norm(tip - np.array([x, y, z])) > IK_POSITION_TOLERANCE:
                     continue  # this pose does not actually land on the target
-                usage = [abs(np.degrees(angles[i])) / joint_half_range_deg(i) for i in range(1, 6)]
+                # Usage vs the ASYMMETRIC window: fraction of the room available
+                # in the direction the joint actually swings.
+                usage = []
+                for i in range(1, 6):
+                    deg = np.degrees(angles[i])
+                    lo, hi = joint_range_deg(i)
+                    room = hi if deg >= 0 else lo
+                    usage.append(abs(deg / room) if abs(room) > 1e-9 else float("inf"))
                 candidates.append((max(usage), angles, usage))
 
     if not candidates:
