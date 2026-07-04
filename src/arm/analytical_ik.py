@@ -24,6 +24,9 @@ LEVEL_PITCH_RAD = -np.pi / 2.0  # gripper horizontal, pointing forward at the ta
 # Tilt ladder away from vertical to try (finer steps fill boundary slivers where
 # a pose exists only between two coarse rungs — closed-form solves are ~free).
 GRASP_TILTS_DEG = tuple(float(t) for t in range(0, 46, 5))
+# LEVEL keeps a much tighter ladder: at +-45 deg a "level" waist grab isn't level
+# at all (it once returned a 45-deg-down pose under the LEVEL name).
+LEVEL_TILTS_DEG = (0.0, 5.0, 10.0, 15.0)
 # FREE-mode pitch sweep step (deg). At 10 deg the reachable region had razor-thin
 # holes near the workspace edge (0.4mm of target z flipping solvable/unsolvable).
 FREE_SWEEP_STEP_DEG = 2
@@ -78,7 +81,7 @@ class AnalyticalArmIK:
                        for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
         elif approach == "level":
             pitches = [(LEVEL_PITCH_RAD + np.radians(s * t), t)
-                       for t in GRASP_TILTS_DEG
+                       for t in LEVEL_TILTS_DEG
                        for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
         elif approach == "free":
             pitches = [(np.radians(p), None) for p in range(-180, 91, FREE_SWEEP_STEP_DEG)]
