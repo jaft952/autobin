@@ -5,7 +5,9 @@ Offline unit tests + live / sim demos for the IBVS centering layer.
 
 Modes:
     python test_ibvs_centering.py           -> offline unit tests (no camera)
-    python test_ibvs_centering.py --live    -> live camera + real YOLO
+    python test_ibvs_centering.py --live    -> live camera + real YOLO (YOLO11-seg:
+                                               window shows the real mask overlay,
+                                               console prints src=seg/bbox)
     python test_ibvs_centering.py --sim     -> real camera + fake draggable tin
     python test_ibvs_centering.py --live --drive   -> live + chassis motion ON
     python test_ibvs_centering.py --live --auto    -> live + auto grab ON
@@ -202,8 +204,14 @@ def live(auto=False, drive=False):
                 error_mag = max(abs(status.error_x), abs(status.error_y))
 
                 px = f"center={status.target_px}" if status.target_px else "center=none"
+                # src=seg -> the real YOLO11-seg mask is attached (orientation
+                # uses it, window shows the overlay); src=bbox -> no mask, the
+                # classical-CV fallback segmented the crop instead.
+                best = result.best
+                mask_tag = "seg" if (best is not None and best.mask_poly is not None) else "bbox"
                 print(
-                    f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
+                    f"{px:>22}  src={mask_tag:<4} "
+                    f"err=({status.error_x:+.2f},{status.error_y:+.2f})  "
                     f"move={status.move.value:<14} stable={status.stable}  "
                     f"err_mag={error_mag:.2f}  | {status.message}"
                 )

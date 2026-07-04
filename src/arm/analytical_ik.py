@@ -11,10 +11,12 @@ from src.arm.kinematics import (
 )
 
 # Planar geometry — MUST match the link translations in kinematics.py's chain.
-H_SHOULDER = 0.042 + 0.105      # CH2 (shoulder) axis height above the base origin
-L1 = 0.1275                     # CH2 -> CH3
-L2 = 0.070                      # CH3 -> CH4
-L3 = 0.031 + 0.083              # CH4 -> TCP (wrist_rotate + gripper, collinear)
+# RULER-MEASURED on the real arm (2026-07-03), axis-center to axis-center.
+# z=0 is the surface the 2.9cm mounting block sits on (chassis deck).
+H_SHOULDER = 0.029 + 0.069      # A: deck -> CH2 (shoulder) axis = 9.8cm measured
+L1 = 0.105                      # B: CH2 -> CH3 = 10.5cm measured
+L2 = 0.128                      # C: CH3 -> CH4 = 12.8cm measured
+L3 = 0.031 + 0.1555             # D: CH4 -> gripper tip = 18.65cm measured
 
 DOWN_PITCH_RAD = -np.pi         # cumulative pitch for the gripper pointing straight down
 GRASP_TILTS_DEG = (0.0, 15.0, 30.0, 45.0)   # outward tilt from straight-down to try

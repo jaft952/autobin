@@ -39,53 +39,59 @@ class ArmKinematics:
     Coordinates are in meters. Zero-position is straight up along Z-axis.
     """
     def __init__(self):
+        # Link lengths RULER-MEASURED on the real arm (2026-07-03, axis-center
+        # to axis-center, arm vertical). z=0 = the surface the 2.9cm mounting
+        # block sits on (chassis deck): A = 2.9 block + 6.9 = 9.8 to CH2 axis.
+        # The original guessed lengths had B/C's long and short segments swapped
+        # and D far too short — tip landed ~6cm too far forward and ~13cm too low.
         self.chain = Chain(name="yf_6125mg_arm", links=[
             OriginLink(),
 
             URDFLink(
-                name="base_rotation",           # CH1: 0°-270° (Yaw)
-                origin_translation=[0, 0, 0.042],
+                name="base_rotation",           # CH1: Yaw (2.9cm mounting block)
+                origin_translation=[0, 0, 0.029],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
                 bounds=(-joint_bound_rad(1), joint_bound_rad(1)),
             ),
 
             URDFLink(
-                name="shoulder",                # CH2: 0°-270° (Pitch)
-                origin_translation=[0, 0, 0.105],
+                name="shoulder",                # CH2: Pitch (A: deck->axis 9.8 total)
+                origin_translation=[0, 0, 0.069],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
                 bounds=(-joint_bound_rad(2), joint_bound_rad(2)),
             ),
 
             URDFLink(
-                name="elbow",                   # CH3: 0°-270° (Pitch)
-                origin_translation=[0, 0, 0.1275],
+                name="elbow",                   # CH3: Pitch (B: CH2->CH3 = 10.5)
+                origin_translation=[0, 0, 0.105],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
                 bounds=(-joint_bound_rad(3), joint_bound_rad(3)),
             ),
 
             URDFLink(
-                name="wrist_pitch",             # CH4: 0°-270° (Pitch)
-                origin_translation=[0, 0, 0.070],
+                name="wrist_pitch",             # CH4: Pitch (C: CH3->CH4 = 12.8)
+                origin_translation=[0, 0, 0.128],
                 origin_orientation=[0, 0, 0],
                 rotation=[1, 0, 0],
                 bounds=(-joint_bound_rad(4), joint_bound_rad(4)),
             ),
 
             URDFLink(
-                name="wrist_rotate",            # CH5: 0°-270° (Roll)
+                name="wrist_rotate",            # CH5: Roll (inside segment D)
                 origin_translation=[0, 0, 0.031],
                 origin_orientation=[0, 0, 0],
                 rotation=[0, 0, 1],
                 bounds=(-joint_bound_rad(5), joint_bound_rad(5)),
             ),
 
-            # Tool Center Point (TCP). It represents the tip of the gripper.
+            # Tool Center Point (TCP) = gripper tip. Completes segment D:
+            # CH4 axis -> closed gripper tip = 18.65cm measured (3.1 + 15.55).
             URDFLink(
                 name="gripper_tcp",             # CH6 Handled elsewhere (Claw state)
-                origin_translation=[0, 0, 0.083],
+                origin_translation=[0, 0, 0.1555],
                 origin_orientation=[0, 0, 0],
                 rotation=None,
                 joint_type="fixed",

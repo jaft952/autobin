@@ -36,7 +36,8 @@ def main():
     print("\n[A] predict_tip / FK sanity")
     neutral_servo = [SERVO_NEUTRAL_CMD[i] for i in range(1, 6)]  # model-zero pose commands
     tip = kin.predict_tip(neutral_servo)
-    check("neutral tip ~ (0,0,0.4585) m", abs(tip[0]) < 1e-3 and abs(tip[1]) < 1e-3 and abs(tip[2] - 0.4585) < 2e-3, str(tip))
+    # 0.5175 = H_SHOULDER 0.098 + L1 0.105 + L2 0.128 + L3 0.1865 (measured 2026-07-03)
+    check("neutral tip ~ (0,0,0.5175) m", abs(tip[0]) < 1e-3 and abs(tip[1]) < 1e-3 and abs(tip[2] - 0.5175) < 2e-3, str(tip))
 
     print("\n[B] azimuth seed (_make_seed) points CH1 at the target")
     t1 = math.degrees(kin._make_seed([0.0, 0.1, 0.1], family=1)[1])   # +Y  -> expect ~0

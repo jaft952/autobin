@@ -1,9 +1,12 @@
 """
 src/perception/orientation.py
 
-Classical-CV orientation estimate for a detected can — no extra model / no
-retraining. Given the camera frame and a YOLO bounding box, it segments the can
-inside the box and fits a rotated rectangle (cv2.minAreaRect) to read:
+Orientation estimate for a detected can. When the detection carries a real
+segmentation mask (YOLO11-seg -> BoundingBox.mask_poly), the rotated rectangle
+is fitted directly to that mask outline — no thresholding, robust to busy
+backgrounds. Boxes without a mask (detect-only models, synthetic test boxes)
+fall back to the classical-CV path: segment the can inside the bbox crop and
+fit cv2.minAreaRect to the largest contour.
 
     angle  — the can's long-axis angle in the image (deg, 0..180; ~90 = vertical)
     aspect — long/short side ratio (>= 1)
@@ -14,7 +17,7 @@ Used by the grasp pipeline to pick the grasp target point and the gripper roll:
     lying    -> grasp the can CENTER, roll CH5 to (angle + 90)
     axial    -> looks round => axis points ~toward the robot => fixed roll
 
-cv2 / numpy are imported lazily inside the function so importing this module
+cv2 / numpy are imported lazily inside the functions so importing this module
 (e.g. the Orientation dataclass) never loads a native library.
 """
 from __future__ import annotations
@@ -28,12 +31,10 @@ class Orientation:
     klass: str      # "upright" | "lying" | "axial"
 
 
-def estimate_orientation(frame_bgr, box, round_aspect: float = 1.35,
-                         upright_band_deg: float = 35.0):
-    """Estimate a can's orientation from its bounding-box crop. Returns an
-    Orientation, or None if the can couldn't be segmented.
-
-    `box` only needs .x1/.y1/.x2/.y2 (duck-typed — no import of BoundingBox)."""
+def _classical_contour(frame_bgr, box):
+    """Fallback when no real mask is available: segment the can inside its
+    bbox crop and return the largest contour (in crop coords), or None.
+    Angle/aspect are translation-invariant, so crop coords are fine."""
     import cv2
     import numpy as np
 
@@ -60,6 +61,27 @@ def estimate_orientation(frame_bgr, box, round_aspect: float = 1.35,
     cnt = max(cnts, key=cv2.contourArea)
     if cv2.contourArea(cnt) < 0.05 * mask.size:
         return None
+    return cnt
+
+
+def estimate_orientation(frame_bgr, box, round_aspect: float = 1.35,
+                         upright_band_deg: float = 35.0):
+    """Estimate a can's orientation. Prefers the real YOLO11-seg mask outline
+    (box.mask_poly, Nx2 pixel coords); otherwise segments the bbox crop with
+    classical CV. Returns an Orientation, or None if the can couldn't be
+    segmented.
+
+    `box` only needs .x1/.y1/.x2/.y2 (+ optional .mask_poly) — duck-typed."""
+    import cv2
+    import numpy as np
+
+    poly = getattr(box, "mask_poly", None)
+    if poly is not None and len(poly) >= 3:
+        cnt = np.asarray(poly, dtype=np.float32).reshape(-1, 1, 2)
+    else:
+        cnt = _classical_contour(frame_bgr, box)
+        if cnt is None:
+            return None
 
     (_, (w, h), _) = cv2.minAreaRect(cnt)
     if w == 0 or h == 0:

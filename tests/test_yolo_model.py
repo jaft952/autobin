@@ -1,8 +1,10 @@
 """
 tests/test_yolo_model.py
 
-Test the aluminium-can YOLO model. Loads the .pt model directly — no ONNX,
-no copying anything.
+Test the aluminium-can YOLO model (YOLO11 segmentation). Loads the .pt model
+directly — no ONNX, no copying anything. Works with both detect and segment
+models: boxes are always reported, and mask count is shown when the model
+outputs segmentation masks.
 
 Two modes (auto-detected, or force with --mode):
     windows : CAP_DSHOW backend, 1280x720, uses NVIDIA GPU if present, live window.
@@ -31,7 +33,8 @@ import cv2
 from ultralytics import YOLO
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = ROOT / "src/models/best.pt" 
+# On the Pi the model under test is copied/renamed to best.pt — keep this path.
+DEFAULT_MODEL = ROOT / "src/models/best.pt"
 
 # Per-mode capture / inference settings.
 MODE_SETTINGS = {
@@ -82,11 +85,15 @@ def run_image(model, path, conf, device, imgsz, show, save, classes):
         return
     results = model.predict(source=img, conf=conf, device=device, imgsz=imgsz,
                             classes=classes, verbose=False)
-    boxes = results[0].boxes
-    print(f"✓ {len(boxes)} detection(s) in {path}")
+    r = results[0]
+    boxes = r.boxes
+    n_masks = 0 if r.masks is None else len(r.masks)
+    print(f"✓ {len(boxes)} detection(s), {n_masks} mask(s) in {path}")
     for b in boxes:
         name = model.names[int(b.cls[0])]
         print(f"   {name}  conf={float(b.conf[0]):.2f}  xyxy={[int(v) for v in b.xyxy[0]]}")
+    if len(boxes) and n_masks == 0:
+        print("⚠ Model returned boxes but no masks — is this really a -seg model?")
 
     annotated = results[0].plot()
     if save:
@@ -132,12 +139,14 @@ def run_camera(model, index, conf, device, imgsz, settings, show, save, classes)
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
             boxes = results[0].boxes
+            n_masks = 0 if results[0].masks is None else len(results[0].masks)
             if len(boxes):
                 best = max(boxes, key=lambda b: float(b.conf[0]))
                 name = model.names[int(best.cls[0])]
                 cx = int((best.xyxy[0][0] + best.xyxy[0][2]) / 2)
                 cy = int((best.xyxy[0][1] + best.xyxy[0][3]) / 2)
-                print(f"frame {frame_i}: {len(boxes)} det(s), best={name} {float(best.conf[0]):.2f} "
+                print(f"frame {frame_i}: {len(boxes)} det(s), {n_masks} mask(s), "
+                      f"best={name} {float(best.conf[0]):.2f} "
                       f"center=({cx},{cy}) fps={fps:.1f}")
 
             if show:
@@ -185,12 +194,13 @@ def main():
     print(f"Device        : {device}")
     print(f"Image size    : {imgsz}")
     model = YOLO(str(model_path))
-    # This model was trained with class 0 labeled "item"; show it as "tin" instead.
-    # (Cosmetic only — the class id is unchanged, so detection/grasping is unaffected.)
-    # Newer ultralytics makes model.names a read-only property, so mutate the
-    # underlying names dict IN PLACE instead of reassigning model.names.
-    if 0 in model.names:
+    # The old detection model was trained with class 0 labeled "item"; the new
+    # yolo11-seg models already bake in "tin", so only rename when needed.
+    # (Cosmetic only — the class id is unchanged, so detection/grasping is unaffected.
+    # Mutate the names dict IN PLACE: newer ultralytics makes model.names read-only.)
+    if model.names.get(0) == "item":
         model.names[0] = "tin"
+    print(f"Task          : {model.task}")    # expect 'segment' for yolo11-seg
     print(f"Classes       : {model.names}")   # the labels baked into THIS model
     print(f"Conf threshold: {args.conf}")
     print("✓ Model loaded")
