@@ -4,7 +4,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.grasp_planner import GraspPlanner
-from src.arm.kinematics import GRIPPER_DOWN, GRIPPER_UP
+from src.arm.kinematics import GRIPPER_DOWN, GRIPPER_UP, GRIPPER_LEVEL
 
 def print_menu():
     print("="*40)
@@ -12,6 +12,7 @@ def print_menu():
     print("  'x y z' : move to specific position in meters (such as: 0.15 0 0.1)")
     print("  'down'  : gripper-DOWN mode (constrained, for grasping)")
     print("  'up'    : gripper-UP mode (approach from below, gripper points up)")
+    print("  'level' : gripper HORIZONTAL (grab a standing tin at its middle)")
     print("  'free'  : POSITION-ONLY mode (no orientation, comfortable poses)")
     print("  'comp'  : sag compensation ON (default) - aims high to cancel tip droop")
     print("  'raw'   : sag compensation OFF - command the raw model target")
@@ -64,6 +65,11 @@ def main():
             elif user_input == 'up':
                 mode["tool"], mode["name"] = GRIPPER_UP, "UP"
                 print("mode: gripper UP (approach from below)")
+                continue
+
+            elif user_input == 'level':
+                mode["tool"], mode["name"] = GRIPPER_LEVEL, "LEVEL"
+                print("mode: gripper HORIZONTAL (side approach, e.g. tin middle)")
                 continue
 
             elif user_input == 'free':

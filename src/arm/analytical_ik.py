@@ -20,6 +20,7 @@ L3 = 0.031 + 0.1555             # D: CH4 -> gripper tip = 18.65cm measured
 
 DOWN_PITCH_RAD = -np.pi         # cumulative pitch for the gripper pointing straight down
 UP_PITCH_RAD = 0.0              # cumulative pitch for the gripper pointing straight up
+LEVEL_PITCH_RAD = -np.pi / 2.0  # gripper horizontal, pointing forward at the target
 # Tilt ladder away from vertical to try (finer steps fill boundary slivers where
 # a pose exists only between two coarse rungs — closed-form solves are ~free).
 GRASP_TILTS_DEG = tuple(float(t) for t in range(0, 46, 5))
@@ -60,8 +61,10 @@ class AnalyticalArmIK:
         grasp_down=False: position only — sweep the approach angle and pick the comfiest
                           reachable pose (no orientation requirement).
         approach        : overrides grasp_down when given — "down", "up" (gripper
-                          pointing up, approaching from below; tilt ladder tries both
-                          sides of vertical), or "free".
+                          pointing up, approaching from below), "level" (gripper
+                          horizontal, approaching the target from the side — e.g.
+                          gripping a standing tin at its middle; tilt ladder tries
+                          both sides of horizontal), or "free".
         """
         x, y, z = (float(v) for v in target_xyz)
 
@@ -71,6 +74,10 @@ class AnalyticalArmIK:
             pitches = [(DOWN_PITCH_RAD + np.radians(t), t) for t in GRASP_TILTS_DEG]
         elif approach == "up":
             pitches = [(UP_PITCH_RAD + np.radians(s * t), t)
+                       for t in GRASP_TILTS_DEG
+                       for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
+        elif approach == "level":
+            pitches = [(LEVEL_PITCH_RAD + np.radians(s * t), t)
                        for t in GRASP_TILTS_DEG
                        for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
         elif approach == "free":

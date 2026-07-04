@@ -120,11 +120,23 @@ def report(analytic, kin, target, grasp_down):
 
 
 def do_fk(kin, servo5):
-    """Model tip for 5 hardcoded servo commands — the calibration comparison."""
+    """Model tip + tool direction for 5 hardcoded servo commands."""
     tip = kin.predict_tip(servo5)
     landed = tuple(round(float(t), 3) for t in tip)
+    axis = kin.tool_axis(kin._servo_to_ik(servo5))
+    elev = float(np.degrees(np.arcsin(np.clip(float(axis[2]), -1.0, 1.0))))
+    if elev > 60:
+        word = "pointing UP"
+    elif elev < -60:
+        word = "pointing DOWN"
+    elif abs(elev) <= 30:
+        word = "roughly HORIZONTAL"
+    else:
+        word = "tilted " + ("upward" if elev > 0 else "downward")
     print(f"  servo {fmt_servo(servo5)}")
-    print(f"  ->  model says the gripper is at {landed} m")
+    print(f"  ->  model says the gripper tip is at {landed} m")
+    print(f"  ->  tool axis {tuple(round(float(v), 2) for v in axis)}, "
+          f"elevation {elev:+.0f} deg ({word}; +90=straight up, -90=straight down)")
     print(f"  Compare that to where the REAL gripper actually is (ruler).\n")
 
 

@@ -41,6 +41,10 @@ def joint_range_rad(i: int) -> tuple:
 
 GRIPPER_DOWN = [0.0, 0.0, -1.0]
 GRIPPER_UP   = [0.0, 0.0, 1.0]   # approach from below, gripper pointing up
+# Horizontal approach (grip a standing tin at its middle). Not a fixed vector —
+# the actual direction depends on the target azimuth, so this is a sentinel that
+# calculate_servo_angles/GraspPlanner resolve per target.
+GRIPPER_LEVEL = "level"
 APPROACH_TILTS_DEG = (0.0, 25.0, 45.0)
 ORIENTATION_WARN_DEG = 20.0
 
@@ -194,6 +198,14 @@ class ArmKinematics:
                                orientation_mode="Z") -> list | None:
         target = np.asarray(target_xyz, dtype=float)
 
+        # Resolve the LEVEL sentinel into a horizontal unit vector pointing at
+        # the target azimuth (falls back to +Y if the target is on the axis).
+        is_level = tool_direction is GRIPPER_LEVEL
+        if is_level:
+            r = float(np.hypot(target[0], target[1]))
+            tool_direction = ([float(target[0] / r), float(target[1] / r), 0.0]
+                              if r > 1e-9 else [0.0, 1.0, 0.0])
+
         # Candidate approach directions: the tilt ladder for the default grasp mode,
         # exactly what the caller asked for otherwise.
         if tool_direction is GRIPPER_DOWN:
@@ -215,6 +227,8 @@ class ArmKinematics:
                 _approach = "down"
             elif tool_direction is GRIPPER_UP:
                 _approach = "up"
+            elif is_level:
+                _approach = "level"
             else:
                 _approach = "free"
             servo = AnalyticalArmIK().solve(list(target_xyz), approach=_approach)

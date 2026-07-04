@@ -1,6 +1,6 @@
 ﻿import math
 
-from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, GRIPPER_UP
+from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, GRIPPER_UP, GRIPPER_LEVEL
 from src.arm.analytical_ik import AnalyticalArmIK
 from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
@@ -96,6 +96,8 @@ class GraspPlanner:
                 approach = "down"
             elif tool_direction is GRIPPER_UP:
                 approach = "up"
+            elif tool_direction is GRIPPER_LEVEL:
+                approach = "level"
             else:
                 approach = "free"   # None or arbitrary vectors (ikpy handles those)
             servo_angles = self.ik.solve(goal, approach=approach)
