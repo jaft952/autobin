@@ -14,7 +14,11 @@ IK_POSITION_TOLERANCE = 0.01  # meters
 SEED_SHOULDER_RAD = np.radians(45)
 SEED_ELBOW_RAD = np.radians(-60)
 SEED_WRIST_RAD = np.radians(45)
-JOINT_BOUND_MARGIN_DEG = 5.0
+# Safety margin off the servo's 0/180 command ends. The hardcoded poses the arm
+# runs every day already command up to 180 (e.g. GRAB_ANGLES CH4), so 5 deg was
+# over-conservative — it alone rejected near-workspace targets like (0,0.2,0)
+# whose best pose needs a joint within ~3 deg of the command end.
+JOINT_BOUND_MARGIN_DEG = 2.0
 
 
 def joint_range_deg(i: int) -> tuple:

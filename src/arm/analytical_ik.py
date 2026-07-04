@@ -20,7 +20,12 @@ L3 = 0.031 + 0.1555             # D: CH4 -> gripper tip = 18.65cm measured
 
 DOWN_PITCH_RAD = -np.pi         # cumulative pitch for the gripper pointing straight down
 UP_PITCH_RAD = 0.0              # cumulative pitch for the gripper pointing straight up
-GRASP_TILTS_DEG = (0.0, 15.0, 30.0, 45.0)   # tilt ladder away from vertical to try
+# Tilt ladder away from vertical to try (finer steps fill boundary slivers where
+# a pose exists only between two coarse rungs — closed-form solves are ~free).
+GRASP_TILTS_DEG = tuple(float(t) for t in range(0, 46, 5))
+# FREE-mode pitch sweep step (deg). At 10 deg the reachable region had razor-thin
+# holes near the workspace edge (0.4mm of target z flipping solvable/unsolvable).
+FREE_SWEEP_STEP_DEG = 2
 # Prefer pointing more straight-down, but accept tilt if it gives a much comfier pose.
 TILT_PENALTY_PER_DEG = 0.004
 _EPS = 1e-6
@@ -69,7 +74,7 @@ class AnalyticalArmIK:
                        for t in GRASP_TILTS_DEG
                        for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
         elif approach == "free":
-            pitches = [(np.radians(p), None) for p in range(-180, 91, 10)]
+            pitches = [(np.radians(p), None) for p in range(-180, 91, FREE_SWEEP_STEP_DEG)]
         else:
             raise ValueError(f"approach must be 'down', 'up' or 'free', got {approach!r}")
 
