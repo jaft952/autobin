@@ -19,7 +19,8 @@ L2 = 0.128                      # C: CH3 -> CH4 = 12.8cm measured
 L3 = 0.031 + 0.1555             # D: CH4 -> gripper tip = 18.65cm measured
 
 DOWN_PITCH_RAD = -np.pi         # cumulative pitch for the gripper pointing straight down
-GRASP_TILTS_DEG = (0.0, 15.0, 30.0, 45.0)   # outward tilt from straight-down to try
+UP_PITCH_RAD = 0.0              # cumulative pitch for the gripper pointing straight up
+GRASP_TILTS_DEG = (0.0, 15.0, 30.0, 45.0)   # tilt ladder away from vertical to try
 # Prefer pointing more straight-down, but accept tilt if it gives a much comfier pose.
 TILT_PENALTY_PER_DEG = 0.004
 _EPS = 1e-6
@@ -47,19 +48,30 @@ class AnalyticalArmIK:
         self.hi = [r[1] for r in ranges]
 
     # ── public ────────────────────────────────────────────────────────────
-    def solve(self, target_xyz, grasp_down: bool = True):
+    def solve(self, target_xyz, grasp_down: bool = True, approach: str = None):
         """
         grasp_down=True : gripper points down (tries straight-down, then small outward
                           tilts), picking the comfiest reachable pose.
         grasp_down=False: position only — sweep the approach angle and pick the comfiest
                           reachable pose (no orientation requirement).
+        approach        : overrides grasp_down when given — "down", "up" (gripper
+                          pointing up, approaching from below; tilt ladder tries both
+                          sides of vertical), or "free".
         """
         x, y, z = (float(v) for v in target_xyz)
 
-        if grasp_down:
+        if approach is None:
+            approach = "down" if grasp_down else "free"
+        if approach == "down":
             pitches = [(DOWN_PITCH_RAD + np.radians(t), t) for t in GRASP_TILTS_DEG]
-        else:
+        elif approach == "up":
+            pitches = [(UP_PITCH_RAD + np.radians(s * t), t)
+                       for t in GRASP_TILTS_DEG
+                       for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
+        elif approach == "free":
             pitches = [(np.radians(p), None) for p in range(-180, 91, 10)]
+        else:
+            raise ValueError(f"approach must be 'down', 'up' or 'free', got {approach!r}")
 
         best = None  # (cost, angles)
         for theta1, r in self._yaw_branches(x, y):

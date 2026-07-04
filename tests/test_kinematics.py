@@ -4,13 +4,14 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.grasp_planner import GraspPlanner
-from src.arm.kinematics import GRIPPER_DOWN
+from src.arm.kinematics import GRIPPER_DOWN, GRIPPER_UP
 
 def print_menu():
     print("="*40)
     print("command :")
     print("  'x y z' : move to specific position in meters (such as: 0.15 0 0.1)")
     print("  'down'  : gripper-DOWN mode (constrained, for grasping)")
+    print("  'up'    : gripper-UP mode (approach from below, gripper points up)")
     print("  'free'  : POSITION-ONLY mode (no orientation, comfortable poses)")
     print("  'comp'  : sag compensation ON (default) - aims high to cancel tip droop")
     print("  'raw'   : sag compensation OFF - command the raw model target")
@@ -23,6 +24,8 @@ def print_menu():
     print("-"*40)
     print("  x,y,z are SIGNED components in meters (x=right, y=forward, z=up),")
     print("  NOT distances. e.g. '0 0.15 0.1' = 15cm forward, 10cm high.")
+    print("  z=0 is the CHASSIS DECK; z can go NEGATIVE below it — the FLOOR")
+    print("  is at z=-0.113 (wheel height). e.g. '0 0.25 -0.113' = touch floor.")
     print("  TIP: high z + small horizontal = low torque (less sag).")
     print("="*40)
 
@@ -56,6 +59,11 @@ def main():
             elif user_input == 'down':
                 mode["tool"], mode["name"] = GRIPPER_DOWN, "DOWN"
                 print("mode: gripper DOWN (constrained)")
+                continue
+
+            elif user_input == 'up':
+                mode["tool"], mode["name"] = GRIPPER_UP, "UP"
+                print("mode: gripper UP (approach from below)")
                 continue
 
             elif user_input == 'free':

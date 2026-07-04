@@ -36,6 +36,7 @@ def joint_range_rad(i: int) -> tuple:
     return (np.radians(lo), np.radians(hi))
 
 GRIPPER_DOWN = [0.0, 0.0, -1.0]
+GRIPPER_UP   = [0.0, 0.0, 1.0]   # approach from below, gripper pointing up
 APPROACH_TILTS_DEG = (0.0, 25.0, 45.0)
 ORIENTATION_WARN_DEG = 20.0
 
@@ -206,9 +207,13 @@ class ArmKinematics:
             # Lazy import: analytical_ik imports from this module, so a top-level
             # import here would be circular.
             from src.arm.analytical_ik import AnalyticalArmIK
-            servo = AnalyticalArmIK().solve(
-                list(target_xyz), grasp_down=(tool_direction is GRIPPER_DOWN)
-            )
+            if tool_direction is GRIPPER_DOWN:
+                _approach = "down"
+            elif tool_direction is GRIPPER_UP:
+                _approach = "up"
+            else:
+                _approach = "free"
+            servo = AnalyticalArmIK().solve(list(target_xyz), approach=_approach)
             if servo is not None:
                 seeds.append(self._servo_to_ik(servo))
         except Exception:
