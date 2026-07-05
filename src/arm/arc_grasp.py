@@ -1,72 +1,75 @@
 """
 src/arm/arc_grasp.py
 
-Empirical polar-coordinate grasping ("table IK") — the pragmatic replacement
-for model-based IK while the kinematic model doesn't match the metal.
+Empirical polar-coordinate grasping ("table IK") — the pragmatic alternative
+to model-based IK: every calibrated pose was tuned on the real arm until the
+grab physically worked, so sag, link lengths and zero offsets are baked in.
+The solver never touches the kinematic model.
 
-The camera is fixed to the arm base, so a tin's pixel position maps directly
-to arm-base polar coordinates:
+v2 DESIGN (2026-07-05) — a bilinear grid over the camera image:
 
-    pixel x (nx) -> azimuth -> CH1 only.  Base yaw is a pure rotation about the
-                    vertical axis: the gripper tip sweeps an EXACT horizontal
-                    arc, so this direction has no model error at all.
-    pixel y (ny) -> radius  -> CH2..CH5 interpolated per-servo between
-                    HAND-CALIBRATED grasp poses (near/mid/far).
+    Each calibrated ARC (one distance/radius) is a ROW: its pixel-y (ny) plus
+    3+ SAMPLES along the arc (left / middle / right), each storing the FULL
+    hand-tuned [CH1..CH5] pose that grabs there.
 
-Every calibrated pose was tuned on the real arm until the grab physically
-worked, so sag, link lengths and zero offsets are all baked in. The solver
-never touches the kinematic model.
+    solve(nx, ny):
+      1. find the two rows bracketing ny            (radius interpolation)
+      2. inside each row, piecewise-linear interpolate ALL FIVE channels
+         between the samples bracketing nx          (azimuth interpolation)
+      3. blend the two rows' results by ny.
 
-Calibration lives in src/visual_servoing/config/centering_config.yaml under the
-top-level `arc_grasp:` key (written by tests/test_arc_grasp.py; all other keys
-in that yaml — target_x, lying_target_y, ... — are preserved on save):
+    Why per-row azimuth samples instead of the old single global CH1(nx)
+    line: the camera is NOT mounted on the CH1 axis, so parallax makes the
+    pixel-x <-> CH1 relation radius-dependent — near and far arcs need their
+    own left/right calibration (also: each row's grabbable nx span is exactly
+    the span you sampled, so per-radius camera-edge limits fall out for free).
 
-    arc_grasp:
-      azimuth:
-      nx_center: 0.503      # tin pixel-x (normalized) at the arc's center
-      ch1_center: 103.0     # CH1 command that grabs at that pixel
-      ch1_per_nx: -35.0     # dCH1 per unit normalized-x (least-squares fit)
-      ch1_min: 40.0         # safety clamps for CH1
-      ch1_max: 165.0
-      samples:              # raw (nx, ch1) calibration points, kept for re-fits
-        - [0.503, 103.0]
-    radii:                  # 1+ hand-tuned poses, sorted by ny at load time
-      - ny: 0.62            # tin pixel-y (normalized) this pose grabs at
-        ny_tol: 0.05        # how far from ny this row may serve on its own
-        arm: [145.0, 75.0, 168.0, 90.0]    # CH2 CH3 CH4 CH5
+Grabbable region = the strip between the calibrated rows (each row's own
+ny_tol extends the band at the ends), horizontally within each row's sampled
+nx span (+ nx_tol). Outside -> solve() returns None, honestly.
 
-With ONE radius row this degrades gracefully to your original idea: a single
-arc, CH1-only (tin must sit within ny_tol of that row's ny). Add a second row
-(near/far) and the strip between them becomes grabbable via interpolation.
+Calibration lives in ITS OWN file, src/arm/config/arc_grasp.yaml (one file
+per calibration domain — IBVS keeps centering_config.yaml, pixel_to_arm has
+pixel_to_arm.yaml). Written by tests/test_arc_grasp.py:
+
+    version: 2
+    rows:                       # one per calibrated arc, any order
+      - ny: 0.62                # pixel-y (normalized) of this arc
+        ny_tol: 0.05            # how far past this row the band extends
+        nx_tol: 0.05            # how far past the sampled nx span to allow
+        samples:                # 1+ per row; 3+ (left/mid/right) recommended
+          - nx: 0.21
+            arm: [64.0, 146.0, 75.0, 168.0, 90.0]    # CH1..CH5
+          - nx: 0.50
+            arm: [103.0, 145.0, 75.0, 168.0, 90.0]
+          - nx: 0.79
+            arm: [141.0, 146.0, 75.0, 168.0, 90.0]
+
+Before 2026-07-05 the calibration lived inside centering_config.yaml under an
+`arc_grasp:` key; load_config() migrates a v2 section from there automatically
+(copy — the old key is left in place, delete it by hand when convenient).
+
+With ONE row of ONE sample this degrades to the original single-spot grab.
 """
 
 from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-# Calibration is stored INSIDE the existing visual-servoing config, under its
-# own top-level `arc_grasp:` key. Saving is read-modify-write: every other key
-# already in that yaml (target_x, lying_target_y, ...) is preserved untouched.
-from src.visual_servoing.ibvs_centering import CENTERING_CONFIG_PATH
+# Own config file — no key-sharing with other subsystems anymore. The legacy
+# location (inside centering_config.yaml under `arc_grasp:`) is only read once
+# for migration.
+from src.visual_servoing.ibvs_centering import CENTERING_CONFIG_PATH as LEGACY_CONFIG_PATH
 
-CONFIG_PATH = CENTERING_CONFIG_PATH
-ARC_KEY = "arc_grasp"
+CONFIG_PATH = Path(__file__).parent / "config" / "arc_grasp.yaml"
+ARC_KEY = "arc_grasp"    # key inside the LEGACY shared yaml only
 
-# Seed config written on first run: the hand-tuned sweet point from
-# tests/test_ibvs_centering.py (GRASP_ARM = [103, 145, 75, 168, 90]).
-# ny / azimuth fit start unset -> solver reports not-ready until calibrated.
+NY_TOL_DEFAULT = 0.05    # vertical band extension past the end rows
+NX_TOL_DEFAULT = 0.05    # horizontal extension past a row's sampled span
+
 DEFAULT_CONFIG = {
-    "azimuth": {
-        "nx_center": None,
-        "ch1_center": 103.0,
-        "ch1_per_nx": None,
-        "ch1_min": 40.0,
-        "ch1_max": 165.0,
-        "samples": [],
-    },
-    "radii": [
-        {"ny": None, "ny_tol": 0.05, "arm": [145.0, 75.0, 168.0, 90.0]},
-    ],
+    "version": 2,
+    "rows": [],              # empty -> solver reports not-ready until calibrated
 }
 
 
@@ -77,35 +80,34 @@ def _read_full_yaml(path: Path) -> dict:
     return {}
 
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
-    """Return the `arc_grasp:` section of the shared config (or a fresh default)."""
-    arc = _read_full_yaml(path).get(ARC_KEY)
-    return arc if arc else deepcopy(DEFAULT_CONFIG)
+def load_config(path: Path = CONFIG_PATH,
+                legacy_path: Path = LEGACY_CONFIG_PATH) -> dict:
+    """Return the v2 config from its own file (or a fresh default). If the
+    own file doesn't exist yet but a v2 section is found at the legacy
+    location (centering_config.yaml `arc_grasp:` key), it is copied over
+    once. A pre-v2 layout (old `azimuth:`/`radii:`) is never migrated —
+    recalibrate; it stays untouched in the legacy yaml as its own backup."""
+    cfg = _read_full_yaml(path)
+    if cfg and "rows" in cfg:
+        return cfg
+    legacy = _read_full_yaml(legacy_path).get(ARC_KEY)
+    if legacy and "rows" in legacy:
+        save_config(legacy, path)
+        print(f"[arc_grasp] migrated calibration from {legacy_path} -> {path} "
+              f"(old key left in place; delete it by hand when convenient)")
+        return legacy
+    return deepcopy(DEFAULT_CONFIG)
 
 
 def save_config(cfg: dict, path: Path = CONFIG_PATH):
-    """Write ONLY the `arc_grasp:` key; every other key in the yaml is preserved."""
+    """The file is wholly owned by arc_grasp now — plain overwrite."""
     import yaml
-    full = _read_full_yaml(path)
-    full[ARC_KEY] = cfg
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(yaml.safe_dump(full, default_flow_style=None, sort_keys=False))
+    Path(path).write_text(yaml.safe_dump(cfg, default_flow_style=None, sort_keys=False))
 
 
-def fit_azimuth(samples) -> tuple | None:
-    """Least-squares line ch1 = ch1_center + k * (nx - nx_center) through the
-    (nx, ch1) samples. Returns (nx_center, ch1_center, ch1_per_nx) or None."""
-    if len(samples) < 2:
-        return None
-    xs = [float(s[0]) for s in samples]
-    ys = [float(s[1]) for s in samples]
-    mx = sum(xs) / len(xs)
-    my = sum(ys) / len(ys)
-    var = sum((x - mx) ** 2 for x in xs)
-    if var < 1e-9:
-        return None  # all samples at the same pixel — can't fit a slope
-    k = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
-    return (round(mx, 4), round(my, 2), round(k, 2))
+def _lerp_arm(a, b, t: float):
+    return [(1.0 - t) * float(p) + t * float(q) for p, q in zip(a, b)]
 
 
 class ArcGraspSolver:
@@ -117,56 +119,79 @@ class ArcGraspSolver:
 
     def reload(self):
         self.cfg = load_config(self.path)
-        rows = [r for r in self.cfg.get("radii", []) if r.get("ny") is not None]
-        self.radii = sorted(rows, key=lambda r: float(r["ny"]))
+        rows = []
+        for r in self.cfg.get("rows", []):
+            samples = sorted(
+                (s for s in (r.get("samples") or []) if s.get("nx") is not None),
+                key=lambda s: float(s["nx"]),
+            )
+            if r.get("ny") is not None and samples:
+                rows.append({**r, "samples": samples})
+        # sorted by ny: image top (far) first, image bottom (near) last
+        self.rows = sorted(rows, key=lambda r: float(r["ny"]))
 
     # ── status ───────────────────────────────────────────────────────────
     @property
-    def azimuth_ready(self) -> bool:
-        az = self.cfg["azimuth"]
-        return az.get("ch1_per_nx") is not None and az.get("nx_center") is not None
-
-    @property
     def ready(self) -> bool:
-        return self.azimuth_ready and len(self.radii) > 0
+        return len(self.rows) > 0
 
     def status(self) -> str:
-        az = self.cfg["azimuth"]
-        parts = [
-            f"azimuth: {'OK' if self.azimuth_ready else 'NOT calibrated'}"
-            f" ({len(az.get('samples') or [])} samples)",
-            f"radii: {len(self.radii)} row(s)"
-            + (f" ny={[round(float(r['ny']), 3) for r in self.radii]}" if self.radii else ""),
-        ]
-        return " | ".join(parts)
+        if not self.rows:
+            return "arc_grasp v2: NOT calibrated (no rows — 'y' to start one)"
+        parts = []
+        for r in self.rows:
+            ss = r["samples"]
+            span = (f"nx {float(ss[0]['nx']):.2f}~{float(ss[-1]['nx']):.2f}"
+                    if len(ss) > 1 else f"nx {float(ss[0]['nx']):.2f} only")
+            parts.append(f"ny={float(r['ny']):.3f} ({len(ss)} sample(s), {span})")
+        return f"arc_grasp v2: {len(self.rows)} row(s) | " + " | ".join(parts)
 
     # ── solving ──────────────────────────────────────────────────────────
     def solve(self, nx: float, ny: float):
         if not self.ready:
             return None
-        az = self.cfg["azimuth"]
-        ch1 = float(az["ch1_center"]) + float(az["ch1_per_nx"]) * (nx - float(az["nx_center"]))
-        if not (float(az["ch1_min"]) <= ch1 <= float(az["ch1_max"])):
-            return None
-        arm = self._arm_for_ny(float(ny))
+        arm = self._solve_grid(float(nx), float(ny))
         if arm is None:
             return None
-        return [round(ch1, 1)] + [round(float(a), 1) for a in arm]
+        return [round(max(0.0, min(180.0, float(v))), 1) for v in arm]
 
-    def _arm_for_ny(self, ny: float):
-        rs = self.radii
+    def _solve_grid(self, nx: float, ny: float):
+        rs = self.rows
         lo, hi = float(rs[0]["ny"]), float(rs[-1]["ny"])
-        # outside the calibrated band (plus each end's own tolerance) -> not grabbable
-        if ny < lo - float(rs[0].get("ny_tol", 0.05)):
+        if ny < lo - float(rs[0].get("ny_tol", NY_TOL_DEFAULT)):
             return None
-        if ny > hi + float(rs[-1].get("ny_tol", 0.05)):
+        if ny > hi + float(rs[-1].get("ny_tol", NY_TOL_DEFAULT)):
             return None
-        ny = min(max(ny, lo), hi)          # clamp into the strip, then interpolate
+        ny = min(max(ny, lo), hi)          # clamp into the strip
         if len(rs) == 1:
-            return rs[0]["arm"]
-        for a, b in zip(rs, rs[1:]):       # find the bracketing pair
+            return self._solve_row(rs[0], nx)
+        for a, b in zip(rs, rs[1:]):       # find the bracketing row pair
             if ny <= float(b["ny"]):
                 t = (ny - float(a["ny"])) / (float(b["ny"]) - float(a["ny"]))
-                return [(1 - t) * float(p) + t * float(q)
-                        for p, q in zip(a["arm"], b["arm"])]
-        return rs[-1]["arm"]
+                if t <= 1e-9:              # sitting ON row a: only a matters
+                    return self._solve_row(a, nx)
+                if t >= 1.0 - 1e-9:        # sitting ON row b: only b matters
+                    return self._solve_row(b, nx)
+                arm_a = self._solve_row(a, nx)
+                arm_b = self._solve_row(b, nx)
+                if arm_a is None or arm_b is None:
+                    return None            # nx outside one row's sampled span
+                return _lerp_arm(arm_a, arm_b, t)
+        return self._solve_row(rs[-1], nx)
+
+    @staticmethod
+    def _solve_row(row, nx: float):
+        """Piecewise-linear interpolation of ALL 5 channels along one arc."""
+        ss = row["samples"]
+        tol = float(row.get("nx_tol", NX_TOL_DEFAULT))
+        lo, hi = float(ss[0]["nx"]), float(ss[-1]["nx"])
+        if nx < lo - tol or nx > hi + tol:
+            return None                    # outside this row's sampled span
+        nx = min(max(nx, lo), hi)
+        if len(ss) == 1:
+            return [float(v) for v in ss[0]["arm"]]
+        for a, b in zip(ss, ss[1:]):       # find the bracketing sample pair
+            if nx <= float(b["nx"]):
+                t = (nx - float(a["nx"])) / (float(b["nx"]) - float(a["nx"]))
+                return _lerp_arm(a["arm"], b["arm"], t)
+        return [float(v) for v in ss[-1]["arm"]]

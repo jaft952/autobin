@@ -18,7 +18,7 @@ from src.utils.root import find_repo_root
 # _ROOT = Path(__file__).resolve().parents[4]
 _ROOT = find_repo_root(start_path=__file__)
 # _DEFAULT_MODEL = _ROOT / "ai" / "models" / "subsystem1" / "production" / "inference_01072026.pt"
-_DEFAULT_MODEL = _ROOT / "src" / "models" / "inference_01072026.pt"
+_DEFAULT_MODEL = _ROOT / "src" / "models" / "yolov11n-seg.pt"
 
 # ─────────────────────────── logging setup ────────────────────────────────────
 

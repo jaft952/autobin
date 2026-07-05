@@ -19,7 +19,7 @@ CALIBRATION (once, on the Pi desktop — needs the camera view):
   4. Repeat for >= 4 spots — spread them (near/far/left/right), e.g.
      (0,25) (0,32) (0,40) (-12,30) (12,30) (-8,38).  More = better.
   5. Press 'f' -> fits, prints per-point error in cm, saves into
-     src/visual_servoing/config/centering_config.yaml (pixel_to_arm: key).
+     src/arm/config/pixel_to_arm.yaml (its own file).
 
 AFTER CALIBRATION the overlay shows the live predicted (x, y) for the tin.
 Sanity-check with the ruler before grabbing.
