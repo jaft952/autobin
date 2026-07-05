@@ -7,17 +7,29 @@ from src.arm.kinematics import (
     SERVO_CMD_MAX,
     REVERSED_JOINTS,
     IK_POSITION_TOLERANCE,
-    joint_bound_rad,
+    joint_range_rad,
 )
 
 # Planar geometry — MUST match the link translations in kinematics.py's chain.
-H_SHOULDER = 0.042 + 0.105      # CH2 (shoulder) axis height above the base origin
-L1 = 0.1275                     # CH2 -> CH3
-L2 = 0.070                      # CH3 -> CH4
-L3 = 0.031 + 0.083              # CH4 -> TCP (wrist_rotate + gripper, collinear)
+# RULER-MEASURED on the real arm (2026-07-03), axis-center to axis-center.
+# z=0 is the surface the 2.9cm mounting block sits on (chassis deck).
+H_SHOULDER = 0.029 + 0.069      # A: deck -> CH2 (shoulder) axis = 9.8cm measured
+L1 = 0.105                      # B: CH2 -> CH3 = 10.5cm measured
+L2 = 0.128                      # C: CH3 -> CH4 = 12.8cm measured
+L3 = 0.031 + 0.1555             # D: CH4 -> gripper tip = 18.65cm measured
 
 DOWN_PITCH_RAD = -np.pi         # cumulative pitch for the gripper pointing straight down
-GRASP_TILTS_DEG = (0.0, 15.0, 30.0, 45.0)   # outward tilt from straight-down to try
+UP_PITCH_RAD = 0.0              # cumulative pitch for the gripper pointing straight up
+LEVEL_PITCH_RAD = -np.pi / 2.0  # gripper horizontal, pointing forward at the target
+# Tilt ladder away from vertical to try (finer steps fill boundary slivers where
+# a pose exists only between two coarse rungs — closed-form solves are ~free).
+GRASP_TILTS_DEG = tuple(float(t) for t in range(0, 46, 5))
+# LEVEL keeps a much tighter ladder: at +-45 deg a "level" waist grab isn't level
+# at all (it once returned a 45-deg-down pose under the LEVEL name).
+LEVEL_TILTS_DEG = (0.0, 5.0, 10.0, 15.0)
+# FREE-mode pitch sweep step (deg). At 10 deg the reachable region had razor-thin
+# holes near the workspace edge (0.4mm of target z flipping solvable/unsolvable).
+FREE_SWEEP_STEP_DEG = 2
 # Prefer pointing more straight-down, but accept tilt if it gives a much comfier pose.
 TILT_PENALTY_PER_DEG = 0.004
 _EPS = 1e-6
@@ -38,26 +50,47 @@ class AnalyticalArmIK:
     """Closed-form IK. solve() returns physical servo angles [CH1..CH5] or None."""
 
     def __init__(self):
-        self.bounds = [0.0] + [joint_bound_rad(i) for i in range(1, 6)]  # radians, index 1..5
+        # Per-joint ASYMMETRIC angle windows (radians, index 1..5): the full servo
+        # command range mapped around each neutral — see kinematics.joint_range_deg.
+        ranges = [(0.0, 0.0)] + [joint_range_rad(i) for i in range(1, 6)]
+        self.lo = [r[0] for r in ranges]
+        self.hi = [r[1] for r in ranges]
 
     # ── public ────────────────────────────────────────────────────────────
-    def solve(self, target_xyz, grasp_down: bool = True):
+    def solve(self, target_xyz, grasp_down: bool = True, approach: str = None):
         """
         grasp_down=True : gripper points down (tries straight-down, then small outward
                           tilts), picking the comfiest reachable pose.
         grasp_down=False: position only — sweep the approach angle and pick the comfiest
                           reachable pose (no orientation requirement).
+        approach        : overrides grasp_down when given — "down", "up" (gripper
+                          pointing up, approaching from below), "level" (gripper
+                          horizontal, approaching the target from the side — e.g.
+                          gripping a standing tin at its middle; tilt ladder tries
+                          both sides of horizontal), or "free".
         """
         x, y, z = (float(v) for v in target_xyz)
 
-        if grasp_down:
+        if approach is None:
+            approach = "down" if grasp_down else "free"
+        if approach == "down":
             pitches = [(DOWN_PITCH_RAD + np.radians(t), t) for t in GRASP_TILTS_DEG]
+        elif approach == "up":
+            pitches = [(UP_PITCH_RAD + np.radians(s * t), t)
+                       for t in GRASP_TILTS_DEG
+                       for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
+        elif approach == "level":
+            pitches = [(LEVEL_PITCH_RAD + np.radians(s * t), t)
+                       for t in LEVEL_TILTS_DEG
+                       for s in ((1.0,) if t == 0.0 else (1.0, -1.0))]
+        elif approach == "free":
+            pitches = [(np.radians(p), None) for p in range(-180, 91, FREE_SWEEP_STEP_DEG)]
         else:
-            pitches = [(np.radians(p), None) for p in range(-180, 91, 10)]
+            raise ValueError(f"approach must be 'down', 'up' or 'free', got {approach!r}")
 
         best = None  # (cost, angles)
         for theta1, r in self._yaw_branches(x, y):
-            if abs(theta1) > self.bounds[1] + _EPS:
+            if not (self.lo[1] - _EPS <= theta1 <= self.hi[1] + _EPS):
                 continue
             for phi4, tilt in pitches:
                 for theta2, theta3, theta4 in self._planar_solutions(r, z, phi4):
@@ -123,13 +156,25 @@ class AnalyticalArmIK:
 
     # ── helpers ───────────────────────────────────────────────────────────
     def _max_joint_usage(self, angles):
-        """max |theta_i| / bound_i over CH1..CH5; <=1 means within limits, lower = comfier."""
+        """Worst per-joint usage over CH1..CH5 against the ASYMMETRIC windows:
+        theta/hi when swinging positive, theta/lo when negative (both ratios are
+        positive fractions of the available room in that direction).
+        <=1 means within limits, lower = comfier."""
         worst = 0.0
         for i in range(1, 6):
-            b = self.bounds[i]
-            if b <= _EPS:           # CH5 (roll) has a tiny modelled range; ignore it
-                continue
-            worst = max(worst, abs(angles[i]) / b)
+            a = angles[i]
+            if a >= 0.0:
+                room = self.hi[i]
+                if room <= _EPS:
+                    if a > _EPS:
+                        return float("inf")   # no positive travel at all
+                    continue
+                worst = max(worst, a / room)
+            else:
+                room = self.lo[i]
+                if room >= -_EPS:
+                    return float("inf")       # no negative travel at all
+                worst = max(worst, a / room)
         return worst
 
     @staticmethod

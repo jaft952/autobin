@@ -5,7 +5,9 @@ Offline unit tests + live / sim demos for the IBVS centering layer.
 
 Modes:
     python test_ibvs_centering.py           -> offline unit tests (no camera)
-    python test_ibvs_centering.py --live    -> live camera + real YOLO
+    python test_ibvs_centering.py --live    -> live camera + real YOLO (YOLO11-seg:
+                                               window shows the real mask overlay,
+                                               console prints src=seg/bbox)
     python test_ibvs_centering.py --sim     -> real camera + fake draggable tin
     python test_ibvs_centering.py --live --drive   -> live + chassis motion ON
     python test_ibvs_centering.py --live --auto    -> live + auto grab ON
@@ -202,8 +204,14 @@ def live(auto=False, drive=False):
                 error_mag = max(abs(status.error_x), abs(status.error_y))
 
                 px = f"center={status.target_px}" if status.target_px else "center=none"
+                # src=seg -> the real YOLO11-seg mask is attached (orientation
+                # uses it, window shows the overlay); src=bbox -> no mask, the
+                # classical-CV fallback segmented the crop instead.
+                best = result.best
+                mask_tag = "seg" if (best is not None and best.mask_poly is not None) else "bbox"
                 print(
-                    f"{px:>22}  err=({status.error_x:+.2f},{status.error_y:+.2f})  "
+                    f"{px:>22}  src={mask_tag:<4} "
+                    f"err=({status.error_x:+.2f},{status.error_y:+.2f})  "
                     f"move={status.move.value:<14} stable={status.stable}  "
                     f"err_mag={error_mag:.2f}  | {status.message}"
                 )
@@ -364,8 +372,8 @@ LIFT_ARM  = [96.7,  96.7,  100.0, 100.0, 90.0]
 GRASP_SEQUENCE = [(0, 100.0), (2, 20.0), (3, 30.0), (1, 170.0)]
 GRIPPER_OPEN   = 0.0
 GRIPPER_CLOSE  = 40.0
-GRASP_STEP_DEG   = 5.0
-GRASP_STEP_DELAY = 0.15
+GRASP_STEP_DEG   = 2.0    # smaller = gentler move = lower peak current (weak supply)
+GRASP_STEP_DELAY = 0.5    # longer = the supply recovers between steps
 
 LYING_ARM            = [103.0, 167.0, 75.0, 150.0]
 LYING_ROLL_REF_ANGLE = 0.0
@@ -383,15 +391,26 @@ class _ArmController:
         self.gripper  = GRIPPER_OPEN
 
     def move_to(self, target_arm, target_gripper, label=""):
+        # Move ONE servo at a time (CH1..CH5, then CH6 gripper) so only one motor
+        # ever draws current at once — critical on a weak supply, where two servos
+        # moving together sag the rail and drop the arm. Each channel steps gently.
         print(f"[grasp] {label}")
-        start  = list(self.arm) + [self.gripper]
-        target = list(target_arm) + [target_gripper]
-        self._step(
-            self.actuator, start, target,
-            GRASP_STEP_DEG, GRASP_STEP_DELAY,
-            instant=(5,),
-        )
-        self.arm, self.gripper = list(target_arm), float(target_gripper)
+        for ch in range(5):
+            if abs(target_arm[ch] - self.arm[ch]) > 1e-9:
+                self._one_channel(ch, target_arm[ch])
+        if abs(target_gripper - self.gripper) > 1e-9:
+            self._one_channel(5, target_gripper)
+
+    def _one_channel(self, ch, value):
+        """Step just channel `ch` to `value` — only that servo moves, the rest hold."""
+        start = list(self.arm) + [self.gripper]
+        target = list(start)
+        target[ch] = value
+        self._step(self.actuator, start, target, GRASP_STEP_DEG, GRASP_STEP_DELAY)
+        if ch < 5:
+            self.arm[ch] = value
+        else:
+            self.gripper = float(value)
 
     def grasp(self, orientation=None):
         klass = getattr(orientation, "klass", None)

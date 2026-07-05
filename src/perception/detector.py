@@ -2,8 +2,10 @@
 src/perception/detector.py
 
 Aluminium Can Detector — Perception Layer
-Wraps YOLOv8 inference with Logitech C270 webcam.
-Returns structured DetectionResult to the sensor interface.
+Wraps YOLO inference (YOLO11-seg) with Logitech C270 webcam.
+Returns structured DetectionResult to the sensor interface. When the model is
+a segmentation model, each BoundingBox also carries the real mask outline
+(mask_poly) in full-frame pixel coordinates.
 """
 
 from __future__ import annotations
@@ -34,6 +36,9 @@ class BoundingBox:
     y2: int
     confidence: float
     orientation: Optional[Orientation] = None   # filled in by detector.infer()
+    # Real segmentation outline from the YOLO11-seg model: Nx2 numpy array of
+    # full-frame pixel coords. None for detect-only models / synthetic boxes.
+    mask_poly: Optional[object] = None
 
     @property
     def center_x(self) -> int:
@@ -186,7 +191,7 @@ class AluminiumCanDetector:
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.5,
+        conf_threshold: float = 0.8,
         frame_width: int = 1280,
         frame_height: int = 720,
         device=0,
@@ -252,11 +257,18 @@ class AluminiumCanDetector:
             verbose=False,
         )
         for r in yolo_results:
-            for box in r.boxes:
+            # Segmentation masks (YOLO11-seg): index-aligned with r.boxes.
+            # .xy gives each mask's outline polygon in full-frame pixel coords.
+            polys = r.masks.xy if r.masks is not None else None
+            for i, box in enumerate(r.boxes):
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = float(box.conf[0])
+                poly = None
+                if polys is not None and i < len(polys) and len(polys[i]) >= 3:
+                    poly = polys[i]
                 result.detections.append(
-                    BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=conf)
+                    BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=conf,
+                                mask_poly=poly)
                 )
         # Remove duplicate "box-inside-a-box" detections NMS leaves behind.
         result.detections = _suppress_contained_boxes(result.detections)
@@ -285,12 +297,21 @@ class AluminiumCanDetector:
         Useful for cv2.imshow() during debugging.
         """
         import cv2  # lazy: only used when drawing debug overlays
+        import numpy as np
         if self._last_frame is None:
             return None
 
         frame = self._last_frame.copy()
 
         for det in result.detections:
+            # Real segmentation mask (YOLO11-seg): filled semi-transparent
+            # overlay + outline, so you can see exactly what the model segments.
+            if det.mask_poly is not None:
+                pts = np.asarray(det.mask_poly, dtype=np.int32).reshape(-1, 2)
+                overlay = frame.copy()
+                cv2.fillPoly(overlay, [pts], (0, 200, 0))
+                cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, dst=frame)
+                cv2.polylines(frame, [pts], True, (0, 255, 0), 2)
             # Bounding box
             cv2.rectangle(frame, (det.x1, det.y1), (det.x2, det.y2), (0, 255, 0), 2)
             # Tracked ground-contact point (bbox bottom-center) — this is the

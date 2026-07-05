@@ -248,7 +248,7 @@ docs/
 # ========================
 # Machine Learning / AI
 # ========================
-
+yolo11*-seg*/
 runs/
 ai/training/scripts/runs/
 ai/training/results/

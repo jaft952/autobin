@@ -1,4 +1,6 @@
-﻿from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN
+﻿import math
+
+from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, GRIPPER_UP, GRIPPER_LEVEL
 from src.arm.analytical_ik import AnalyticalArmIK
 from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
@@ -8,8 +10,27 @@ HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]
 BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]    
 GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]  
 
-GRIPPER_OPEN = 0.0       
-GRIPPER_CLOSED = 40.0    
+GRIPPER_OPEN = 0.0
+GRIPPER_CLOSED = 40.0
+
+# ── Real-world tip correction ────────────────────────────────────────────────
+# Ruler-measured 2026-07-04 (FREE mode, cm, z from the chassis deck):
+#   cmd (20,20,20) -> real (18,22,13)    z err -7.0 at horizontal reach 28.3
+#   cmd (10,20,20) -> real (7,22,14.5)   z err -5.5 at horizontal reach 22.4
+# x/y errors are ~constant, but the z droop GROWS with horizontal reach:
+#   -7.0/28.3 = -0.247 and -5.5/22.4 = -0.246  =>  droop = -0.25 * reach.
+# (Confirmed by the constant +6.25cm attempt: the same 20cm z target landed at
+# 18cm far out but 19cm closer in — the far pose sags more.)
+# move_to() aims at target-minus-error: shift x/y by the constants below and
+# raise z by SAG_PER_M_REACH * horizontal reach. Re-measure on the Pi and tweak.
+TIP_ERROR_X_M   = -0.025   # real tip lands 2.5cm left of target  -> aim right
+TIP_ERROR_Y_M   = 0.020    # real tip lands 2.0cm beyond target   -> aim closer
+SAG_PER_M_REACH = 0.25     # tip droops 25% of horizontal reach   -> aim higher
+
+# Wheels + chassis put the FLOOR 11.3cm below the deck (z=0), user-measured
+# 2026-07-04. Negative z targets are legal down to the floor; anything lower
+# is clamped so the gripper can't be commanded into the ground.
+DECK_ABOVE_FLOOR_M = 0.113
 
 # Registry so the test tooling can jog to a full pose (arm + gripper) by name.
 NAMED_POSES = {
@@ -38,23 +59,48 @@ class GraspPlanner:
         via the shared stepped_move, tracking the new pose for the next call."""
         start = list(self._arm) + [self._gripper]
         target = list(target_arm) + [target_gripper]
-        stepped_move(self.actuator, start, target, instant=(5,))
+        stepped_move(self.actuator, start, target)   # CH6 steps too (avoid current spike)
         self._arm, self._gripper = list(target_arm), float(target_gripper)
 
-    def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic"):
+    def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic",
+                compensate: bool = True):
         """
         Calculates and moves the arm to the (x, y, z) position in meters.
         By default the gripper is kept pointing DOWN (tool_direction=GRIPPER_DOWN);
         pass tool_direction=None for pure position IK.
         solver="analytic" uses the closed-form IK (default); solver="ikpy" uses the
         numerical backup.
+        compensate=True aims at target-minus-measured-error (constant x/y shift +
+        reach-proportional z lift) so the REAL tip lands on target_xyz despite
+        gravity sag; pass False to command the raw model target.
         """
-        print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ({solver}) ...")
+        goal = list(target_xyz)
+        if goal[2] < -DECK_ABOVE_FLOOR_M:
+            print(f"[GraspPlanner] target z={goal[2]:.3f} is BELOW THE FLOOR "
+                  f"(floor = -{DECK_ABOVE_FLOOR_M:.3f} from the deck); clamping to floor level.")
+            goal[2] = -DECK_ABOVE_FLOOR_M
+        if compensate:
+            gx = goal[0] - TIP_ERROR_X_M
+            gy = goal[1] - TIP_ERROR_Y_M
+            gz = goal[2] + SAG_PER_M_REACH * math.hypot(gx, gy)
+            goal = [gx, gy, gz]
+            print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} "
+                  f"(sag-compensated aim {[round(v, 4) for v in goal]}, {solver}) ...")
+        else:
+            print(f"\n[GraspPlanner] Planning arm movement to {target_xyz} ({solver}) ...")
 
         if solver == "ikpy":
-            servo_angles = self.kinematics.calculate_servo_angles(target_xyz, tool_direction)
+            servo_angles = self.kinematics.calculate_servo_angles(goal, tool_direction)
         else:
-            servo_angles = self.ik.solve(target_xyz, grasp_down=(tool_direction is not None))
+            if tool_direction is GRIPPER_DOWN:
+                approach = "down"
+            elif tool_direction is GRIPPER_UP:
+                approach = "up"
+            elif tool_direction is GRIPPER_LEVEL:
+                approach = "level"
+            else:
+                approach = "free"   # None or arbitrary vectors (ikpy handles those)
+            servo_angles = self.ik.solve(goal, approach=approach)
 
         # None means no reachable solution — do NOT move the arm and report honestly.
         if servo_angles is None:
