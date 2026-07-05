@@ -1,94 +1,163 @@
+"""
+tests/test_inference.py — Live YOLO segmentation test with truly decoupled threads.
+
+Three-stage pipeline so the video stays fluid even when inference is slow:
+
+    capture thread    -> always holds the NEWEST camera frame (~30 FPS)
+    inference thread  -> runs YOLO on the newest frame, publishes the latest result
+    main thread       -> shows the newest frame + last known masks at camera rate
+
+Display FPS and inference FPS are therefore independent numbers: on a
+Raspberry Pi the window runs at camera speed while YOLO updates the masks at
+whatever rate the CPU manages (~2-6 FPS at imgsz 320). The masks can trail a
+fast-moving object by one inference interval — that's the price of drawing
+last-known results onto a fresher frame.
+
+Run:
+    python tests/test_inference.py                 # defaults: camera 0, imgsz 320
+    python tests/test_inference.py --imgsz 640     # slower, more accurate
+    python tests/test_inference.py --camera 1
+
+Press 'q' in the video window to quit (or Ctrl+C in the terminal).
+Headless SSH note: cv2.imshow needs a desktop session — for headless viewing
+use tests/webcam_seg_stream.py, which serves the same feed over HTTP instead.
+"""
+
+import argparse
+import os
 import sys
-import time
 import threading
+import time
+
 import cv2
 from ultralytics import YOLO
 
-# 1. Load your trained model weights
-MODEL_PATH = "src/models/yolov11n-seg.pt" 
-print("Loading YOLO model...")
-model = YOLO(MODEL_PATH)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Global variables shared between parallel processing threads
-current_frame = None
-annotated_frame = None
-running = True
+from src.perception.detector import open_camera_capture  # noqa: E402
+from src.utils.root import find_repo_root                # noqa: E402
 
-# =========================================================
-# THREADED BACKEND: Continuously captures webcam video frames
-# =========================================================
-def camera_capture_thread():
-    global current_frame, running
-    
-    # CAP_V4L2 forces OpenCV to bypass slow translation layers on modern Pi OS
-    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    
-    if not cap.isOpened():
-        print("❌ Error: Could not connect to the Raspberry Pi Camera.")
-        running = False
-        return
+_ROOT = find_repo_root(start_path=__file__)
+_DEFAULT_MODEL = _ROOT / "src" / "models" / "yolov11n-seg.pt"
 
-    while running:
-        success, frame = cap.read()
-        if not success:
-            continue
-        # Mirror frame horizontally for a more natural mirror reflection appearance
-        current_frame = cv2.flip(frame, 1)
-        
-    cap.release()
 
-# Start the dedicated camera pipeline thread background process
-capture_worker = threading.Thread(target=camera_capture_thread, daemon=True)
-capture_worker.start()
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Threaded live YOLO segmentation test")
+    p.add_argument("--model", default=str(_DEFAULT_MODEL), help="Path to the .pt model")
+    p.add_argument("--camera", type=int, default=0, help="Camera device index (default: 0)")
+    p.add_argument("--conf", type=float, default=0.5, help="Confidence threshold (default: 0.5)")
+    p.add_argument("--imgsz", type=int, default=320,
+                   help="YOLO inference size (default: 320 — ~4x faster than 640 on a Pi CPU)")
+    p.add_argument("--width", type=int, default=640, help="Capture width (default: 640)")
+    p.add_argument("--height", type=int, default=480, help="Capture height (default: 480)")
+    return p.parse_args()
 
-# Wait briefly for the camera to spin up and feed initial data arrays
-print("Waiting for camera thread initialization...")
-while current_frame is None and running:
-    time.sleep(0.1)
 
-if not running:
-    sys.exit()
+def main() -> None:
+    args = parse_args()
 
-print("\n🚀 System active! Displaying decoupled fluid video feedback window.")
-print("Press 'q' inside the video pop-up screen to terminate.")
+    print(f"Loading YOLO model: {args.model}")
+    model = YOLO(args.model)
+    print("Model loaded.")
 
-prev_time = 0
+    # open_camera_capture picks the right backend (V4L2 on the Pi, DirectShow on
+    # Windows), forces MJPG for 30 FPS, and sets BUFFERSIZE=1 so reads are fresh.
+    cap, w, h, cam_fps = open_camera_capture(args.camera, args.width, args.height)
+    print(f"Camera ready — {w}x{h} @ {cam_fps:.0f}FPS")
 
-# =========================================================
-# MAIN THREAD: Handles GUI Windows rendering & background AI math
-# =========================================================
-while running:
-    # Always pull the absolute freshest frame from our background thread worker
-    frame_to_process = current_frame.copy() if current_frame is not None else None
-    
-    if frame_to_process is not None:
-        # Run inference on the current available snapshot
-        results = model.predict(source=frame_to_process, conf=0.5, verbose=False)
+    # Shared state between the three threads. One lock guards it all; every
+    # critical section is just a reference swap, so contention is negligible.
+    lock = threading.Lock()
+    state = {"frame": None, "result": None, "infer_fps": 0.0}
+    running = threading.Event()
+    running.set()
 
-        # Plot matching boundaries only if detections are actively registered
-        if results and len(results) > 0:
-            annotated_frame = results[0].plot()
-        else:
-            annotated_frame = frame_to_process
+    # ── stage 1: capture — keep only the newest frame ─────────────────────────
+    def capture_loop():
+        while running.is_set():
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            frame = cv2.flip(frame, 1)  # mirror view
+            with lock:
+                state["frame"] = frame
 
-        # Calculate processing loop frame rates
-        current_time = time.time()
-        fps = 1 / (current_time - prev_time) if (current_time - prev_time) > 0 else 0
-        prev_time = current_time
-        
-        # Overlay the processing engine metrics seamlessly onto the layout screen
-        cv2.putText(annotated_frame, f"AI Refresh Rate: {int(fps)} FPS", (20, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    # ── stage 2: inference — run YOLO on the newest frame, at its own pace ────
+    def inference_loop():
+        prev = time.time()
+        while running.is_set():
+            with lock:
+                frame = state["frame"]
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            results = model.predict(source=frame, conf=args.conf,
+                                    imgsz=args.imgsz, verbose=False)
+            now = time.time()
+            with lock:
+                state["result"] = results[0]
+                state["infer_fps"] = 1.0 / (now - prev) if now > prev else 0.0
+            prev = now
 
-        # Display the live window feed fluidly without lockups
-        cv2.imshow("Raspberry Pi - YOLO Fluid Real-Time Test", annotated_frame)
+    threading.Thread(target=capture_loop, daemon=True).start()
+    threading.Thread(target=inference_loop, daemon=True).start()
 
-    # Break loop safely if user taps 'q' on keyboard
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        running = False
-        break
+    print("Waiting for first frame …")
+    while True:
+        with lock:
+            if state["frame"] is not None:
+                break
+        time.sleep(0.05)
 
-cv2.destroyAllWindows()
-print("\nCamera tracking session cleanly completed.")
+    print("\nSystem active — press 'q' in the video window to quit.")
+
+    # ── stage 3: display — full camera rate, last known masks overlaid ────────
+    disp_fps = 0.0
+    disp_prev = time.time()
+    try:
+        while True:
+            with lock:
+                frame = state["frame"]
+                result = state["result"]
+                infer_fps = state["infer_fps"]
+
+            # Draw the LAST KNOWN detections onto the NEWEST frame. plot(img=...)
+            # renders the stored masks/boxes on the array we pass in, so the video
+            # stays fluid while the overlay refreshes at inference speed.
+            if result is not None:
+                annotated = result.plot(img=frame.copy())
+            else:
+                annotated = frame
+
+            now = time.time()
+            inst = 1.0 / (now - disp_prev) if now > disp_prev else 0.0
+            disp_prev = now
+            disp_fps = 0.9 * disp_fps + 0.1 * inst  # smooth the readout
+
+            cv2.putText(annotated,
+                        f"Display: {disp_fps:.0f} FPS   YOLO: {infer_fps:.1f} FPS   imgsz: {args.imgsz}",
+                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+            try:
+                cv2.imshow("YOLO segmentation — threaded (q to quit)", annotated)
+                key = cv2.waitKey(1) & 0xFF
+            except cv2.error:
+                print("[!] No display available (headless SSH?). "
+                      "Use tests/webcam_seg_stream.py to view over HTTP instead.")
+                break
+
+            if key == ord("q"):
+                break
+
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+    finally:
+        running.clear()
+        time.sleep(0.2)  # let the worker threads finish their current iteration
+        cap.release()
+        cv2.destroyAllWindows()
+        print("Session ended cleanly.")
+
+
+if __name__ == "__main__":
+    main()
