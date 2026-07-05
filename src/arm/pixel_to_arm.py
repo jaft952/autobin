@@ -20,10 +20,11 @@ Frames / conventions:
     constant — until the camera is physically moved. Then RECALIBRATE.
 
 Calibrate with tests/test_pixel_grasp.py (place tin at measured spots, press
-'c', then 'f' to fit+save). Calibration lives in
-src/visual_servoing/config/centering_config.yaml under the top-level
-`pixel_to_arm:` key — read-modify-write, every other key in that yaml
-(target_x, arc_grasp, ...) is preserved, same rule as arc_grasp.py.
+'c', then 'f' to fit+save). Calibration lives in ITS OWN file,
+src/arm/config/pixel_to_arm.yaml (one file per calibration domain). A
+calibration saved at the pre-2026-07-05 location (centering_config.yaml,
+`pixel_to_arm:` key) is migrated automatically on first load (copied; the
+old key is left in place, delete it by hand when convenient).
 
 The fit is a normalised-DLT least-squares homography in pure numpy (no cv2),
 so this module imports and unit-tests anywhere.
@@ -34,10 +35,10 @@ from copy import deepcopy
 from datetime import date
 from pathlib import Path
 
-from src.visual_servoing.ibvs_centering import CENTERING_CONFIG_PATH
+from src.visual_servoing.ibvs_centering import CENTERING_CONFIG_PATH as LEGACY_CONFIG_PATH
 
-CONFIG_PATH = CENTERING_CONFIG_PATH
-P2A_KEY = "pixel_to_arm"
+CONFIG_PATH = Path(__file__).parent / "config" / "pixel_to_arm.yaml"
+P2A_KEY = "pixel_to_arm"    # key inside the LEGACY shared yaml only
 
 MIN_SAMPLES = 4          # a homography has 8 DoF -> 4 point pairs minimum
 
@@ -56,19 +57,28 @@ def _read_full_yaml(path: Path) -> dict:
     return {}
 
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
-    """Return the `pixel_to_arm:` section of the shared config (or a default)."""
-    cfg = _read_full_yaml(path).get(P2A_KEY)
-    return cfg if cfg else deepcopy(DEFAULT_CONFIG)
+def load_config(path: Path = CONFIG_PATH,
+                legacy_path: Path = LEGACY_CONFIG_PATH) -> dict:
+    """Return the calibration from its own file (or a default). If the own
+    file doesn't exist yet but a calibration is found at the legacy location
+    (centering_config.yaml `pixel_to_arm:` key), it is copied over once."""
+    cfg = _read_full_yaml(path)
+    if cfg and ("homography" in cfg or cfg.get("samples")):
+        return cfg
+    legacy = _read_full_yaml(legacy_path).get(P2A_KEY)
+    if legacy:
+        save_config(legacy, path)
+        print(f"[pixel_to_arm] migrated calibration from {legacy_path} -> {path} "
+              f"(old key left in place; delete it by hand when convenient)")
+        return legacy
+    return deepcopy(DEFAULT_CONFIG)
 
 
 def save_config(cfg: dict, path: Path = CONFIG_PATH):
-    """Write ONLY the `pixel_to_arm:` key; every other key is preserved."""
+    """The file is wholly owned by pixel_to_arm now — plain overwrite."""
     import yaml
-    full = _read_full_yaml(path)
-    full[P2A_KEY] = cfg
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(yaml.safe_dump(full, default_flow_style=None, sort_keys=False))
+    Path(path).write_text(yaml.safe_dump(cfg, default_flow_style=None, sort_keys=False))
 
 
 def _fit_homography(pixel_pts, arm_pts):
