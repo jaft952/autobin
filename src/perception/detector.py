@@ -50,6 +50,16 @@ class BoundingBox:
     def height(self) -> int:
         return self.y2 - self.y1
 
+    @property
+    def mask_area(self) -> Optional[int]:
+        """Actual pixel count of segmented can."""
+        if self.mask_poly is None:
+            return None
+        import numpy as np
+        import cv2
+        poly = np.asarray(self.mask_poly, dtype=np.int32).reshape(-1, 2)
+        return int(cv2.contourArea(poly))
+
 
 @dataclass
 class DetectionResult:
