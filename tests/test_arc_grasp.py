@@ -10,40 +10,48 @@ video loop. Run on the Pi desktop.
   c2 145        set CH2 to 145              (c1..c5 = servos, c6 = gripper)
   c1 +2         nudge CH1 by +2 degrees     (also -2 etc.)
   96.7 96.7 100 100 90    set all five CH1..CH5 at once
-  p             adopt the saved grasp pose (CH2..CH5 from table; CH1 stays)
+  p             adopt a saved grasp pose (middle sample of the first row)
   o / c         gripper open / close
   h             home
   pose          print the current pose
   st            print calibration status
   cam           just look through the camera (click shows coords; q closes)
-  y             save RADIUS row: camera pops up -> click tin base -> s
-                (stores clicked pixel-y + CURRENT CH2..CH5 pose)
-  a             save AZIMUTH sample: camera pops up -> click tin base -> s
-                (stores clicked pixel-x + CURRENT CH1; >=2 samples auto-fit)
-  f             re-fit azimuth from all samples + save
+  y             NEW ARC ROW: camera pops up -> click tin base -> s
+                (starts a row at that pixel-y with the CURRENT CH1..CH5 as
+                 its first — middle — sample)
+  a             ADD SAMPLE to the nearest row: camera pops up -> click -> s
+                (stores clicked pixel-x + CURRENT CH1..CH5 in that row)
   g             GRAB TEST: camera pops up -> click the tin -> s -> arm grabs
   q             quit
 
-── Calibration session ─────────────────────────────────────────────────────
- 1. RADIUS ROW: tin at the comfortable grasp spot. `p`, then fine-tune with
-    `c2 +2` style commands until a grab (c then o) works. Then `y` and click
-    the tin's base in the popup.
- 2. AZIMUTH x3: move the tin LEFT along the same-distance arc. Jog `c1 +2`/
-    `c1 -2` until the gripper sits right above it (verify with c/o). Then `a`
-    and click the tin. Repeat center + right. Fit auto-saves.
- 3. TEST: tin anywhere on the arc -> `g` -> click it -> arm grabs it.
+── Calibration session (v2: per-arc left/mid/right, full CH1-5 each) ───────
+ 1. NEW ARC: tin at a comfortable distance, centered. `p` (or jog from
+    scratch) then fine-tune with `c2 +2` style commands until a grab (c then
+    o) physically works. Then `y` and click the tin's base -> the arc row is
+    created with this MIDDLE sample.
+ 2. LEFT + RIGHT on the same arc: slide the tin LEFT along the same-distance
+    arc (as far as the camera still sees it). Jog `c1 +2`/`c1 -2` (and any
+    other channel that needs it) until the grab works again. Then `a`, click.
+    Repeat on the RIGHT side. 3+ samples per arc = good.
+ 3. MORE ARCS: repeat 1-2 at a nearer/farther distance. The strip between
+    arcs becomes grabbable via interpolation on ALL channels — per-arc
+    azimuth samples absorb the camera's parallax (the old single global
+    CH1(nx) line could not).
+ 4. TEST: tin anywhere in the strip -> `g` -> click it -> arm grabs it.
 
-Config: src/visual_servoing/config/centering_config.yaml, under its own
-`arc_grasp:` key — saving PRESERVES every other key in that yaml (target_x,
-lying_target_y, ...). Hand-editable; add a 2nd radius row with a near/far
-pose to unlock radius interpolation.
+Config: src/arm/config/arc_grasp.yaml (its own file — one file per
+calibration domain; IBVS keeps centering_config.yaml, pixel->arm has
+pixel_to_arm.yaml). Hand-editable. A pre-v2 calibration in the old shared
+yaml is left there untouched as its own backup.
 """
 import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arm.arc_grasp import ArcGraspSolver, fit_azimuth, save_config
+from src.arm.arc_grasp import (
+    ArcGraspSolver, save_config, NY_TOL_DEFAULT, NX_TOL_DEFAULT,
+)
 from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
 W, H = 1280, 720
@@ -138,9 +146,13 @@ class Camera:
                 if not ok:
                     print("  camera read failed")
                     break
-                for r in solver.radii:         # calibrated radius rows
+                for r in solver.rows:          # calibrated arc rows
                     yy = int(float(r["ny"]) * self.fh)
                     cv2.line(frame, (0, yy), (self.fw, yy), (0, 200, 200), 1)
+                    for s in r["samples"]:     # sampled azimuth points on the arc
+                        xx = int(float(s["nx"]) * self.fw)
+                        cv2.drawMarker(frame, (xx, yy), (0, 200, 200),
+                                       cv2.MARKER_DIAMOND, 10, 1)
                 if state["click"]:
                     cv2.drawMarker(frame, state["click"], (0, 0, 255),
                                    cv2.MARKER_TILTED_CROSS, 24, 2)
@@ -199,17 +211,12 @@ def main():
         print(f"camera not available ({e}) — y/a/g/cam disabled.")
         camera = None
 
-    def refit_and_save():
-        fit = fit_azimuth(cfg["azimuth"].get("samples") or [])
-        if fit:
-            cfg["azimuth"]["nx_center"], cfg["azimuth"]["ch1_center"], \
-                cfg["azimuth"]["ch1_per_nx"] = fit
-            print(f"[fit] nx_center={fit[0]}  ch1_center={fit[1]}  ch1_per_nx={fit[2]}")
+    def save_and_reload():
         save_config(cfg)
         solver.reload()
         print(f"[cfg] saved. {solver.status()}")
 
-    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a f g | q")
+    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | q")
     print("Full walkthrough: header of this file.\n")
 
     while True:
@@ -231,14 +238,17 @@ def main():
         elif line == "c":
             arm.set_gripper(GRIPPER_CLOSE)
         elif line == "p":
-            row = solver.radii[0] if solver.radii else cfg["radii"][0]
-            arm.goto([arm.arm[0]] + [float(v) for v in row["arm"]], "grasp pose")
+            if not solver.rows:
+                print("no calibrated rows yet — jog manually, then 'y' to start one.")
+                continue
+            ss = solver.rows[0]["samples"]
+            mid = ss[len(ss) // 2]
+            arm.goto([arm.arm[0]] + [float(v) for v in mid["arm"][1:]],
+                     "grasp pose (CH1 stays)")
         elif line == "pose":
             arm.print_pose()
         elif line == "st":
             print(f"[cfg] {solver.status()}")
-        elif line == "f":
-            refit_and_save()
         elif line == "cam":
             if camera:
                 camera.click_point(solver, "viewing only", sticky=True)
@@ -246,29 +256,44 @@ def main():
             if not camera:
                 print("no camera.")
                 continue
-            pt = camera.click_point(solver, "RADIUS: click tin at the grasp pose")
+            pt = camera.click_point(solver, "NEW ARC: click tin at the grasp pose")
             if pt is None:
                 print("cancelled.")
                 continue
-            row = cfg["radii"][0]
-            row["ny"] = round(pt[1], 4)
-            row["arm"] = [round(v, 1) for v in arm.arm[1:5]]
-            print(f"[cal] radius row: ny={row['ny']}  arm(CH2-5)={row['arm']}")
-            save_config(cfg)
-            solver.reload()
+            row = {
+                "ny": round(pt[1], 4),
+                "ny_tol": NY_TOL_DEFAULT,
+                "nx_tol": NX_TOL_DEFAULT,
+                "samples": [{"nx": round(pt[0], 4),
+                             "arm": [round(v, 1) for v in arm.arm]}],
+            }
+            cfg.setdefault("rows", []).append(row)
+            print(f"[cal] new arc row: ny={row['ny']}, first sample "
+                  f"nx={row['samples'][0]['nx']} arm={row['samples'][0]['arm']}")
+            save_and_reload()
         elif line == "a":
             if not camera:
                 print("no camera.")
                 continue
-            pt = camera.click_point(solver, f"AZIMUTH: click tin (CH1={arm.arm[0]:.1f})")
+            if not cfg.get("rows"):
+                print("no arc rows yet — 'y' first.")
+                continue
+            pt = camera.click_point(solver, f"ADD SAMPLE: click tin (CH1={arm.arm[0]:.1f})")
             if pt is None:
                 print("cancelled.")
                 continue
-            cfg["azimuth"].setdefault("samples", []).append(
-                [round(pt[0], 4), round(arm.arm[0], 1)])
-            print(f"[cal] azimuth sample #{len(cfg['azimuth']['samples'])}: "
-                  f"nx={pt[0]:.4f} CH1={arm.arm[0]:.1f}")
-            refit_and_save()
+            # attach to the row whose ny is closest to the clicked pixel-y
+            row = min(cfg["rows"], key=lambda r: abs(float(r["ny"]) - pt[1]))
+            gap = abs(float(row["ny"]) - pt[1])
+            if gap > 2 * float(row.get("ny_tol", NY_TOL_DEFAULT)):
+                print(f"[cal] WARNING: clicked ny={pt[1]:.3f} is far from the nearest "
+                      f"row (ny={float(row['ny']):.3f}) — same arc? Saving anyway; "
+                      f"'y' instead if this was a NEW distance.")
+            row.setdefault("samples", []).append(
+                {"nx": round(pt[0], 4), "arm": [round(v, 1) for v in arm.arm]})
+            print(f"[cal] sample added to row ny={float(row['ny']):.3f}: "
+                  f"nx={pt[0]:.4f} arm={[round(v, 1) for v in arm.arm]}")
+            save_and_reload()
         elif line == "g":
             if not camera:
                 print("no camera.")
@@ -286,7 +311,7 @@ def main():
         elif handle_servo_command(arm, line):
             pass
         else:
-            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a f g | q")
+            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | q")
 
     print("bye")
 
