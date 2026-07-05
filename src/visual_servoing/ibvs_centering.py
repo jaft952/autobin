@@ -35,6 +35,7 @@ class CenteringStatus:
     error_y: float                   # normalized error, + = tin is BEHIND target (too close)
     motion_vector: Tuple[float, float, float]  # (forward, strafe=0, steer) suggestion
     target_px: Optional[Tuple[int, int]]       # smoothed tin center in pixels (None if lost)
+    mask_area: Optional[int] = None  # segmented pixel count (confidence metric)
     message: str = ""
 
 
@@ -117,7 +118,7 @@ class IBVSCentering:
             return CenteringStatus(
                 aligned=False, stable=False, move=ChassisMove.SEARCH,
                 error_x=0.0, error_y=0.0, motion_vector=(0.0, 0.0, 0.0),
-                target_px=None,
+                target_px=None, mask_area=None,
                 message="[IBVS] no tin detected — suggest chassis SEARCH (rotate/scan)",
             )
         self._missed = 0
@@ -178,7 +179,8 @@ class IBVSCentering:
         return CenteringStatus(
             aligned=aligned, stable=stable, move=move,
             error_x=round(error_x, 3), error_y=round(error_y, 3),
-            motion_vector=motion, target_px=(int(sx), int(sy)), message=msg,
+            motion_vector=motion, target_px=(int(sx), int(sy)),
+            mask_area=best.mask_area, message=msg,
         )
 
     # ── helpers ──────────────────────────────────────────────────────────
