@@ -54,7 +54,10 @@ from src.arm.arc_grasp import (
 )
 from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
-W, H = 1280, 720
+# Match the detector's capture resolution (Logitech Brio, 1920x1080) so the
+# normalized click coords here and the live detection coords share identical
+# geometry.
+W, H = 1920, 1080
 
 # Poses/values shared with tests/test_ibvs_centering.py's arm controller.
 HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
