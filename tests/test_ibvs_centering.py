@@ -85,7 +85,6 @@ def main(drive=False):
     controller.start()
 
     show = True
-    result = None
     status = None
 
     try:
@@ -94,14 +93,6 @@ def main(drive=False):
             status = controller.get_status()
 
             if status:
-                # Attempt to get detection for visualization
-                try:
-                    frame = detector.read_frame()
-                    if frame is not None:
-                        result = detector.infer(frame)
-                except Exception:
-                    pass
-
                 # Display status
                 print(
                     f"err=({status.error_x:+.3f},{status.error_y:+.3f})  "
@@ -111,25 +102,29 @@ def main(drive=False):
                     f"drive={'ON' if driving else 'OFF'}"
                 )
 
-                # Visualization
-                if show and result and result.best:
-                    annotated = detector.get_annotated_frame(result)
-                    _draw_status_overlay(annotated, status, driving if chassis is not None else None)
-
+                # Visualization: read frame for display only (don't infer)
+                if show:
                     try:
-                        cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", annotated)  # type: ignore
-                        key = cv2.waitKey(1) & 0xFF
+                        frame = detector.read_frame()
+                        if frame is not None:
+                            # Display frame with status overlay
+                            _draw_status_overlay(frame, status, driving if chassis is not None else None)
+                            cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
+                            key = cv2.waitKey(1) & 0xFF
 
-                        if key == ord("q"):
-                            break
-                        if key == ord("m") and chassis is not None:
-                            driving = not driving
-                            print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
+                            if key == ord("q"):
+                                break
+                            if key == ord("m") and chassis is not None:
+                                driving = not driving
+                                print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
 
                     except cv2.error:
                         print("[!] no display available — continuing text-only")
                         show = False
                         continue
+                    except Exception as e:
+                        print(f"[display] error: {e}")
+
             else:
                 print("[waiting for first detection...]")
 
