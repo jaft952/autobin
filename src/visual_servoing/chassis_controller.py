@@ -248,6 +248,36 @@ class ChassisController:
         time.sleep(seconds)
         self.stop()
 
+    def set_motor_pwm(self, forward: float, steer: float) -> None:
+        """Direct motor control for cascade controller and other continuous-motion systems.
+
+        Args:
+            forward: Forward/backward speed [-1, 1]. Negative = forward, positive = backward.
+            steer: Turn rate [-1, 1]. Negative = turn left, positive = turn right.
+
+        Converts to differential wheel speeds:
+            left_speed = forward - steer
+            right_speed = forward + steer
+        """
+        # Clamp to [-1, 1] range
+        forward = max(-1.0, min(1.0, forward))
+        steer = max(-1.0, min(1.0, steer))
+
+        # Convert to normalized wheel speeds
+        left_fraction = forward - steer
+        right_fraction = forward + steer
+
+        # Clamp each wheel to [-1, 1]
+        left_fraction = max(-1.0, min(1.0, left_fraction))
+        right_fraction = max(-1.0, min(1.0, right_fraction))
+
+        # Scale by calibration and apply
+        left_speed = self.cal.forward_speed * left_fraction
+        right_speed = self.cal.forward_speed * right_fraction
+
+        cmd = WheelCommand(left_speed, right_speed, forward < 0, "cascade")
+        self.actuator.apply(cmd)
+
     def stop(self) -> None:
         """Cut motor power and hold position (does not release GPIO)."""
         self.actuator.stop()
