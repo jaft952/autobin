@@ -1,25 +1,36 @@
 """
-Manual differential-drive test with keyboard control.
+Manual keyboard drive test — exercises each layer of the motion stack
+so a fault can be pinned to the layer where it first appears.
 
-Drives the chassis directly through ChassisController.set_motor_pwm() —
-the exact same call the cascade controller uses — so you can verify:
-  - forward/backward polarity
-  - steering (left/right) direction
-  - minimum speed needed to actually move on the floor
+Layers (switch with number keys):
+  1 : RAW WHEELS  — hand-built WheelCommand -> PWMActuator.apply()
+                    (bypasses kinematics; trims NOT applied; calibration
+                     invert_left/right + swap_left_right still apply)
+  2 : KINEMATICS  — DifferentialKinematics moves -> PWMActuator.apply()
+                    (same path as discrete ChassisMove; trims applied)
+  3 : CASCADE     — ChassisController.set_motor_pwm(forward, steer)
+                    (exact path the cascade controller uses)
 
-Usage:
-    python tests/test_differential_drive.py
+If a motion works in layer 1 but not layer 2/3 with the same printed wheel
+values, the bug is in that upper layer. If it fails in layer 1 too, it's
+pwm_driver, wiring, or power.
 
-Keys:
-  w : forward              s : backward
-  a : turn left            d : turn right
-  q : arc forward-left     e : arc forward-right
-  z : arc backward-left    c : arc backward-right
-  space : stop
-  + / - : speed up / down (step 0.05)
-  i : invert forward polarity (if w drives backward)
-  k : invert steer polarity  (if a turns right)
-  x : quit
+Drive keys (same in every mode):
+  w/s : forward/backward      a/d : turn left/right
+  q/e : arc fwd-left/right    z/c : arc back-left/right
+  l/r : LEFT/RIGHT wheel only (finds a weak or dead motor;
+        note swap_left_right still applies, so "LEFT" may be the
+        other physical wheel — that itself is useful info)
+  space : stop                x : quit
+
+Tuning keys:
+  +/- : speed up/down (0.05 steps)
+  i   : invert forward polarity (modes 1 and 3)
+  k   : invert steer polarity   (modes 1 and 3)
+  b   : toggle reverse-protection — inserts a short stop before any wheel
+        flips direction. If stalling/buzzing goes away with this ON, the
+        cause is current spikes from instant direction flips (power/driver,
+        not code).
 """
 
 import os
@@ -27,6 +38,8 @@ import sys
 import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.motion.differential_kinematics import WheelCommand
 
 
 # ----------------------------------------------------------------------
@@ -64,11 +77,8 @@ else:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-# ----------------------------------------------------------------------
-# Key -> (forward, steer) in "intent" units, before polarity/speed scaling.
-# forward: +1 = drive toward the tin ("forward"), -1 = reverse
-# steer:   -1 = turn left, +1 = turn right
-# ----------------------------------------------------------------------
+# Key -> (name, forward_intent, steer_intent)
+# forward: +1 = "toward the tin", steer: -1 = left, +1 = right
 KEY_MAP = {
     "w": ("FORWARD", 1.0, 0.0),
     "s": ("BACKWARD", -1.0, 0.0),
@@ -78,8 +88,9 @@ KEY_MAP = {
     "e": ("ARC FWD-RIGHT", 1.0, 0.5),
     "z": ("ARC BACK-LEFT", -1.0, -0.5),
     "c": ("ARC BACK-RIGHT", -1.0, 0.5),
-    " ": ("STOP", 0.0, 0.0),
 }
+
+MODE_NAMES = {1: "RAW ", 2: "KIN ", 3: "CASC"}
 
 
 def main():
@@ -91,65 +102,155 @@ def main():
         print(f"[!] chassis not available: {exc}")
         return
 
+    actuator = chassis.actuator
+    kin = chassis.kin
+    cal = chassis.cal
+
+    mode = 1            # start at the lowest layer
     speed = 0.50        # command magnitude (0..1)
     fwd_sign = -1.0     # set_motor_pwm convention: negative = forward
     steer_sign = 1.0
+    protect = False     # reverse-protection off by default (to reproduce bug)
+
+    last_wheels = [0.0, 0.0]   # last applied left/right (for flip detection)
 
     print(__doc__)
-    print(f"speed={speed:.2f}  fwd_sign={fwd_sign:+.0f}  steer_sign={steer_sign:+.0f}")
+    print(
+        f"mode={MODE_NAMES[mode]} speed={speed:.2f} "
+        f"fwd_sign={fwd_sign:+.0f} steer_sign={steer_sign:+.0f} "
+        f"protect={'ON' if protect else 'OFF'}"
+    )
+    print(
+        f"calibration: forward_speed={cal.forward_speed} "
+        f"invert_left={cal.invert_left} invert_right={cal.invert_right} "
+        f"swap_left_right={cal.swap_left_right}"
+    )
     print("ready — press keys to drive.\n")
 
-    current = ("STOP", 0.0, 0.0)
+    def guard_reverse(new_left: float, new_right: float):
+        """Brief stop before any wheel flips direction (if protection ON)."""
+        if not protect:
+            return
+        flip = (new_left * last_wheels[0] < 0) or (new_right * last_wheels[1] < 0)
+        if flip:
+            actuator.stop()
+            time.sleep(0.08)
+
+    def remember(new_left: float, new_right: float):
+        last_wheels[0] = new_left
+        last_wheels[1] = new_right
+
+    def do_stop():
+        actuator.stop()
+        remember(0.0, 0.0)
+        print("STOP")
 
     try:
         while True:
             key = get_key(timeout=0.1)
             if key is None:
                 continue
-
             key = key.lower()
 
+            # ---------- control keys ----------
             if key == "x":
                 break
-
+            if key in ("1", "2", "3"):
+                mode = int(key)
+                do_stop()
+                print(f"\n[mode] {MODE_NAMES[mode]} "
+                      f"({'raw wheels' if mode == 1 else 'kinematics+trims' if mode == 2 else 'set_motor_pwm cascade path'})\n")
+                continue
             if key in ("+", "="):
                 speed = min(1.0, speed + 0.05)
                 print(f"[speed] {speed:.2f}")
-                key = None
-            elif key in ("-", "_"):
+                continue
+            if key in ("-", "_"):
                 speed = max(0.05, speed - 0.05)
                 print(f"[speed] {speed:.2f}")
-                key = None
-            elif key == "i":
+                continue
+            if key == "i":
                 fwd_sign = -fwd_sign
                 print(f"[polarity] forward sign = {fwd_sign:+.0f}")
-                key = None
-            elif key == "k":
+                continue
+            if key == "k":
                 steer_sign = -steer_sign
                 print(f"[polarity] steer sign = {steer_sign:+.0f}")
-                key = None
+                continue
+            if key == "b":
+                protect = not protect
+                print(f"[protect] reverse-protection {'ON' if protect else 'OFF'}")
+                continue
+            if key == " ":
+                do_stop()
+                continue
 
-            if key is not None and key in KEY_MAP:
-                current = KEY_MAP[key]
+            # ---------- single wheel tests ----------
+            if key in ("l", "r"):
+                mag = fwd_sign * cal.forward_speed * speed
+                left = mag if key == "l" else 0.0
+                right = mag if key == "r" else 0.0
+                guard_reverse(left, right)
+                actuator.apply(WheelCommand(left, right, False, "forward"))
+                remember(left, right)
+                print(f"[wheel] {'LEFT' if key == 'l' else 'RIGHT'} only  "
+                      f"L={left:+.1f} R={right:+.1f}  "
+                      f"(swap_left_right={cal.swap_left_right} may swap physical side)")
+                continue
 
-            # (Re)apply current motion with latest speed/polarity so that
-            # speed and polarity changes take effect immediately.
-            name, f_intent, s_intent = current
-            forward = fwd_sign * f_intent * speed
-            steer = steer_sign * s_intent * speed
+            if key not in KEY_MAP:
+                continue
 
-            if name == "STOP":
-                chassis.stop()
-                print("STOP")
-            else:
+            name, f_intent, s_intent = KEY_MAP[key]
+
+            # ---------- layer dispatch ----------
+            if mode == 1:
+                # RAW: same wheel mixing as set_motor_pwm, applied directly.
+                forward = fwd_sign * f_intent * speed
+                steer = steer_sign * s_intent * speed
+                left = cal.forward_speed * max(-1.0, min(1.0, forward + steer))
+                right = cal.forward_speed * max(-1.0, min(1.0, forward - steer))
+                guard_reverse(left, right)
+                actuator.apply(WheelCommand(left, right, False, "forward"))
+                remember(left, right)
+                print(f"[RAW ] {name:14} L={left:+6.1f} R={right:+6.1f} (speed={speed:.2f})")
+
+            elif mode == 2:
+                # KINEMATICS: discrete calibrated moves, scaled by speed.
+                cmd = {
+                    "FORWARD": kin.forward,
+                    "BACKWARD": kin.backward,
+                    "TURN LEFT": kin.turn_left,
+                    "TURN RIGHT": kin.turn_right,
+                    "ARC FWD-LEFT": kin.arc_forward_left,
+                    "ARC FWD-RIGHT": kin.arc_forward_right,
+                    "ARC BACK-LEFT": kin.arc_backward_left,
+                    "ARC BACK-RIGHT": kin.arc_backward_right,
+                }[name]()
+                cmd.left_speed *= speed
+                cmd.right_speed *= speed
+                guard_reverse(cmd.left_speed, cmd.right_speed)
+                actuator.apply(cmd)
+                remember(cmd.left_speed, cmd.right_speed)
+                print(f"[KIN ] {name:14} L={cmd.left_speed:+6.1f} R={cmd.right_speed:+6.1f} "
+                      f"trim={cmd.apply_trim}/{cmd.trim_set} (speed={speed:.2f})")
+
+            elif mode == 3:
+                # CASCADE: exact call the cascade controller makes.
+                forward = fwd_sign * f_intent * speed
+                steer = steer_sign * s_intent * speed
+                # mirror set_motor_pwm's wheel math for flip detection / printout
+                left = cal.forward_speed * max(-1.0, min(1.0, forward + steer))
+                right = cal.forward_speed * max(-1.0, min(1.0, forward - steer))
+                if protect:
+                    flip = (left * last_wheels[0] < 0) or (right * last_wheels[1] < 0)
+                    if flip:
+                        chassis.stop()
+                        time.sleep(0.08)
                 chassis.set_motor_pwm(forward, steer)
-                # Mirror the wheel math in set_motor_pwm (camera-backward config)
-                left = forward + steer
-                right = forward - steer
-                print(
-                    f"{name:15}  forward={forward:+.2f}  steer={steer:+.2f}  "
-                    f"->  left={left:+.2f}  right={right:+.2f}  (speed={speed:.2f})"
-                )
+                remember(left, right)
+                print(f"[CASC] {name:14} fwd={forward:+.2f} steer={steer:+.2f} "
+                      f"-> L={left:+6.1f} R={right:+6.1f} (speed={speed:.2f})")
 
     except KeyboardInterrupt:
         pass
