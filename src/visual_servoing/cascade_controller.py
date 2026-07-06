@@ -456,12 +456,17 @@ class _MotorWorker(threading.Thread):
         steer = vx_lim * 0.8     # error_x → steer
 
         # Apply minimum speed to overcome floor friction
-        # If magnitude is small but non-zero, boost to minimum
+        # Boost all weak commands to ensure motor movement
         mag = math.sqrt(forward**2 + steer**2)
-        if 0.3 < mag < 0.4:  # Increased from 0.15 to 0.30
-            scale = 0.30 / mag
+        MIN_SPEED = 0.50  # Minimum motor command magnitude
+        if 0.01 < mag < MIN_SPEED:
+            scale = MIN_SPEED / mag
             forward *= scale
             steer *= scale
+        elif mag < 0.01:
+            # Very small command, apply minimum
+            forward = MIN_SPEED if forward < 0 else -MIN_SPEED if forward > 0 else 0
+            steer = MIN_SPEED if steer < 0 else -MIN_SPEED if steer > 0 else 0
 
         # Clamp to [-1, 1] range
         forward = max(-1.0, min(1.0, forward))
