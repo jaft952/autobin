@@ -25,19 +25,18 @@ from src.visual_servoing.cascade_controller import CascadeController
 
 
 def _draw_status_overlay(frame, status, driving=None):
-    """Draw IBVS status on frame."""
+    """Draw cascade status on frame."""
     import cv2
     if frame is None:
         return
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    action = status.move.value.upper()
+    # Show alignment and stability (VisionState doesn't have move)
     color = (0, 255, 0) if status.stable else (0, 165, 255)
-    cv2.putText(frame, f"{action}  aligned={status.aligned}  stable={status.stable}",
-                (20, fh - 25), font, 0.8, (0, 0, 0), 4)
-    cv2.putText(frame, f"{action}  aligned={status.aligned}  stable={status.stable}",
-                (20, fh - 25), font, 0.8, color, 2)
+    text = f"aligned={status.aligned}  stable={status.stable}  quality={status.quality():.2f}"
+    cv2.putText(frame, text, (20, fh - 25), font, 0.8, (0, 0, 0), 4)
+    cv2.putText(frame, text, (20, fh - 25), font, 0.8, color, 2)
 
     if driving is not None:
         dmode = "DRIVE ON" if driving else "DRIVE OFF"
@@ -92,8 +91,39 @@ def main(drive=False):
             # Get latest vision status (non-blocking)
             status = controller.get_status()
 
+            # Always try to show camera feed
+            if show:
+                try:
+                    frame = detector.read_frame()
+                    if frame is not None:
+                        # Draw status overlay only if we have detection
+                        if status:
+                            _draw_status_overlay(frame, status, driving if chassis is not None else None)
+                        else:
+                            # Show waiting message on frame
+                            import cv2
+                            fh = frame.shape[0]
+                            font = cv2.FONT_HERSHEY_SIMPLEX
+                            cv2.putText(frame, "[Waiting for detection...]", (20, fh - 25),
+                                       font, 0.8, (0, 165, 255), 2)
+
+                        cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
+                        key = cv2.waitKey(1) & 0xFF
+
+                        if key == ord("q"):
+                            break
+                        if key == ord("m") and chassis is not None:
+                            driving = not driving
+                            print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
+
+                except cv2.error:
+                    print("[!] no display available — continuing text-only")
+                    show = False
+                except Exception as e:
+                    print(f"[display] error: {e}")
+
+            # Print status to console
             if status:
-                # Display status
                 print(
                     f"err=({status.error_x:+.3f},{status.error_y:+.3f})  "
                     f"mask_area={status.mask_area if status.mask_area else 'None':>7}  "
@@ -101,30 +131,6 @@ def main(drive=False):
                     f"aligned={status.aligned}  stable={status.stable}  "
                     f"drive={'ON' if driving else 'OFF'}"
                 )
-
-                # Visualization: read frame for display only (don't infer)
-                if show:
-                    try:
-                        frame = detector.read_frame()
-                        if frame is not None:
-                            # Display frame with status overlay
-                            _draw_status_overlay(frame, status, driving if chassis is not None else None)
-                            cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
-                            key = cv2.waitKey(1) & 0xFF
-
-                            if key == ord("q"):
-                                break
-                            if key == ord("m") and chassis is not None:
-                                driving = not driving
-                                print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
-
-                    except cv2.error:
-                        print("[!] no display available — continuing text-only")
-                        show = False
-                        continue
-                    except Exception as e:
-                        print(f"[display] error: {e}")
-
             else:
                 print("[waiting for first detection...]")
 

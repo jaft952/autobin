@@ -450,9 +450,22 @@ class _MotorWorker(threading.Thread):
         vx_lim = self.limiter_x.limit(vx)
         vy_lim = self.limiter_y.limit(vy)
 
-        # Convert error → motor command
-        forward = max(-1.0, min(1.0, -vy_lim * 0.5))  # -error_y → forward
-        steer = max(-1.0, min(1.0, vx_lim * 0.5))     # error_x → steer
+        # Convert error → motor command with gain
+        # Scale factor of 0.8 ensures reasonable motor speeds
+        forward = -vy_lim * 0.8  # -error_y → forward
+        steer = vx_lim * 0.8     # error_x → steer
+
+        # Apply minimum speed to prevent stalling
+        # If magnitude is small but non-zero, boost to minimum
+        mag = math.sqrt(forward**2 + steer**2)
+        if 0.01 < mag < 0.15:
+            scale = 0.15 / mag
+            forward *= scale
+            steer *= scale
+
+        # Clamp to [-1, 1] range
+        forward = max(-1.0, min(1.0, forward))
+        steer = max(-1.0, min(1.0, steer))
 
         return MotorCommand(forward, steer, t)
 
