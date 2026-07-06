@@ -452,7 +452,7 @@ class _MotorWorker(threading.Thread):
 
         # Convert error → motor command with gain
         # Scale factor of 0.8 ensures reasonable motor speeds
-        forward = -vy_lim * 0.8  # -error_y → forward
+        forward = vy_lim * 0.8   # Flip for camera-backward config
         steer = vx_lim * 0.8     # error_x → steer
 
         # Apply minimum speed to overcome floor friction
