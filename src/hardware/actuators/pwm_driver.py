@@ -60,7 +60,7 @@ class PWMActuator:
         self.pins = pins or MotorPins()
         self.cal = calibration or MotionCalibration()
 
-        GPIO.setmode(GPIO.BCM)
+        GPIO.setmode(GPIO.BCM) # type: ignore
         GPIO.setup([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4, self.pins.ena, self.pins.enb], GPIO.OUT)
 
         self.pwm_a = GPIO.PWM(self.pins.ena, pwm_freq)
