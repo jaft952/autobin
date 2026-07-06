@@ -304,6 +304,10 @@ class CascadeController:
         """Get latest vision state (for monitoring)."""
         return self.buffer.get_latest()
 
+    def get_last_command(self) -> Optional[MotorCommand]:
+        """Get last motor command sent (for display/logging)."""
+        return self.motor_thread.last_cmd if self.motor_thread else None
+
 
 class _VisionWorker(threading.Thread):
     """Vision capture thread (~30 Hz)."""
@@ -386,6 +390,7 @@ class _MotorWorker(threading.Thread):
         self.limiter_y = VelocityLimiter(max_accel=0.5, dt=0.001)
 
         self.last_vision_time = 0.0
+        self.last_cmd: Optional[MotorCommand] = None
 
     def run(self):
         """Main motor control loop."""
@@ -476,6 +481,7 @@ class _MotorWorker(threading.Thread):
 
     def _send_motor_command(self, cmd: MotorCommand):
         """Send command to chassis motor driver."""
+        self.last_cmd = cmd  # Track for display/logging
         if self.chassis:
             try:
                 self.chassis.set_motor_pwm(cmd.forward, cmd.steer)

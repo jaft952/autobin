@@ -15,6 +15,7 @@ Usage:
 import os
 import sys
 import time
+import math
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -22,21 +23,75 @@ from src.visual_servoing.ibvs_centering import IBVSCentering
 from src.visual_servoing.cascade_controller import CascadeController
 
 
+def _interpret_motion_command(cmd):
+    """Convert motor command to human-readable motion description."""
+    if cmd is None:
+        return "IDLE", 0, 0
+
+    forward = cmd.forward
+    steer = cmd.steer
+
+    # Determine motion type
+    mag = math.sqrt(forward**2 + steer**2)
+
+    if mag < 0.05:
+        motion = "HOLD"
+        angle = 0
+        intensity = 0
+    elif abs(steer) < 0.1:
+        # Mostly forward/backward
+        if forward < -0.2:
+            motion = "FORWARD"
+            angle = 0
+            intensity = abs(forward)
+        elif forward > 0.2:
+            motion = "BACKWARD"
+            angle = 0
+            intensity = abs(forward)
+        else:
+            motion = "HOLD"
+            angle = 0
+            intensity = 0
+    else:
+        # Arc motion with turn
+        angle_deg = math.atan2(steer, -forward) * 180 / math.pi  # Convert to angle
+
+        if forward < -0.1:
+            motion = f"ARC_FWD ({angle_deg:+.0f}°)"
+            angle = angle_deg
+            intensity = abs(forward)
+        elif forward > 0.1:
+            motion = f"ARC_BACK ({angle_deg:+.0f}°)"
+            angle = angle_deg
+            intensity = abs(forward)
+        else:
+            motion = f"TURN ({angle_deg:+.0f}°)"
+            angle = angle_deg
+            intensity = abs(steer)
+
+    return motion, angle, intensity
 
 
-def _draw_status_overlay(frame, status, driving=None):
-    """Draw cascade status on frame."""
+def _draw_status_overlay(frame, status, cmd, driving=None):
+    """Draw cascade status and motion command on frame."""
     import cv2
     if frame is None:
         return
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Show alignment and stability (VisionState doesn't have move)
+    # Show alignment and stability
     color = (0, 255, 0) if status.stable else (0, 165, 255)
     text = f"aligned={status.aligned}  stable={status.stable}  quality={status.quality():.2f}"
     cv2.putText(frame, text, (20, fh - 25), font, 0.8, (0, 0, 0), 4)
     cv2.putText(frame, text, (20, fh - 25), font, 0.8, color, 2)
+
+    # Show motion command
+    motion, angle, intensity = _interpret_motion_command(cmd)
+    motion_color = (0, 255, 0) if intensity > 0 else (100, 100, 100)
+    motion_text = f"Motion: {motion}  |  intensity={intensity:.2f}"
+    cv2.putText(frame, motion_text, (20, fh - 50), font, 0.7, (0, 0, 0), 3)
+    cv2.putText(frame, motion_text, (20, fh - 50), font, 0.7, motion_color, 1)
 
     if driving is not None:
         dmode = "DRIVE ON" if driving else "DRIVE OFF"
@@ -88,17 +143,18 @@ def main(drive=False):
 
     try:
         while True:
-            # Get latest vision status (non-blocking)
+            # Get latest vision status and motor command
             status = controller.get_status()
+            cmd = controller.get_last_command()
 
             # Always try to show camera feed
             if show:
                 try:
                     frame = detector.read_frame()
                     if frame is not None:
-                        # Draw status overlay only if we have detection
+                        # Draw status overlay with motion command
                         if status:
-                            _draw_status_overlay(frame, status, driving if chassis is not None else None)
+                            _draw_status_overlay(frame, status, cmd, driving if chassis is not None else None)
                         else:
                             # Show waiting message on frame
                             import cv2
@@ -122,8 +178,18 @@ def main(drive=False):
                 except Exception as e:
                     print(f"[display] error: {e}")
 
-            # Print status to console
-            if status:
+            # Print status to console with motion details
+            if status and cmd:
+                motion, _, intensity = _interpret_motion_command(cmd)
+                print(
+                    f"err=({status.error_x:+.3f},{status.error_y:+.3f})  "
+                    f"mask_area={status.mask_area if status.mask_area else 'None':>7}  "
+                    f"quality={status.quality():.2f}  "
+                    f"aligned={status.aligned}  stable={status.stable}  "
+                    f"| motion={motion:20}  intensity={intensity:.2f}  "
+                    f"drive={'ON' if driving else 'OFF'}"
+                )
+            elif status:
                 print(
                     f"err=({status.error_x:+.3f},{status.error_y:+.3f})  "
                     f"mask_area={status.mask_area if status.mask_area else 'None':>7}  "
