@@ -457,7 +457,7 @@ class _MotorWorker(threading.Thread):
         return MotorCommand(forward, steer, t)
 
     def _send_motor_command(self, cmd: MotorCommand):
-        """Send command to chassis (or mock)."""
+        """Send command to chassis motor driver."""
         if self.chassis:
             try:
                 self.chassis.set_motor_pwm(cmd.forward, cmd.steer)
