@@ -455,11 +455,11 @@ class _MotorWorker(threading.Thread):
         forward = -vy_lim * 0.8  # -error_y → forward
         steer = vx_lim * 0.8     # error_x → steer
 
-        # Apply minimum speed to prevent stalling
+        # Apply minimum speed to overcome floor friction
         # If magnitude is small but non-zero, boost to minimum
         mag = math.sqrt(forward**2 + steer**2)
-        if 0.01 < mag < 0.15:
-            scale = 0.15 / mag
+        if 0.01 < mag < 0.30:  # Increased from 0.15 to 0.30
+            scale = 0.30 / mag
             forward *= scale
             steer *= scale
 

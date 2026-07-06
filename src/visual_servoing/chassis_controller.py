@@ -255,17 +255,17 @@ class ChassisController:
             forward: Forward/backward speed [-1, 1]. Negative = forward, positive = backward.
             steer: Turn rate [-1, 1]. Negative = turn left, positive = turn right.
 
-        Converts to differential wheel speeds:
-            left_speed = forward - steer
-            right_speed = forward + steer
+        Converts to differential wheel speeds (camera-backward configuration):
+            left_speed = forward + steer   (reversed from standard)
+            right_speed = forward - steer  (reversed from standard)
         """
         # Clamp to [-1, 1] range
         forward = max(-1.0, min(1.0, forward))
         steer = max(-1.0, min(1.0, steer))
 
-        # Convert to normalized wheel speeds
-        left_fraction = forward - steer
-        right_fraction = forward + steer
+        # Convert to normalized wheel speeds (REVERSED for camera-backward config)
+        left_fraction = forward + steer   # Swapped
+        right_fraction = forward - steer  # Swapped
 
         # Clamp each wheel to [-1, 1]
         left_fraction = max(-1.0, min(1.0, left_fraction))
