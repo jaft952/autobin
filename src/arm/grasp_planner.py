@@ -6,12 +6,23 @@ from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
 
 
-HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]    
-BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]    
-GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]  
+HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]
+BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]
+GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]
 
 GRIPPER_OPEN = 0.0
 GRIPPER_CLOSED = 40.0
+
+# ── Arc-grasp execution sequence (ported from tests/test_arc_grasp.py) ───────
+# The arc calibration poses were tuned WITH this exact sequence, so execution
+# must match it: swing CH1 to the azimuth while lifted, then descend ONE
+# channel at a time in this order, close, lift. Changing the order or the
+# step pacing invalidates the calibrated poses' behaviour (links sag
+# differently mid-path and the gripper ploughs the floor).
+ARC_LIFT_ARM      = [96.7, 96.7, 100.0, 100.0, 90.0]
+ARC_DESCEND_ORDER = [2, 3, 4, 1]     # CH3 elbow, CH4 wrist, CH5 roll, CH2 shoulder
+ARC_STEP_DEG      = 2.0
+ARC_STEP_DELAY    = 0.5
 
 # ── Real-world tip correction ────────────────────────────────────────────────
 # Ruler-measured 2026-07-04 (FREE mode, cm, z from the chassis deck):
@@ -59,8 +70,44 @@ class GraspPlanner:
         via the shared stepped_move, tracking the new pose for the next call."""
         start = list(self._arm) + [self._gripper]
         target = list(target_arm) + [target_gripper]
-        stepped_move(self.actuator, start, target)   # CH6 steps too (avoid current spike)
+        stepped_move(self.actuator, start, target)
         self._arm, self._gripper = list(target_arm), float(target_gripper)
+
+    def _move_one(self, ch: int, value: float):
+        """Move a SINGLE channel gently (arc-grasp pacing), holding the rest.
+        ch 0-4 = CH1-5, ch 5 = gripper. Mirrors the tuned Arm._one from
+        tests/test_arc_grasp.py."""
+        start = list(self._arm) + [self._gripper]
+        target = list(start)
+        target[ch] = max(0.0, min(180.0, float(value)))
+        stepped_move(self.actuator, start, target, ARC_STEP_DEG, ARC_STEP_DELAY)
+        if ch < 5:
+            self._arm[ch] = target[ch]
+        else:
+            self._gripper = target[ch]
+
+    def grab_arc_pose(self, solved: list) -> bool:
+        """Execute the tuned arc-grasp sequence at a solved [CH1..CH5] pose
+        (from ArcGraspSolver): open, swing to azimuth lifted, descend one
+        channel at a time, close, lift shoulder — ends HOLDING the can.
+        Follow with dump_to_bin() to deposit it."""
+        if solved is None or len(solved) < 5:
+            print("[GraspPlanner] grab_arc_pose: invalid pose, arm NOT moved.")
+            return False
+        print(f"[GraspPlanner] Arc grab at CH1-5 = {solved}")
+        self.control_gripper("open")
+        # Swing to the azimuth with the arm lifted, channel by channel.
+        swing = [float(solved[0])] + ARC_LIFT_ARM[1:]
+        for ch in range(5):
+            if abs(swing[ch] - self._arm[ch]) > 1e-9:
+                self._move_one(ch, swing[ch])
+        # Descend onto the tin in the calibrated order.
+        for ch in ARC_DESCEND_ORDER:
+            self._move_one(ch, float(solved[ch]))
+        self.control_gripper("close")
+        self._move_one(1, ARC_LIFT_ARM[1])   # lift shoulder back up, holding
+        self.kinematics.reset_warm_start()
+        return True
 
     def move_to(self, target_xyz: list, tool_direction=GRIPPER_DOWN, solver="analytic",
                 compensate: bool = True):
@@ -153,6 +200,23 @@ class GraspPlanner:
         self.kinematics.reset_warm_start()
         self.control_gripper("open")  # release the can into the bin
         return True
+
+    def get_pose(self) -> dict:
+        """Tracked pose for UIs: {'arm': [CH1..CH5], 'gripper': CH6}. This is
+        the COMMANDED pose (servos have no feedback), valid as long as every
+        move went through this planner."""
+        return {"arm": list(self._arm), "gripper": self._gripper}
+
+    def jog_channel(self, ch: int, delta_deg: float) -> float:
+        """Nudge one channel by delta degrees (ch 0-4 = CH1-5, ch 5 = gripper),
+        gently, clamped to 0-180. Returns the new commanded angle. Used by the
+        web dashboard's manual arm control."""
+        if not 0 <= ch <= 5:
+            raise ValueError(f"channel {ch} out of range 0-5")
+        current = self._gripper if ch == 5 else self._arm[ch]
+        target = max(0.0, min(180.0, current + float(delta_deg)))
+        self._move_one(ch, target)
+        return target
 
     def control_gripper(self, action: str):
         """Separated gripper logic. 'close' closes on the can; 'open'/'neutral'/'stow'

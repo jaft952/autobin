@@ -1,34 +1,65 @@
+"""
+src/subsumption/layers/layer2_approach.py
+
+Layer 2: Approach Litter — steers the base toward detected ground litter
+with the same continuous-arc philosophy as ChassisController's steering
+mode: turn component proportional to horizontal error, forward speed scaled
+by distance, so the base curves onto the tin instead of pivot-then-drive.
+
+Coordinates: get_litter_position() is normalized (x, y) with (0.5, 0.5) at
+frame center. x > 0.5 = tin right of center -> steer right = NEGATIVE
+v_theta (positive v_theta is CCW/left, see MotionExecutor). Small y = tin
+near frame top = far away -> drive brisker; large y = close -> creep, so
+Layer 3 gets a stable image to solve the grasp on.
+
+This layer stays active the whole time litter is visible; when the tin
+enters a grabbable region Layer 3 activates and subsumes it automatically.
+"""
 from typing import Any
+
 from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
+
+# Tune on the Pi alongside the chassis steering constants:
+#   STEER_GAIN too low  -> drifts past the tin sideways
+#   STEER_GAIN too high -> S-curves around the centerline
+APPROACH_STEER_GAIN = 0.9
+APPROACH_MAX_TURN   = 0.5
+
+APPROACH_BASE_SPEED = 0.45   # forward fraction when the tin is mid-frame
+APPROACH_DIST_GAIN  = 0.5    # extra speed per unit of "farness" (0.5 - y)
+APPROACH_MIN_SPEED  = 0.3    # never crawl below this (motors stall)
+APPROACH_MAX_SPEED  = 0.7
+
 
 class ApproachLitterLayer(BaseLayer):
     """
     Layer 2: Approach Litter
     Priority: 2 (Low)
-    Behavior: Drives the base towards detected ground litter.
+    Behavior: Arcs the base toward detected ground litter, slowing as it
+              nears, until Layer 3 finds the tin grabbable and takes over.
     """
     def __init__(self):
         super().__init__(layer_id=2)
 
     def evaluate(self, sensors: Any) -> ActionCommand:
-        """
-        Calculates simple alignment vectors.
-        """
         litter_pos = sensors.get_litter_position()
-        if litter_pos:
-            x, y = litter_pos
-            # Simplified pseudo-code approach 
-            # In a real system, use PID or pure pursuit based on x,y
-            forward_speed = 1.0 if y > 0.5 else 0.2
-            steer = x * 0.5 
-            
-            return ActionCommand(
-                layer_id=self.layer_id, 
-                active=True,
-                motion_vector=(forward_speed, 0, steer),  
-                arm_action='deploy',        
-                message="APPROACHING GROUND LITTER"
-            )
-            
-        return ActionCommand(layer_id=self.layer_id, active=False)
+        if not litter_pos:
+            return ActionCommand(layer_id=self.layer_id, active=False)
+
+        x, y = litter_pos
+        error_x = x - 0.5                    # +ve = tin right of center
+
+        steer = -error_x * APPROACH_STEER_GAIN
+        steer = max(-APPROACH_MAX_TURN, min(APPROACH_MAX_TURN, steer))
+
+        forward = APPROACH_BASE_SPEED + (0.5 - y) * APPROACH_DIST_GAIN
+        forward = max(APPROACH_MIN_SPEED, min(APPROACH_MAX_SPEED, forward))
+
+        return ActionCommand(
+            layer_id=self.layer_id,
+            active=True,
+            motion_vector=(forward, 0, steer),
+            arm_action='deploy',             # travel pose, ready to grab
+            message=f"APPROACHING LITTER (ex={error_x:+.2f}, y={y:.2f})",
+        )
