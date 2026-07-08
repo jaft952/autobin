@@ -24,32 +24,45 @@ v2 DESIGN (2026-07-05) — a bilinear grid over the camera image:
     own left/right calibration (also: each row's grabbable nx span is exactly
     the span you sampled, so per-radius camera-edge limits fall out for free).
 
+v3 DESIGN (2026-07-08) — TWO POSE DOMAINS + angle-driven wrist roll:
+
+    A standing tin and a lying tin need different grab poses, so the config
+    now holds two independent grids:
+
+        version: 3
+        upright:
+          rows: [...]                  # v2 rows migrate here unchanged
+        lying:
+          rows: []                     # calibrate with test_arc_grasp.py 'lie'
+          ch5_anchors: [[0, 180], [90, 90], [180, 180]]
+
+    solve(nx, ny, pose=..., angle_deg=...) picks the grid by pose. For LYING
+    tins, CH5 (wrist roll) additionally depends on which way the tin lies on
+    the floor. The perception layer supplies the tin's image-plane long-axis
+    angle (0..180 deg, 90 = vertical in the image); CH5 is interpolated
+    piecewise-linearly through the ch5_anchors table:
+
+        angle 90  (axis pointing at the robot, "straight")  -> CH5  90
+        angle 0/180 (lying across the view, "sideways")     -> CH5 180
+        in between                                          -> linear blend
+
+    Anchors are USER-MEASURED (2026-07-08, on the real gripper). If Pi
+    testing shows mirrored diagonal tins need different rolls, just add
+    anchors (e.g. [45, x], [135, y]) — the table handles any shape.
+    An "axial" pose (tin seen end-on, mask is round, angle meaningless)
+    is grabbed as lying with the straight-at-robot default (angle 90).
+
 Grabbable region = the strip between the calibrated rows (each row's own
 ny_tol extends the band at the ends), horizontally within each row's sampled
 nx span (+ nx_tol). Outside -> solve() returns None, honestly.
 
 Calibration lives in ITS OWN file, src/arm/config/arc_grasp.yaml (one file
 per calibration domain — IBVS keeps centering_config.yaml, pixel_to_arm has
-pixel_to_arm.yaml). Written by tests/test_arc_grasp.py:
+pixel_to_arm.yaml). Written by tests/test_arc_grasp.py. A v2 file (top-level
+`rows:`) is migrated in place: its rows become the UPRIGHT grid. The pre-v2
+layout inside centering_config.yaml is still only read once for migration.
 
-    version: 2
-    rows:                       # one per calibrated arc, any order
-      - ny: 0.62                # pixel-y (normalized) of this arc
-        ny_tol: 0.05            # how far past this row the band extends
-        nx_tol: 0.05            # how far past the sampled nx span to allow
-        samples:                # 1+ per row; 3+ (left/mid/right) recommended
-          - nx: 0.21
-            arm: [64.0, 146.0, 75.0, 168.0, 90.0]    # CH1..CH5
-          - nx: 0.50
-            arm: [103.0, 145.0, 75.0, 168.0, 90.0]
-          - nx: 0.79
-            arm: [141.0, 146.0, 75.0, 168.0, 90.0]
-
-Before 2026-07-05 the calibration lived inside centering_config.yaml under an
-`arc_grasp:` key; load_config() migrates a v2 section from there automatically
-(copy — the old key is left in place, delete it by hand when convenient).
-
-With ONE row of ONE sample this degrades to the original single-spot grab.
+With ONE row of ONE sample per domain this degrades to a single-spot grab.
 """
 
 from __future__ import annotations
@@ -58,8 +71,11 @@ from pathlib import Path
 
 # Own config file — no key-sharing with other subsystems anymore. The legacy
 # location (inside centering_config.yaml under `arc_grasp:`) is only read once
-# for migration.
-from src.visual_servoing.ibvs_centering import CENTERING_CONFIG_PATH as LEGACY_CONFIG_PATH
+# for migration. Spelled out as a literal path instead of importing it from
+# ibvs_centering: that import drags in the whole perception chain (YOLO/torch)
+# just for a frozen filename, and this module must stay importable anywhere.
+LEGACY_CONFIG_PATH = (Path(__file__).resolve().parents[1]
+                      / "visual_servoing" / "config" / "centering_config.yaml")
 
 CONFIG_PATH = Path(__file__).parent / "config" / "arc_grasp.yaml"
 ARC_KEY = "arc_grasp"    # key inside the LEGACY shared yaml only
@@ -67,9 +83,16 @@ ARC_KEY = "arc_grasp"    # key inside the LEGACY shared yaml only
 NY_TOL_DEFAULT = 0.05    # vertical band extension past the end rows
 NX_TOL_DEFAULT = 0.05    # horizontal extension past a row's sampled span
 
+POSES = ("upright", "lying")
+
+# User-measured CH5 anchors (2026-07-08): image-axis angle -> wrist roll.
+# 90 deg (tin pointing at robot) -> 90; 0/180 (lying across) -> 180.
+DEFAULT_CH5_ANCHORS = [[0.0, 180.0], [90.0, 90.0], [180.0, 180.0]]
+
 DEFAULT_CONFIG = {
-    "version": 2,
-    "rows": [],              # empty -> solver reports not-ready until calibrated
+    "version": 3,
+    "upright": {"rows": []},
+    "lying": {"rows": [], "ch5_anchors": deepcopy(DEFAULT_CH5_ANCHORS)},
 }
 
 
@@ -80,22 +103,43 @@ def _read_full_yaml(path: Path) -> dict:
     return {}
 
 
+def _normalize_v3(cfg: dict) -> dict:
+    """Ensure both domains and the anchor table exist."""
+    cfg.setdefault("version", 3)
+    cfg.setdefault("upright", {}).setdefault("rows", [])
+    lying = cfg.setdefault("lying", {})
+    lying.setdefault("rows", [])
+    lying.setdefault("ch5_anchors", deepcopy(DEFAULT_CH5_ANCHORS))
+    return cfg
+
+
+def _wrap_v2(v2_cfg: dict) -> dict:
+    """v2 (flat `rows:`) -> v3: the old grid was calibrated on STANDING tins."""
+    return _normalize_v3({"version": 3, "upright": {"rows": v2_cfg.get("rows", [])}})
+
+
 def load_config(path: Path = CONFIG_PATH,
                 legacy_path: Path = LEGACY_CONFIG_PATH) -> dict:
-    """Return the v2 config from its own file (or a fresh default). If the
-    own file doesn't exist yet but a v2 section is found at the legacy
-    location (centering_config.yaml `arc_grasp:` key), it is copied over
-    once. A pre-v2 layout (old `azimuth:`/`radii:`) is never migrated —
-    recalibrate; it stays untouched in the legacy yaml as its own backup."""
+    """Return the v3 config. Migration chain: own v3 file -> own v2 file
+    (rows moved under `upright:`, saved back) -> v2 section at the legacy
+    location (copied) -> fresh default. Pre-v2 layouts are never migrated —
+    recalibrate; they stay untouched in the legacy yaml as their own backup."""
     cfg = _read_full_yaml(path)
+    if cfg and ("upright" in cfg or "lying" in cfg):
+        return _normalize_v3(cfg)
     if cfg and "rows" in cfg:
-        return cfg
+        v3 = _wrap_v2(cfg)
+        save_config(v3, path)
+        print(f"[arc_grasp] migrated v2 -> v3 in {path} "
+              f"(existing rows are now the UPRIGHT grid; lying grid empty)")
+        return v3
     legacy = _read_full_yaml(legacy_path).get(ARC_KEY)
     if legacy and "rows" in legacy:
-        save_config(legacy, path)
+        v3 = _wrap_v2(legacy)
+        save_config(v3, path)
         print(f"[arc_grasp] migrated calibration from {legacy_path} -> {path} "
               f"(old key left in place; delete it by hand when convenient)")
-        return legacy
+        return v3
     return deepcopy(DEFAULT_CONFIG)
 
 
@@ -110,8 +154,26 @@ def _lerp_arm(a, b, t: float):
     return [(1.0 - t) * float(p) + t * float(q) for p, q in zip(a, b)]
 
 
+def ch5_from_angle(angle_deg: float, anchors=None) -> float:
+    """Wrist roll (CH5) for a LYING tin from its image long-axis angle.
+
+    angle_deg is taken mod 180 (an axis has no direction). Piecewise-linear
+    interpolation through the (angle -> ch5) anchor table, clamped to the
+    servo's 0..180 range."""
+    pts = sorted((float(a), float(c)) for a, c in (anchors or DEFAULT_CH5_ANCHORS))
+    a = float(angle_deg) % 180.0
+    if a <= pts[0][0]:
+        return max(0.0, min(180.0, pts[0][1]))
+    for (a1, c1), (a2, c2) in zip(pts, pts[1:]):
+        if a <= a2:
+            t = 0.0 if a2 == a1 else (a - a1) / (a2 - a1)
+            return max(0.0, min(180.0, c1 + (c2 - c1) * t))
+    return max(0.0, min(180.0, pts[-1][1]))
+
+
 class ArcGraspSolver:
-    """solve(nx, ny) -> [CH1..CH5] servo commands, or None (not grabbable there)."""
+    """solve(nx, ny, pose, angle_deg) -> [CH1..CH5] servo commands, or None
+    (not grabbable there / that pose's grid not calibrated)."""
 
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = Path(path)
@@ -119,44 +181,80 @@ class ArcGraspSolver:
 
     def reload(self):
         self.cfg = load_config(self.path)
-        rows = []
-        for r in self.cfg.get("rows", []):
-            samples = sorted(
-                (s for s in (r.get("samples") or []) if s.get("nx") is not None),
-                key=lambda s: float(s["nx"]),
-            )
-            if r.get("ny") is not None and samples:
-                rows.append({**r, "samples": samples})
-        # sorted by ny: image top (far) first, image bottom (near) last
-        self.rows = sorted(rows, key=lambda r: float(r["ny"]))
+        self._domains = {}
+        for pose in POSES:
+            rows = []
+            for r in self.cfg.get(pose, {}).get("rows", []):
+                samples = sorted(
+                    (s for s in (r.get("samples") or []) if s.get("nx") is not None),
+                    key=lambda s: float(s["nx"]),
+                )
+                if r.get("ny") is not None and samples:
+                    rows.append({**r, "samples": samples})
+            # sorted by ny: image top (far) first, image bottom (near) last
+            self._domains[pose] = sorted(rows, key=lambda r: float(r["ny"]))
+        self._anchors = self.cfg.get("lying", {}).get("ch5_anchors") or DEFAULT_CH5_ANCHORS
 
     # ── status ───────────────────────────────────────────────────────────
+
+    @property
+    def rows(self):
+        """Backward compat: the UPRIGHT grid (v2 callers)."""
+        return self._domains["upright"]
+
+    def rows_for(self, pose: str):
+        return self._domains["lying" if pose in ("lying", "axial") else "upright"]
+
     @property
     def ready(self) -> bool:
-        return len(self.rows) > 0
+        """Backward compat: is the UPRIGHT grid calibrated?"""
+        return len(self._domains["upright"]) > 0
+
+    def ready_for(self, pose: str) -> bool:
+        return len(self.rows_for(pose)) > 0
 
     def status(self) -> str:
-        if not self.rows:
-            return "arc_grasp v2: NOT calibrated (no rows — 'y' to start one)"
         parts = []
-        for r in self.rows:
-            ss = r["samples"]
-            span = (f"nx {float(ss[0]['nx']):.2f}~{float(ss[-1]['nx']):.2f}"
-                    if len(ss) > 1 else f"nx {float(ss[0]['nx']):.2f} only")
-            parts.append(f"ny={float(r['ny']):.3f} ({len(ss)} sample(s), {span})")
-        return f"arc_grasp v2: {len(self.rows)} row(s) | " + " | ".join(parts)
+        for pose in POSES:
+            rows = self._domains[pose]
+            if not rows:
+                parts.append(f"{pose}: NOT calibrated")
+                continue
+            spans = []
+            for r in rows:
+                ss = r["samples"]
+                span = (f"nx {float(ss[0]['nx']):.2f}~{float(ss[-1]['nx']):.2f}"
+                        if len(ss) > 1 else f"nx {float(ss[0]['nx']):.2f} only")
+                spans.append(f"ny={float(r['ny']):.3f} ({len(ss)} sample(s), {span})")
+            parts.append(f"{pose}: {len(rows)} row(s) | " + " | ".join(spans))
+        return "arc_grasp v3 | " + "  ||  ".join(parts)
 
     # ── solving ──────────────────────────────────────────────────────────
-    def solve(self, nx: float, ny: float):
-        if not self.ready:
+
+    def solve(self, nx: float, ny: float, pose: str = "upright",
+              angle_deg: float | None = None):
+        """[CH1..CH5] for a tin at normalized image point (nx, ny), or None.
+
+        pose: "upright" | "lying" | "axial" ("axial" = seen end-on, uses the
+              lying grid with the straight-at-robot roll).
+        angle_deg: LYING only — the tin's image long-axis angle from
+              perception (Orientation.angle). None -> 90 (straight).
+        """
+        lying = pose in ("lying", "axial")
+        rows = self.rows_for(pose)
+        if not rows:
             return None
-        arm = self._solve_grid(float(nx), float(ny))
+        arm = self._solve_grid(rows, float(nx), float(ny))
         if arm is None:
             return None
+        if lying:
+            # The grid's CH5 samples are the baseline pose; the actual roll
+            # tracks how the tin lies on the floor ("axial" -> straight).
+            arm[4] = ch5_from_angle(90.0 if angle_deg is None else angle_deg,
+                                    self._anchors)
         return [round(max(0.0, min(180.0, float(v))), 1) for v in arm]
 
-    def _solve_grid(self, nx: float, ny: float):
-        rs = self.rows
+    def _solve_grid(self, rs, nx: float, ny: float):
         lo, hi = float(rs[0]["ny"]), float(rs[-1]["ny"])
         if ny < lo - float(rs[0].get("ny_tol", NY_TOL_DEFAULT)):
             return None

@@ -85,6 +85,16 @@ class DetectionResult:
             self.best.center_y / self.frame_height,
         )
 
+    def normalized_base_center(self) -> Optional[tuple]:
+        """Ground-contact point (bbox bottom-center), normalized. This is
+        what the arc-grasp calibration and pixel_to_arm homography are
+        anchored to — the tin touches the floor here, not at the bbox
+        center."""
+        if not self.best or self.frame_width == 0:
+            return None
+        u, v = self.best.base_center
+        return (u / self.frame_width, v / self.frame_height)
+
 
 def open_camera_capture(camera_index: int = 0,
                         frame_width: int = 1920,
@@ -135,7 +145,7 @@ class AluminiumCanDetector:
         conf_threshold: float = 0.8,
         frame_width: int = 1920,
         frame_height: int = 1080,
-        device=0,
+        device=None,
         imgsz: int = 640,
     ):
         self._model_path = Path(model_path)
@@ -143,7 +153,9 @@ class AluminiumCanDetector:
         self._conf_threshold = conf_threshold
         self._frame_width = frame_width
         self._frame_height = frame_height
-        self._device = device  # 0=CUDA, "cpu" for Raspberry Pi
+        # None = auto: CUDA if available, else CPU. (The old default of 0
+        # crashed on the Pi whenever a caller forgot to pass device="cpu".)
+        self._device = device
         self._imgsz = imgsz
 
         self._model: Optional[YOLO] = None
@@ -177,7 +189,7 @@ class AluminiumCanDetector:
         yolo_results = self._model.predict( # type: ignore
             source=frame,
             conf=self._conf_threshold,
-            device=self._device,
+            device=self._resolve_device(),
             imgsz=self._imgsz,
             verbose=False,
         )
@@ -245,13 +257,44 @@ class AluminiumCanDetector:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
         return frame
 
+    def _resolve_device(self):
+        """None -> CUDA if this machine has it, else CPU."""
+        if self._device is not None:
+            return self._device
+        try:
+            import torch
+            self._device = 0 if torch.cuda.is_available() else "cpu"
+        except Exception:
+            self._device = "cpu"
+        print(f"✓ Inference device auto-selected: {self._device}")
+        return self._device
+
+    def _pick_model_path(self) -> Path:
+        """Prefer an NCNN export sitting next to the .pt — on the Pi's ARM
+        CPU it runs the SAME weights 2-4x faster (fp32, no accuracy change).
+        Create it once on the Pi with tests/export_ncnn.py."""
+        if self._model_path.suffix == ".pt":
+            ncnn = self._model_path.with_name(self._model_path.stem + "_ncnn_model")
+            if ncnn.is_dir():
+                print(f"✓ Using NCNN export: {ncnn}")
+                return ncnn
+        return self._model_path
+
     def _load_model(self):
-        """Load YOLO11n-seg checkpoint."""
+        """Load YOLO11n-seg checkpoint (NCNN export preferred) and warm up."""
         from ultralytics import YOLO
+        import numpy as np
         if not self._model_path.exists():
             raise FileNotFoundError(f"Model not found: {self._model_path}")
-        self._model = YOLO(str(self._model_path))
-        print(f"✓ Model loaded: {self._model_path}")
+        path = self._pick_model_path()
+        self._model = YOLO(str(path))
+        print(f"✓ Model loaded: {path}")
+        # Warmup: the first predict pays one-off graph/init cost (hundreds of
+        # ms); do it here on a dummy frame so the first real tick is fast.
+        self._model.predict(
+            source=np.zeros((self._imgsz, self._imgsz, 3), dtype=np.uint8),
+            device=self._resolve_device(), imgsz=self._imgsz, verbose=False,
+        )
 
     def _open_camera(self):
         """Open Brio 4K camera with actual resolution."""

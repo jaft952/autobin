@@ -1,11 +1,4 @@
 """
-tests/test_arc_grasp.py
-
-Calibrate + live-test the ARC GRASP (empirical polar IK, src/arm/arc_grasp.py).
-Terminal REPL drives everything; the camera window ONLY pops up at the moment a
-pixel is needed (y / a / g / cam), so typing and servo moves never fight the
-video loop. Run on the Pi desktop.
-
 ── REPL commands ───────────────────────────────────────────────────────────
   c2 145        set CH2 to 145              (c1..c5 = servos, c6 = gripper)
   c1 +2         nudge CH1 by +2 degrees     (also -2 etc.)
@@ -24,25 +17,6 @@ video loop. Run on the Pi desktop.
   g             GRAB TEST: camera pops up -> click the tin -> s -> arm grabs
   q             quit
 
-── Calibration session (v2: per-arc left/mid/right, full CH1-5 each) ───────
- 1. NEW ARC: tin at a comfortable distance, centered. `p` (or jog from
-    scratch) then fine-tune with `c2 +2` style commands until a grab (c then
-    o) physically works. Then `y` and click the tin's base -> the arc row is
-    created with this MIDDLE sample.
- 2. LEFT + RIGHT on the same arc: slide the tin LEFT along the same-distance
-    arc (as far as the camera still sees it). Jog `c1 +2`/`c1 -2` (and any
-    other channel that needs it) until the grab works again. Then `a`, click.
-    Repeat on the RIGHT side. 3+ samples per arc = good.
- 3. MORE ARCS: repeat 1-2 at a nearer/farther distance. The strip between
-    arcs becomes grabbable via interpolation on ALL channels — per-arc
-    azimuth samples absorb the camera's parallax (the old single global
-    CH1(nx) line could not).
- 4. TEST: tin anywhere in the strip -> `g` -> click it -> arm grabs it.
-
-Config: src/arm/config/arc_grasp.yaml (its own file — one file per
-calibration domain; IBVS keeps centering_config.yaml, pixel->arm has
-pixel_to_arm.yaml). Hand-editable. A pre-v2 calibration in the old shared
-yaml is left there untouched as its own backup.
 """
 import os
 import sys
@@ -54,20 +28,18 @@ from src.arm.arc_grasp import (
 )
 from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
-# Match the detector's capture resolution (Logitech Brio, 1920x1080) so the
-# normalized click coords here and the live detection coords share identical
-# geometry.
+
 W, H = 1920, 1080
 
-# Poses/values shared with tests/test_ibvs_centering.py's arm controller.
+
 HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
 GRIPPER_OPEN, GRIPPER_CLOSE = 0.0, 40.0
-STEP_DEG, STEP_DELAY = 2.0, 0.5      # gentle single-channel moves (weak supply)
+STEP_DEG, STEP_DELAY = 2.0, 0.5      
 
-# Descend order for the grab: elbow/wrist first, shoulder (CH2) LAST so the
-# arm drops onto the can at the end — mirrors the tuned GRASP_SEQUENCE idea.
-DESCEND_ORDER = [2, 3, 4, 1]         # indices into [CH1..CH5]
+
+
+DESCEND_ORDER = [2, 3, 4, 1]       
 
 CH_NAMES = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist", "CH5 roll", "CH6 grip"]
 
@@ -125,8 +97,9 @@ class Camera:
         self.cap, self.fw, self.fh, _fps = open_camera_capture(0, W, H)
         print(f"✓ camera {self.fw}x{self.fh}")
 
-    def click_point(self, solver, title, sticky=False):
+    def click_point(self, rows, title, sticky=False):
         """Popup window: click the tin, 's'/Enter accepts, 'q'/Esc cancels.
+        rows = the ACTIVE domain's calibrated rows (drawn as overlay).
         sticky=True keeps the window open (just looking). Returns (nx, ny) or None."""
         import cv2
         for _ in range(5):                     # flush stale buffered frames
@@ -149,7 +122,7 @@ class Camera:
                 if not ok:
                     print("  camera read failed")
                     break
-                for r in solver.rows:          # calibrated arc rows
+                for r in rows:                 # calibrated arc rows
                     yy = int(float(r["ny"]) * self.fh)
                     cv2.line(frame, (0, yy), (self.fw, yy), (0, 200, 200), 1)
                     for s in r["samples"]:     # sampled azimuth points on the arc
@@ -201,6 +174,7 @@ def handle_servo_command(arm: Arm, line: str) -> bool:
 def main():
     solver = ArcGraspSolver()
     cfg = solver.cfg
+    pose = "upright"            # active calibration domain: 'lie'/'stand' to switch
     print(f"[cfg] {solver.status()}")
 
     try:
@@ -220,11 +194,13 @@ def main():
         print(f"[cfg] saved. {solver.status()}")
 
     print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | q")
+    print("Domains:  lie = calibrate LYING grid, stand = back to UPRIGHT grid.")
+    print("          (place the tin in that pose, jog until the grab works, then y/a)")
     print("Full walkthrough: header of this file.\n")
 
     while True:
         try:
-            line = input("arc> ").strip().lower()
+            line = input(f"arc[{pose}]> ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -233,6 +209,18 @@ def main():
 
         if line == "q":
             break
+        elif line == "lie":
+            pose = "lying"
+            print("[cfg] calibrating the LYING grid now. Lay the tin DOWN "
+                  "pointing at the robot (straight); CH5 you save here is the "
+                  "baseline — at runtime it's re-computed from the tin's angle.")
+            print("[cfg] IMPORTANT: click the tin's MIDDLE (silhouette center), "
+                  "NOT the base — that's what runtime feeds the solver for "
+                  "lying tins (the bottom edge drifts with orientation).")
+        elif line == "stand":
+            pose = "upright"
+            print("[cfg] calibrating the UPRIGHT grid now. Click the tin's "
+                  "BASE (bottom-center, where it meets the floor).")
         elif line == "h":
             arm.set_gripper(GRIPPER_OPEN)
             arm.goto(HOME_ARM, "home")
@@ -241,25 +229,28 @@ def main():
         elif line == "c":
             arm.set_gripper(GRIPPER_CLOSE)
         elif line == "p":
-            if not solver.rows:
-                print("no calibrated rows yet — jog manually, then 'y' to start one.")
+            rows = solver.rows_for(pose)
+            if not rows:
+                print(f"no calibrated {pose} rows yet — jog manually, then 'y' to start one.")
                 continue
-            ss = solver.rows[0]["samples"]
+            ss = rows[0]["samples"]
             mid = ss[len(ss) // 2]
             arm.goto([arm.arm[0]] + [float(v) for v in mid["arm"][1:]],
-                     "grasp pose (CH1 stays)")
+                     f"{pose} grasp pose (CH1 stays)")
         elif line == "pose":
             arm.print_pose()
         elif line == "st":
             print(f"[cfg] {solver.status()}")
         elif line == "cam":
             if camera:
-                camera.click_point(solver, "viewing only", sticky=True)
+                camera.click_point(solver.rows_for(pose), f"viewing only ({pose})", sticky=True)
         elif line == "y":
             if not camera:
                 print("no camera.")
                 continue
-            pt = camera.click_point(solver, "NEW ARC: click tin at the grasp pose")
+            where = "BASE" if pose == "upright" else "MIDDLE"
+            pt = camera.click_point(solver.rows_for(pose),
+                                    f"NEW {pose.upper()} ARC: click tin {where} at the grasp pose")
             if pt is None:
                 print("cancelled.")
                 continue
@@ -270,23 +261,25 @@ def main():
                 "samples": [{"nx": round(pt[0], 4),
                              "arm": [round(v, 1) for v in arm.arm]}],
             }
-            cfg.setdefault("rows", []).append(row)
-            print(f"[cal] new arc row: ny={row['ny']}, first sample "
+            cfg[pose].setdefault("rows", []).append(row)
+            print(f"[cal] new {pose} arc row: ny={row['ny']}, first sample "
                   f"nx={row['samples'][0]['nx']} arm={row['samples'][0]['arm']}")
             save_and_reload()
         elif line == "a":
             if not camera:
                 print("no camera.")
                 continue
-            if not cfg.get("rows"):
-                print("no arc rows yet — 'y' first.")
+            if not cfg[pose].get("rows"):
+                print(f"no {pose} arc rows yet — 'y' first.")
                 continue
-            pt = camera.click_point(solver, f"ADD SAMPLE: click tin (CH1={arm.arm[0]:.1f})")
+            where = "BASE" if pose == "upright" else "MIDDLE"
+            pt = camera.click_point(solver.rows_for(pose),
+                                    f"ADD {pose.upper()} SAMPLE: click tin {where} (CH1={arm.arm[0]:.1f})")
             if pt is None:
                 print("cancelled.")
                 continue
             # attach to the row whose ny is closest to the clicked pixel-y
-            row = min(cfg["rows"], key=lambda r: abs(float(r["ny"]) - pt[1]))
+            row = min(cfg[pose]["rows"], key=lambda r: abs(float(r["ny"]) - pt[1]))
             gap = abs(float(row["ny"]) - pt[1])
             if gap > 2 * float(row.get("ny_tol", NY_TOL_DEFAULT)):
                 print(f"[cal] WARNING: clicked ny={pt[1]:.3f} is far from the nearest "
@@ -301,20 +294,28 @@ def main():
             if not camera:
                 print("no camera.")
                 continue
-            pt = camera.click_point(solver, "GRAB TEST: click the tin")
+            where = "BASE" if pose == "upright" else "MIDDLE"
+            pt = camera.click_point(solver.rows_for(pose),
+                                    f"GRAB TEST ({pose}): click the tin {where}")
             if pt is None:
                 print("cancelled.")
                 continue
-            solved = solver.solve(pt[0], pt[1])
+            # No live angle in this click-based tool: a lying grab test
+            # assumes the tin is placed STRAIGHT at the robot (angle 90).
+            # For angle-driven CH5 with real detections use test_arc_live.py.
+            solved = solver.solve(pt[0], pt[1], pose=pose)
             if solved is None:
-                print(f"[solve] ({pt[0]:.3f},{pt[1]:.3f}) NOT grabbable "
+                print(f"[solve] ({pt[0]:.3f},{pt[1]:.3f}) NOT grabbable in {pose} "
                       f"(outside band / CH1 range / not calibrated). {solver.status()}")
                 continue
+            if pose == "lying":
+                print("[grab] lying test assumes tin points AT the robot "
+                      f"(CH5={solved[4]:.0f}); angled tins: test_arc_live.py")
             arm.grab(solved)
         elif handle_servo_command(arm, line):
             pass
         else:
-            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | q")
+            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | lie stand | q")
 
     print("bye")
 
