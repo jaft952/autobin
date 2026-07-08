@@ -22,6 +22,12 @@ clips one wheel at 100% and silently straightens the arc:
 
     left  = v_x - v_theta
     right = v_x + v_theta
+
+HALT vs BRAKE: a zero motion_vector normally COASTS the wheels (power cut,
+free to spin). But when the halt accompanies a GRAB, the arm's motion shakes
+the chassis and coasting lets the robot drift off its aligned spot. So for a
+grab command the wheels are actively BRAKED (windings shorted) — they resist
+being pushed and hold position through the whole grab sequence.
 """
 from __future__ import annotations
 
@@ -30,6 +36,9 @@ from typing import Optional
 from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 from src.subsumption.arbitrator import ActionCommand
+
+# arm_actions during which the base must HOLD position, not coast.
+_GRAB_ACTIONS = frozenset({"grab_arc", "grab_ik", "grab_sequence"})
 
 
 class MotionExecutor:
@@ -59,7 +68,11 @@ class MotionExecutor:
 
         v_x, _v_y, v_theta = command.motion_vector
         if v_x == 0 and v_theta == 0:
-            self.stop()
+            # Hold position (brake) while the arm grabs; coast otherwise.
+            if command.arm_action in _GRAB_ACTIONS:
+                self.brake()
+            else:
+                self.stop()
             return
 
         left = v_x - v_theta
@@ -88,8 +101,18 @@ class MotionExecutor:
         self.actuator.apply(cmd)
 
     def stop(self) -> None:
-        """Cut motor power (does not release GPIO)."""
+        """Coast: cut motor power, wheels free to spin (does not release GPIO)."""
         self.actuator.stop()
+
+    def brake(self) -> None:
+        """Actively hold position — resist being pushed. Used while the arm
+        grabs so the shaking chassis doesn't drift. Falls back to a plain
+        stop() for actuators without a brake (e.g. print stubs in tests)."""
+        brake_fn = getattr(self.actuator, "brake", None)
+        if callable(brake_fn):
+            brake_fn()
+        else:
+            self.actuator.stop()
 
     def close(self) -> None:
         """Stop and release GPIO. Call once on shutdown."""
