@@ -45,13 +45,35 @@ CH_NAMES = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist", "CH5 roll", "C
 
 
 class Arm:
-    """Tracks pose and moves ONE channel at a time, gently."""
+    """Tracks pose and moves ONE channel at a time, gently.
+
+    Optionally holds a wheel brake: while the arm descends/grabs it shakes
+    the chassis, and coasting wheels let the robot creep off the calibrated
+    spot. brake_wheels() shorts the motor windings so the base resists that
+    push; it's best-effort (no motor driver wired -> just skipped)."""
 
     def __init__(self):
         self.act = ArmActuator()
         self.arm = list(HOME_ARM)
         self.gripper = GRIPPER_OPEN
+        # Best-effort wheel brake: the motor driver may not be wired on the
+        # calibration bench, so a failure here must not kill the arm tool.
+        self.wheels = None
+        try:
+            from src.hardware.actuators.pwm_driver import PWMActuator
+            self.wheels = PWMActuator()
+            print("[wheels] brake available — held during grabs.")
+        except Exception as exc:
+            print(f"[wheels] no motor driver ({exc}); grabs run without brake.")
         self.goto(HOME_ARM, label="startup home")
+
+    def brake_wheels(self):
+        if self.wheels is not None:
+            self.wheels.brake()
+
+    def release_wheels(self):
+        if self.wheels is not None:
+            self.wheels.stop()
 
     def _one(self, ch, value):
         start = list(self.arm) + [self.gripper]
@@ -78,14 +100,20 @@ class Arm:
         print(f"[pose] {angles}  grip={self.gripper:.1f}")
 
     def grab(self, solved):
-        """solved = [CH1..CH5]. Open, swing, descend, close, lift."""
+        """solved = [CH1..CH5]. Open, swing, descend, close, lift.
+        Wheels are braked for the whole sequence so the arm's shaking can't
+        push the base off the calibrated spot."""
         print(f"[grab] pose CH1-5 = {solved}")
-        self.set_gripper(GRIPPER_OPEN)
-        self.goto([solved[0]] + LIFT_ARM[1:], "swing to azimuth (lifted)")
-        for ch in DESCEND_ORDER:
-            self._one(ch, solved[ch])
-        self.set_gripper(GRIPPER_CLOSE)
-        self._one(1, LIFT_ARM[1])            # lift shoulder back up, holding
+        self.brake_wheels()
+        try:
+            self.set_gripper(GRIPPER_OPEN)
+            self.goto([solved[0]] + LIFT_ARM[1:], "swing to azimuth (lifted)")
+            for ch in DESCEND_ORDER:
+                self._one(ch, solved[ch])
+            self.set_gripper(GRIPPER_CLOSE)
+            self._one(1, LIFT_ARM[1])            # lift shoulder back up, holding
+        finally:
+            self.release_wheels()
         print("[grab] done — holding. o = release, h = home.")
 
 
@@ -193,9 +221,10 @@ def main():
         solver.reload()
         print(f"[cfg] saved. {solver.status()}")
 
-    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | q")
+    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | brake coast | q")
     print("Domains:  lie = calibrate LYING grid, stand = back to UPRIGHT grid.")
     print("          (place the tin in that pose, jog until the grab works, then y/a)")
+    print("Wheels:   brake = hold the base (test by pushing it), coast = release.")
     print("Full walkthrough: header of this file.\n")
 
     while True:
@@ -209,6 +238,13 @@ def main():
 
         if line == "q":
             break
+        elif line == "brake":
+            arm.brake_wheels()
+            print("[wheels] BRAKED — try pushing the base; it should resist. "
+                  "'coast' to release.")
+        elif line == "coast":
+            arm.release_wheels()
+            print("[wheels] released (free to roll).")
         elif line == "lie":
             pose = "lying"
             print("[cfg] calibrating the LYING grid now. Lay the tin DOWN "
@@ -315,8 +351,9 @@ def main():
         elif handle_servo_command(arm, line):
             pass
         else:
-            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | lie stand | q")
+            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | lie stand | brake coast | q")
 
+    arm.release_wheels()          # never leave the base braked after exit
     print("bye")
 
 

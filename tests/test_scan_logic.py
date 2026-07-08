@@ -110,13 +110,20 @@ class CaptureActuator:
     def __init__(self):
         self.last = None
         self.stopped = False
+        self.braked = False
 
     def apply(self, cmd):
         self.last = (round(cmd.left_speed, 1), round(cmd.right_speed, 1), cmd.trim_set)
         self.stopped = False
+        self.braked = False
 
     def stop(self):
         self.stopped = True
+        self.braked = False
+
+    def brake(self):
+        self.braked = True
+        self.stopped = False
 
     def close(self):
         pass
@@ -291,12 +298,51 @@ def test_executor_mixing():
     ex.execute(ActionCommand(1, True, (1.0, 0, 0.5), None, ""))
     assert act.last == (33.3, 100.0, "forward"), act.last
 
-    # Zero vector and inactive/idle commands must stop the base.
+    # Zero vector and inactive/idle commands must stop (coast) the base.
     ex.execute(ActionCommand(1, True, (0, 0, 0), None, ""))
-    assert act.stopped
+    assert act.stopped and not act.braked
     ex.execute(ActionCommand(-1, False, None, None, "Idle"))
-    assert act.stopped
+    assert act.stopped and not act.braked
     print("PASS executor mixing + sign convention + stop")
+
+
+def test_executor_brakes_during_grab():
+    """A halt (0,0,0) that accompanies a grab must BRAKE (hold position so
+    the arm's shaking can't drift the base), not coast."""
+    act = CaptureActuator()
+    ex = MotionExecutor(actuator=act)
+
+    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "",
+                             {"pose": [100, 145, 75, 165, 90]}))
+    assert act.braked and not act.stopped, "grab halt must brake, not coast"
+
+    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_ik", "",
+                             {"target_m": (0.1, 0.2)}))
+    assert act.braked, "IK grab halt must brake too"
+
+    # A plain scan/idle halt still coasts (free to be repositioned).
+    ex.execute(ActionCommand(0, True, (0, 0, 0), "stow", ""))
+    assert act.stopped and not act.braked
+
+    # Driving again releases the brake (apply overwrites it).
+    ex.execute(ActionCommand(1, True, (0.6, 0, 0), None, ""))
+    assert not act.braked and not act.stopped
+    print("PASS executor brakes during grab, coasts otherwise")
+
+
+def test_executor_brake_falls_back_to_stop():
+    """An actuator with no brake() (e.g. a print stub) must degrade to a
+    plain stop instead of crashing."""
+    class NoBrakeActuator:
+        def __init__(self): self.stopped = False
+        def apply(self, cmd): self.stopped = False
+        def stop(self): self.stopped = True
+
+    act = NoBrakeActuator()
+    ex = MotionExecutor(actuator=act)
+    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [0] * 5}))
+    assert act.stopped, "brake must fall back to stop when unsupported"
+    print("PASS executor brake falls back to stop when unsupported")
 
 
 # ── Arbitration: scanning combined with the other layers ─────────────────
@@ -344,6 +390,8 @@ ALL_TESTS = [
     test_yields_to_target_and_restarts,
     test_none_distance_is_not_an_obstacle,
     test_executor_mixing,
+    test_executor_brakes_during_grab,
+    test_executor_brake_falls_back_to_stop,
     test_arbitration_with_real_hub,
 ]
 
