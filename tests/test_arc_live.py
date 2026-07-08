@@ -51,15 +51,27 @@ def _make_arm():
         return None
 
 
-def _classify(solver, nx, ny):
+def _pose_of(box):
+    """(pose, angle_deg_or_None, label) from a detection's segmentation mask.
+    No usable mask -> assume upright (the historical behaviour)."""
+    o = box.orientation
+    if o is None or o.klass == "upright":
+        return "upright", None, "upright"
+    if o.klass == "axial":
+        return "lying", None, "lying end-on"
+    return "lying", o.angle, f"lying {o.angle:.0f}deg"
+
+
+def _classify(solver, nx, ny, pose, angle_deg):
     """(solved_or_None, hint_text). Mirrors the solver's band rules so the
     hint always agrees with what solve() decided."""
-    solved = solver.solve(nx, ny)
+    solved = solver.solve(nx, ny, pose=pose, angle_deg=angle_deg)
     if solved is not None:
         return solved, ""
-    if not solver.ready:
-        return None, "arc NOT calibrated - run test_arc_grasp.py first"
-    rs = solver.rows
+    if not solver.ready_for(pose):
+        return None, f"{pose} arc NOT calibrated - test_arc_grasp.py " \
+                     f"({'lie' if pose == 'lying' else 'stand'} mode)"
+    rs = solver.rows_for(pose)
     lo = float(rs[0]["ny"]) - float(rs[0].get("ny_tol", NY_TOL_DEFAULT))
     hi = float(rs[-1]["ny"]) + float(rs[-1].get("ny_tol", NY_TOL_DEFAULT))
     if ny < lo:
@@ -70,25 +82,27 @@ def _classify(solver, nx, ny):
 
 
 def _draw_arcs(frame, solver):
+    """Upright grid in cyan, lying grid in magenta."""
     import cv2
     fh, fw = frame.shape[:2]
-    for r in solver.rows:
-        ss = r["samples"]
-        yy = int(float(r["ny"]) * fh)
-        ntol = float(r.get("ny_tol", NY_TOL_DEFAULT))
-        xtol = float(r.get("nx_tol", NX_TOL_DEFAULT))
-        x1 = int(max(0.0, float(ss[0]["nx"]) - xtol) * fw)
-        x2 = int(min(1.0, float(ss[-1]["nx"]) + xtol) * fw)
-        # grabbable band of this row (its own ny tolerance)
-        y1, y2 = int((float(r["ny"]) - ntol) * fh), int((float(r["ny"]) + ntol) * fh)
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 180, 180), -1)
-        cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, dst=frame)
-        # the arc itself, clipped to its sampled span
-        cv2.line(frame, (x1, yy), (x2, yy), (0, 220, 220), 2)
-        for s in ss:
-            cv2.drawMarker(frame, (int(float(s["nx"]) * fw), yy), (0, 220, 220),
-                           cv2.MARKER_DIAMOND, 14, 2)
+    for pose, color in (("upright", (0, 220, 220)), ("lying", (220, 0, 220))):
+        for r in solver.rows_for(pose):
+            ss = r["samples"]
+            yy = int(float(r["ny"]) * fh)
+            ntol = float(r.get("ny_tol", NY_TOL_DEFAULT))
+            xtol = float(r.get("nx_tol", NX_TOL_DEFAULT))
+            x1 = int(max(0.0, float(ss[0]["nx"]) - xtol) * fw)
+            x2 = int(min(1.0, float(ss[-1]["nx"]) + xtol) * fw)
+            # grabbable band of this row (its own ny tolerance)
+            y1, y2 = int((float(r["ny"]) - ntol) * fh), int((float(r["ny"]) + ntol) * fh)
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+            cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, dst=frame)
+            # the arc itself, clipped to its sampled span
+            cv2.line(frame, (x1, yy), (x2, yy), color, 2)
+            for s in ss:
+                cv2.drawMarker(frame, (int(float(s["nx"]) * fw), yy), color,
+                               cv2.MARKER_DIAMOND, 14, 2)
 
 
 def main():
@@ -123,13 +137,19 @@ def main():
             i += 1
             best = result.best if result is not None else None
 
+            pose_label = ""
             if best is not None:
-                u, v = best.base_center
+                pose, angle, pose_label = _pose_of(best)
+                # Reference point matches the calibration convention:
+                # upright -> ground contact (bbox bottom-center);
+                # lying   -> bbox CENTER (tracks the graspable middle at
+                #            every orientation; the bottom edge doesn't).
+                u, v = best.base_center if pose == "upright" else best.center
                 nx = u / result.frame_width
                 ny = v / result.frame_height
-                solved, hint = _classify(solver, nx, ny)
+                solved, hint = _classify(solver, nx, ny, pose, angle)
                 tag = (f"GRABBABLE {solved}" if solved is not None else hint)
-                print(f"base=({u:4d},{v:4d}) n=({nx:.3f},{ny:.3f})  {tag}")
+                print(f"ref=({u:4d},{v:4d}) n=({nx:.3f},{ny:.3f}) [{pose_label}]  {tag}")
             else:
                 solved = None
                 print("[no detection]")
@@ -147,9 +167,9 @@ def main():
             if best is None:
                 msg, color = "no tin detected", (200, 200, 200)
             elif solved is not None:
-                msg, color = "GRABBABLE  (press 'g')", (0, 255, 0)
+                msg, color = f"GRABBABLE [{pose_label}]  (press 'g')", (0, 255, 0)
             else:
-                msg, color = hint, (0, 165, 255)
+                msg, color = f"[{pose_label}] {hint}", (0, 165, 255)
             cv2.putText(annotated, msg, (20, fh - 25), font, 0.9, (0, 0, 0), 5)
             cv2.putText(annotated, msg, (20, fh - 25), font, 0.9, color, 2)
             if solved is not None:

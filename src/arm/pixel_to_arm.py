@@ -35,7 +35,11 @@ from copy import deepcopy
 from datetime import date
 from pathlib import Path
 
-from src.visual_servoing.ibvs_centering import CENTERING_CONFIG_PATH as LEGACY_CONFIG_PATH
+# Literal legacy path instead of importing it from ibvs_centering: that
+# import drags in the whole perception chain (YOLO/torch) just for a frozen
+# filename, and this module is documented to import anywhere.
+LEGACY_CONFIG_PATH = (Path(__file__).resolve().parents[1]
+                      / "visual_servoing" / "config" / "centering_config.yaml")
 
 CONFIG_PATH = Path(__file__).parent / "config" / "pixel_to_arm.yaml"
 P2A_KEY = "pixel_to_arm"    # key inside the LEGACY shared yaml only

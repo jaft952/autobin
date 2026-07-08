@@ -7,8 +7,11 @@ class ActionCommand:
     layer_id: int
     active: bool
     motion_vector: Optional[tuple] = None  # (v_x, v_y, v_theta)
-    arm_action: Optional[str] = None       # e.g., 'deploy', 'retract', 'grab'
+    arm_action: Optional[str] = None       # e.g., 'deploy', 'retract', 'grab_arc'
     message: str = ""
+    arm_params: Optional[Dict] = None      # payload for arm_action, e.g.
+                                           # {'pose': [CH1..CH5]} for 'grab_arc'
+                                           # {'target_m': (x, y)} for 'grab_ik'
 
 class Arbitrator:
     """
