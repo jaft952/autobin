@@ -8,13 +8,16 @@
   h             home
   pose          print the current pose
   st            print calibration status
-  cam           just look through the camera (click shows coords; q closes)
-  y             NEW ARC ROW: camera pops up -> click tin base -> s
-                (starts a row at that pixel-y with the CURRENT CH1..CH5 as
-                 its first — middle — sample)
-  a             ADD SAMPLE to the nearest row: camera pops up -> click -> s
-                (stores clicked pixel-x + CURRENT CH1..CH5 in that row)
-  g             GRAB TEST: camera pops up -> click the tin -> s -> arm grabs
+  cam           just look through the camera (YOLO marks the tin; q closes)
+  y             NEW ARC ROW: camera pops up -> YOLO marks the tin's reference
+                point (upright: bbox bottom-center, lying: bbox center — the
+                SAME point the robot uses at runtime) -> press 's' to store it
+                with the CURRENT CH1..CH5 as the row's first (middle) sample.
+                Click the image only to OVERRIDE a bad detection ('x' clears).
+  a             ADD SAMPLE to the nearest row: same auto-pick flow -> s
+                (stores the point's nx AND ny + CURRENT CH1..CH5 — rows are
+                 curves, the edges of an arc sit lower in the image)
+  g             GRAB TEST: camera pops up -> auto point -> s -> arm grabs
                 (ends HOLDING so you can check the grip; 'b' to dump)
   b             dump the held tin into the onboard bin (bin pose + open)
   lie / stand   switch the calibration domain (LYING / UPRIGHT grid)
@@ -31,9 +34,6 @@ from src.arm.arc_grasp import (
     ArcGraspSolver, save_config, row_ny_at, NY_TOL_DEFAULT, NX_TOL_DEFAULT,
 )
 from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
-
-
-W, H = 1920, 1080
 
 
 HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
@@ -83,15 +83,13 @@ class Arm:
               "'h' to force-home if the arm isn't actually there.")
 
     def force_home(self):
-        """Command every servo to HOME + open gripper, ignoring the tracked
-        pose. With no feedback we ASSERT a known state instead of assuming one.
-        Used by the 'h' command (so 'h' always responds, even when the tracked
-        pose already says 'home')."""
-        print("[arm] force-home: commanding all channels to home.")
-        self.act.set_arm_angles(HOME_ARM)
-        self.act.set_gripper_angle(GRIPPER_OPEN)
-        self.arm = list(HOME_ARM)
-        self.gripper = GRIPPER_OPEN
+        """Step every channel to HOME + open gripper, gently. goto/_one ramp
+        from the tracked pose and END with a write-through of each channel,
+        so 'h' always actually responds (even when tracking already claims
+        home) — without the old full-speed all-servo snap."""
+        print("[arm] force-home: stepping all channels to home.")
+        self.goto(HOME_ARM, "home")
+        self.set_gripper(GRIPPER_OPEN)
 
     def brake_wheels(self):
         if self.wheels is not None:
@@ -166,60 +164,148 @@ class Arm:
 
 
 class Camera:
-    """Opened once, read only inside click_point() — no continuous streaming."""
+    """Viewfinder for calibration points.
 
-    def __init__(self):
-        from src.perception.detector import open_camera_capture
-        self.cap, self.fw, self.fh, _fps = open_camera_capture(0, W, H)
-        print(f"✓ camera {self.fw}x{self.fh}")
+    AUTO mode (default): runs the SAME YOLO detector the robot uses at
+    runtime and marks the tin's reference point with the SAME convention
+    (upright -> bbox bottom-center, lying -> bbox center). Pressing 's'
+    stores the DETECTED point, so calibrated pixels are exactly what
+    layer3 will feed the solver later — no human-click offset. Clicking
+    the image overrides the detection (for the rare misdetection).
 
-    def click_point(self, rows, title, sticky=False):
-        """Popup window: click the tin, 's'/Enter accepts, 'q'/Esc cancels.
-        rows = the ACTIVE domain's calibrated rows (drawn as overlay).
-        sticky=True keeps the window open (just looking). Returns (nx, ny) or None."""
+    FALLBACK mode: if the model can't load (no weights / no torch), plain
+    capture + manual clicks, i.e. the old behaviour.
+    """
+
+    def __init__(self, model_path):
+        self.detector = None
+        self.cap = None
+        try:
+            from src.perception.detector import AluminiumCanDetector
+            # Same resolution as the runtime CameraSensor so calibration and
+            # runtime literally share pixels (no FOV question between them).
+            self.detector = AluminiumCanDetector(model_path=model_path,
+                                                 frame_width=1280, frame_height=720)
+            self.detector.start()
+            frame = self.detector.read_frame()
+            if frame is None:
+                raise RuntimeError("camera gave no frame")
+            self.fh, self.fw = frame.shape[:2]
+            print(f"✓ camera+YOLO {self.fw}x{self.fh} — 's' stores the "
+                  f"DETECTED point; click only to override.")
+        except Exception as exc:
+            self.detector = None
+            print(f"[cam] detector unavailable ({exc}) — manual click mode.")
+            from src.perception.detector import open_camera_capture
+            self.cap, self.fw, self.fh, _fps = open_camera_capture(0, 1280, 720)
+            print(f"✓ camera {self.fw}x{self.fh}")
+
+    def stop(self):
+        if self.detector is not None:
+            self.detector.stop()
+        elif self.cap is not None:
+            self.cap.release()
+
+    def _draw_rows(self, frame, rows):
         import cv2
-        for _ in range(5):                     # flush stale buffered frames
-            self.cap.read()
+        for r in rows:                     # calibrated arc CURVES
+            default_ny = float(r["ny"])
+            pts = sorted((float(s["nx"]), float(s.get("ny", default_ny)))
+                         for s in r["samples"])
+            px = [(int(x * self.fw), int(y * self.fh)) for x, y in pts]
+            for p1, p2 in zip(px, px[1:]):
+                cv2.line(frame, p1, p2, (0, 200, 200), 1)
+            if len(px) == 1:               # single sample: short tick
+                x0, y0 = px[0]
+                cv2.line(frame, (x0 - 40, y0), (x0 + 40, y0), (0, 200, 200), 1)
+            for p in px:                   # sampled azimuth points on the arc
+                cv2.drawMarker(frame, p, (0, 200, 200), cv2.MARKER_DIAMOND, 10, 1)
+
+    def pick_point(self, rows, title, pose="upright", sticky=False):
+        """Popup window; returns (nx, ny) or None.
+        's'/Enter accepts the auto-detected point (or the manual click if one
+        was made); click = manual override; 'x' clears the override;
+        'q'/Esc cancels. sticky=True keeps the window open (just looking)."""
+        import cv2
         state = {"click": None}
 
         def on_mouse(event, x, y, flags, param):
             if event == cv2.EVENT_LBUTTONDOWN:
                 state["click"] = (x, y)
-                print(f"  clicked ({x},{y})  norm=({x / self.fw:.3f},{y / self.fh:.3f})")
+                print(f"  manual override ({x},{y})  "
+                      f"norm=({x / self.fw:.3f},{y / self.fh:.3f})")
 
-        win = f"{title}   (click tin base | s=accept | q=cancel)"
+        mode = "s=DETECTED point | click=override | x=clear | q=cancel" \
+            if self.detector else "click tin | s=accept | q=cancel"
+        win = f"{title}   ({mode})"
         cv2.namedWindow(win)
         cv2.setMouseCallback(win, on_mouse)
         result = None
         font = cv2.FONT_HERSHEY_SIMPLEX
+
+        if self.detector is None:          # flush stale buffered frames
+            for _ in range(5):
+                self.cap.read()
+
         try:
+            i = 0
+            det_res = None
             while True:
-                ok, frame = self.cap.read()
-                if not ok:
-                    print("  camera read failed")
-                    break
-                for r in rows:                 # calibrated arc CURVES
-                    default_ny = float(r["ny"])
-                    pts = sorted((float(s["nx"]), float(s.get("ny", default_ny)))
-                                 for s in r["samples"])
-                    px = [(int(x * self.fw), int(y * self.fh)) for x, y in pts]
-                    for p1, p2 in zip(px, px[1:]):
-                        cv2.line(frame, p1, p2, (0, 200, 200), 1)
-                    if len(px) == 1:           # single sample: short tick
-                        x0, y0 = px[0]
-                        cv2.line(frame, (x0 - 40, y0), (x0 + 40, y0), (0, 200, 200), 1)
-                    for p in px:               # sampled azimuth points on the arc
-                        cv2.drawMarker(frame, p, (0, 200, 200),
-                                       cv2.MARKER_DIAMOND, 10, 1)
+                if self.detector is not None:
+                    frame = self.detector.read_frame()
+                    if frame is None:
+                        print("  camera read failed")
+                        break
+                    if i % 2 == 0:                     # infer every 2nd frame
+                        det_res = self.detector.infer(frame)
+                    i += 1
+                    shown = self.detector.get_annotated_frame(det_res) \
+                        if det_res is not None else frame
+                    if shown is None:
+                        shown = frame
+                else:
+                    ok, shown = self.cap.read()
+                    if not ok:
+                        print("  camera read failed")
+                        break
+
+                self._draw_rows(shown, rows)
+
+                # Auto reference point: SAME convention as layer3 at runtime.
+                auto_pt = None
+                best = det_res.best if det_res is not None else None
+                if best is not None:
+                    auto_pt = best.base_center if pose == "upright" else best.center
+                    cv2.circle(shown, auto_pt, 9, (0, 0, 255), 2)
+                    cv2.putText(shown, "AUTO", (auto_pt[0] + 12, auto_pt[1] + 4),
+                                font, 0.55, (0, 0, 255), 2)
+                    o = best.orientation
+                    if o is not None:
+                        expect = "upright" if pose == "upright" else ("lying", "axial")
+                        ok_pose = (o.klass == expect) if pose == "upright" \
+                            else (o.klass in expect)
+                        if not ok_pose:
+                            cv2.putText(shown,
+                                        f"! detected {o.klass}, calibrating {pose}",
+                                        (10, 62), font, 0.7, (0, 140, 255), 2)
+
                 if state["click"]:
-                    cv2.drawMarker(frame, state["click"], (0, 0, 255),
+                    cv2.drawMarker(shown, state["click"], (255, 0, 0),
                                    cv2.MARKER_TILTED_CROSS, 24, 2)
-                cv2.putText(frame, title, (10, 30), font, 0.7, (0, 255, 255), 2)
-                cv2.imshow(win, frame)
+                cv2.putText(shown, title, (10, 30), font, 0.7, (0, 255, 255), 2)
+                cv2.imshow(win, shown)
                 k = cv2.waitKey(30) & 0xFF
-                if k in (ord("s"), 13, 32) and state["click"] and not sticky:
-                    x, y = state["click"]
-                    result = (x / self.fw, y / self.fh)
+                if k == ord("x"):
+                    state["click"] = None
+                if k in (ord("s"), 13, 32) and not sticky:
+                    chosen = state["click"] or auto_pt
+                    if chosen is None:
+                        print("  no detection and no click yet — click the tin.")
+                        continue
+                    src = "manual" if state["click"] else "AUTO"
+                    result = (chosen[0] / self.fw, chosen[1] / self.fh)
+                    print(f"  stored {src} point ({chosen[0]},{chosen[1]})  "
+                          f"norm=({result[0]:.3f},{result[1]:.3f})")
                     break
                 if k in (ord("q"), 27):
                     break
@@ -254,6 +340,13 @@ def handle_servo_command(arm: Arm, line: str) -> bool:
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="Arc-grasp calibration tool")
+    ap.add_argument("--model", default="src/models/inference_20062026.pt",
+                    help="YOLO weights for auto point-pick (same as runtime "
+                         "CameraSensor); falls back to manual clicks if missing")
+    args = ap.parse_args()
+
     solver = ArcGraspSolver()
     cfg = solver.cfg
     pose = "upright"            # active calibration domain: 'lie'/'stand' to switch
@@ -265,7 +358,7 @@ def main():
         print(f"arm not available ({e}) — check power/I2C.")
         return
     try:
-        camera = Camera()
+        camera = Camera(args.model)
     except Exception as e:
         print(f"camera not available ({e}) — y/a/g/cam disabled.")
         camera = None
@@ -334,14 +427,15 @@ def main():
             print(f"[cfg] {solver.status()}")
         elif line == "cam":
             if camera:
-                camera.click_point(solver.rows_for(pose), f"viewing only ({pose})", sticky=True)
+                camera.pick_point(solver.rows_for(pose), f"viewing only ({pose})",
+                                  pose=pose, sticky=True)
         elif line == "y":
             if not camera:
                 print("no camera.")
                 continue
-            where = "BASE" if pose == "upright" else "MIDDLE"
-            pt = camera.click_point(solver.rows_for(pose),
-                                    f"NEW {pose.upper()} ARC: click tin {where} at the grasp pose")
+            pt = camera.pick_point(solver.rows_for(pose),
+                                   f"NEW {pose.upper()} ARC: tin at the grasp spot",
+                                   pose=pose)
             if pt is None:
                 print("cancelled.")
                 continue
@@ -365,9 +459,9 @@ def main():
             if not cfg[pose].get("rows"):
                 print(f"no {pose} arc rows yet — 'y' first.")
                 continue
-            where = "BASE" if pose == "upright" else "MIDDLE"
-            pt = camera.click_point(solver.rows_for(pose),
-                                    f"ADD {pose.upper()} SAMPLE: click tin {where} (CH1={arm.arm[0]:.1f})")
+            pt = camera.pick_point(solver.rows_for(pose),
+                                   f"ADD {pose.upper()} SAMPLE (CH1={arm.arm[0]:.1f})",
+                                   pose=pose)
             if pt is None:
                 print("cancelled.")
                 continue
@@ -391,9 +485,8 @@ def main():
             if not camera:
                 print("no camera.")
                 continue
-            where = "BASE" if pose == "upright" else "MIDDLE"
-            pt = camera.click_point(solver.rows_for(pose),
-                                    f"GRAB TEST ({pose}): click the tin {where}")
+            pt = camera.pick_point(solver.rows_for(pose),
+                                   f"GRAB TEST ({pose})", pose=pose)
             if pt is None:
                 print("cancelled.")
                 continue
@@ -415,6 +508,8 @@ def main():
             print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | lie stand | brake coast | q")
 
     arm.release_wheels()          # never leave the base braked after exit
+    if camera:
+        camera.stop()
     print("bye")
 
 

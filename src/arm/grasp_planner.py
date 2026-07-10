@@ -125,16 +125,15 @@ class GraspPlanner:
         return True
 
     def force_home(self) -> bool:
-        """Command every servo to HOME + open the gripper DIRECTLY, ignoring
-        the tracked pose. Used at startup: with no joint feedback we can't know
-        where the arm actually is, so we ASSERT a known pose instead of
-        assuming it (the old startup assumed home and never moved a servo, so a
-        stale pose corrupted every later stepped move)."""
-        print("[GraspPlanner] Force-homing to a known pose at startup...")
-        self.actuator.set_arm_angles(HOME_ANGLES)
-        self.actuator.set_gripper_angle(GRIPPER_OPEN)
-        self._arm = list(HOME_ANGLES)
-        self._gripper = GRIPPER_OPEN
+        """Drive to HOME gently and ASSERT it. The stepped ramp starts from
+        the tracked pose (almost always right — e.g. homing after a grab);
+        _move_stepped then ends with an absolute WRITE-THROUGH of all six
+        channels, so home is guaranteed even when tracking was stale. This
+        replaced an instant full-speed jump of every servo (user: 'rushes
+        too fast') — the write-through is what asserts the known pose now,
+        violence is not needed for correctness."""
+        print("[GraspPlanner] Force-homing (stepped + write-through)...")
+        self._move_stepped(HOME_ANGLES, GRIPPER_OPEN)
         self.kinematics.reset_warm_start()
         return True
 
