@@ -427,7 +427,13 @@ def test_command_write_through():
     p.home()
     assert p.actuator.kit.servo[2].angle == p._arm[2], \
         "full-pose move must write channels the tracker thinks are in place"
-    print("PASS commands write through stale tracking (jog + full pose)")
+
+    # force_home is now stepped (gentle) but must STILL assert the pose.
+    p.actuator.kit.servo[3].angle = 5.0
+    p.force_home()
+    assert p.actuator.kit.servo[3].angle == p._arm[3], \
+        "stepped force_home must still write through stale tracking"
+    print("PASS commands write through stale tracking (jog + full pose + force_home)")
 
 
 def test_curved_arc_rows():
