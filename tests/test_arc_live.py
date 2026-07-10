@@ -14,8 +14,10 @@ Usage (Pi desktop):
     python tests/test_arc_live.py
 
 Keys:
-    g = grab NOW using the solved pose (needs arm hardware)
-    h = arm home
+    g = grab NOW using the solved pose (needs arm hardware; ends HOLDING
+        so you can check the grip — the autonomous stack dumps by itself)
+    b = dump the held tin into the onboard bin
+    h = arm home (forced)
     q = quit
 
 Overlay:
@@ -28,7 +30,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arm.arc_grasp import ArcGraspSolver, NY_TOL_DEFAULT, NX_TOL_DEFAULT
+from src.arm.arc_grasp import ArcGraspSolver, row_ny_at, NY_TOL_DEFAULT, NX_TOL_DEFAULT
 
 IMGSZ = 640
 INFER_EVERY = 1
@@ -64,7 +66,8 @@ def _pose_of(box):
 
 def _classify(solver, nx, ny, pose, angle_deg):
     """(solved_or_None, hint_text). Mirrors the solver's band rules so the
-    hint always agrees with what solve() decided."""
+    hint always agrees with what solve() decided. Rows are CURVES, so the
+    far/close comparison happens against each arc's height AT THIS nx."""
     solved = solver.solve(nx, ny, pose=pose, angle_deg=angle_deg)
     if solved is not None:
         return solved, ""
@@ -72,8 +75,9 @@ def _classify(solver, nx, ny, pose, angle_deg):
         return None, f"{pose} arc NOT calibrated - test_arc_grasp.py " \
                      f"({'lie' if pose == 'lying' else 'stand'} mode)"
     rs = solver.rows_for(pose)
-    lo = float(rs[0]["ny"]) - float(rs[0].get("ny_tol", NY_TOL_DEFAULT))
-    hi = float(rs[-1]["ny"]) + float(rs[-1].get("ny_tol", NY_TOL_DEFAULT))
+    heights = sorted((row_ny_at(r, nx), r) for r in rs)
+    lo = heights[0][0] - float(heights[0][1].get("ny_tol", NY_TOL_DEFAULT))
+    hi = heights[-1][0] + float(heights[-1][1].get("ny_tol", NY_TOL_DEFAULT))
     if ny < lo:
         return None, "tin TOO FAR - drive forward onto the arc"
     if ny > hi:
@@ -82,26 +86,34 @@ def _classify(solver, nx, ny, pose, angle_deg):
 
 
 def _draw_arcs(frame, solver):
-    """Upright grid in cyan, lying grid in magenta."""
+    """Upright grid in cyan, lying grid in magenta. Rows are CURVES: the
+    same radius sits lower in the image at the edges, so each row is drawn
+    as the polyline through its samples' own (nx, ny) points, with the
+    ny_tol band following the curve."""
     import cv2
+    import numpy as np
     fh, fw = frame.shape[:2]
     for pose, color in (("upright", (0, 220, 220)), ("lying", (220, 0, 220))):
         for r in solver.rows_for(pose):
-            ss = r["samples"]
-            yy = int(float(r["ny"]) * fh)
+            default_ny = float(r["ny"])
             ntol = float(r.get("ny_tol", NY_TOL_DEFAULT))
             xtol = float(r.get("nx_tol", NX_TOL_DEFAULT))
-            x1 = int(max(0.0, float(ss[0]["nx"]) - xtol) * fw)
-            x2 = int(min(1.0, float(ss[-1]["nx"]) + xtol) * fw)
-            # grabbable band of this row (its own ny tolerance)
-            y1, y2 = int((float(r["ny"]) - ntol) * fh), int((float(r["ny"]) + ntol) * fh)
+            pts = sorted((float(s["nx"]), float(s.get("ny", default_ny)))
+                         for s in r["samples"])
+            # extend flat by nx_tol beyond the end samples (solver clamps there)
+            ext = ([(max(0.0, pts[0][0] - xtol), pts[0][1])] + pts +
+                   [(min(1.0, pts[-1][0] + xtol), pts[-1][1])])
+            px = np.array([[int(x * fw), int(y * fh)] for x, y in ext], np.int32)
+            # grabbable band: the curve swept +/- its ny_tol
+            tol_px = int(ntol * fh)
+            band = np.vstack([px + [0, -tol_px], (px + [0, tol_px])[::-1]])
             overlay = frame.copy()
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+            cv2.fillPoly(overlay, [band], color)
             cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, dst=frame)
-            # the arc itself, clipped to its sampled span
-            cv2.line(frame, (x1, yy), (x2, yy), color, 2)
-            for s in ss:
-                cv2.drawMarker(frame, (int(float(s["nx"]) * fw), yy), color,
+            # the arc itself
+            cv2.polylines(frame, [px], False, color, 2)
+            for x, y in pts:
+                cv2.drawMarker(frame, (int(x * fw), int(y * fh)), color,
                                cv2.MARKER_DIAMOND, 14, 2)
 
 
@@ -118,7 +130,7 @@ def main():
     detector.start()
     arm = _make_arm()
 
-    print("\nKeys: g=grab  h=home  q=quit\n")
+    print("\nKeys: g=grab (ends holding)  b=dump to bin  h=home  q=quit\n")
     show = True
     result = None
     solved = None
@@ -193,10 +205,14 @@ def main():
                 elif arm is None:
                     print(f"[grab] (no hardware) would send {solved}")
                 else:
-                    arm.grab(solved)
+                    arm.grab(solved)     # ends HOLDING — press 'b' to dump
+            if key == ord("b"):
+                if arm is None:
+                    print("[bin] (no hardware) would dump to bin")
+                else:
+                    arm.dump_to_bin()
             if key == ord("h") and arm is not None:
-                arm.set_gripper(0.0)
-                arm.goto([96.7, 96.7, 150.0, 20.0, 90.0], "home")
+                arm.force_home()
 
     except KeyboardInterrupt:
         print("\nstopped.")

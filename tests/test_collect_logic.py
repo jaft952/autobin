@@ -430,6 +430,42 @@ def test_command_write_through():
     print("PASS commands write through stale tracking (jog + full pose)")
 
 
+def test_curved_arc_rows():
+    """User-observed bug (2026-07-11): a constant-radius CH1 sweep projects
+    as a CURVE (lower in the image at the edges), but rows were modelled as
+    horizontal lines — 'grabbable' at the edges of the line was a lie, and
+    the true reachable spot below the line was rejected. Rows now follow
+    their samples' own ny."""
+    import yaml as _yaml
+    path = Path(tempfile.mkdtemp()) / "arc_grasp.yaml"
+    save_config({
+        "version": 3,
+        "upright": {"rows": [{
+            # center of the arc at ny=0.50; edges dip to ny=0.60
+            "ny": 0.50, "ny_tol": 0.03, "nx_tol": 0.05, "samples": [
+                {"nx": 0.2, "ny": 0.60, "arm": [60.0, 140.0, 70.0, 160.0, 90.0]},
+                {"nx": 0.5, "ny": 0.50, "arm": [100.0, 140.0, 70.0, 160.0, 90.0]},
+                {"nx": 0.8, "ny": 0.60, "arm": [140.0, 140.0, 70.0, 160.0, 90.0]},
+            ]}]},
+        "lying": {"rows": []},
+    }, path)
+    solver = ArcGraspSolver(path)
+
+    assert solver.solve(0.5, 0.50) is not None      # center, on the curve
+    assert solver.solve(0.8, 0.60) is not None      # edge, at its TRUE (lower) ny
+    # Edge at the CENTER's height: the old flat line said grabbable here —
+    # the user physically couldn't reach. The curve rejects it.
+    assert solver.solve(0.8, 0.50) is None
+    # Center at the EDGE's height: too close for the center of the arc.
+    assert solver.solve(0.5, 0.60) is None
+    # Halfway azimuth: curve interpolates (ny 0.55 there is ON the arc).
+    assert solver.solve(0.65, 0.55) is not None
+
+    # Legacy flat rows (samples without ny) still behave as before.
+    assert make_solver().solve(0.5, 0.6) is not None
+    print("PASS curved arc rows (edge dips honored, flat-line lies rejected)")
+
+
 def test_smooth_move_semantics():
     """stepped_move v2 (smooth streaming): same (step_deg, step_delay) pace
     as the old jump-and-sleep version — span/speed total duration — but
@@ -508,6 +544,7 @@ ALL_TESTS = [
     test_executor_grab_dump_home_and_cooldown,
     test_executor_stow_idempotent_and_failed_ik,
     test_command_write_through,
+    test_curved_arc_rows,
     test_smooth_move_semantics,
     test_arbitration_stack,
 ]

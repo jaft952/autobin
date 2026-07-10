@@ -52,9 +52,18 @@ v3 DESIGN (2026-07-08) — TWO POSE DOMAINS + angle-driven wrist roll:
     An "axial" pose (tin seen end-on, mask is round, angle meaningless)
     is grabbed as lying with the straight-at-robot default (angle 90).
 
-Grabbable region = the strip between the calibrated rows (each row's own
-ny_tol extends the band at the ends), horizontally within each row's sampled
-nx span (+ nx_tol). Outside -> solve() returns None, honestly.
+CURVED ROWS (2026-07-11, user observed flat lines were wrong): a constant-
+radius CH1 sweep projects into the image as a curve that sits LOWER at the
+edges than at the center, not as a horizontal line. Each sample therefore
+stores its own clicked ny, and a row is the piecewise-linear curve through
+its (nx, ny) points (row_ny_at). Legacy samples without 'ny' inherit the
+row's ny — old flat calibrations keep working, but re-adding the side
+samples with 'a' (which now records the true ny) is what actually fixes
+"says grabbable at the edge but can't reach".
+
+Grabbable region = the strip between the calibrated row CURVES (each row's
+own ny_tol extends the band at the ends), horizontally within each row's
+sampled nx span (+ nx_tol). Outside -> solve() returns None, honestly.
 
 Calibration lives in ITS OWN file, src/arm/config/arc_grasp.yaml (one file
 per calibration domain — IBVS keeps centering_config.yaml, pixel_to_arm has
@@ -152,6 +161,30 @@ def save_config(cfg: dict, path: Path = CONFIG_PATH):
 
 def _lerp_arm(a, b, t: float):
     return [(1.0 - t) * float(p) + t * float(q) for p, q in zip(a, b)]
+
+
+def row_ny_at(row, nx: float) -> float:
+    """The row's arc HEIGHT (image ny) at azimuth nx.
+
+    A constant-radius sweep of CH1 is an ARC on the floor, and its camera
+    projection is NOT a horizontal line: the same radius sits LOWER in the
+    image at the edges than at the center (side points are closer along the
+    camera's depth axis). So each row is a piecewise-linear CURVE through
+    its samples' own (nx, ny) points.
+
+    Samples without their own 'ny' (legacy calibrations, where the tool only
+    stored nx) inherit the row's ny — those rows stay flat, exactly the old
+    behaviour. nx outside the sampled span clamps to the end samples."""
+    default = float(row["ny"])
+    pts = sorted((float(s["nx"]), float(s.get("ny", default)))
+                 for s in row["samples"])
+    if nx <= pts[0][0]:
+        return pts[0][1]
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        if nx <= x2:
+            t = 0.0 if x2 == x1 else (nx - x1) / (x2 - x1)
+            return y1 + (y2 - y1) * t
+    return pts[-1][1]
 
 
 def ch5_from_angle(angle_deg: float, anchors=None) -> float:
@@ -255,27 +288,35 @@ class ArcGraspSolver:
         return [round(max(0.0, min(180.0, float(v))), 1) for v in arm]
 
     def _solve_grid(self, rs, nx: float, ny: float):
-        lo, hi = float(rs[0]["ny"]), float(rs[-1]["ny"])
-        if ny < lo - float(rs[0].get("ny_tol", NY_TOL_DEFAULT)):
-            return None
-        if ny > hi + float(rs[-1].get("ny_tol", NY_TOL_DEFAULT)):
-            return None
-        ny = min(max(ny, lo), hi)          # clamp into the strip
-        if len(rs) == 1:
-            return self._solve_row(rs[0], nx)
-        for a, b in zip(rs, rs[1:]):       # find the bracketing row pair
-            if ny <= float(b["ny"]):
-                t = (ny - float(a["ny"])) / (float(b["ny"]) - float(a["ny"]))
-                if t <= 1e-9:              # sitting ON row a: only a matters
-                    return self._solve_row(a, nx)
-                if t >= 1.0 - 1e-9:        # sitting ON row b: only b matters
-                    return self._solve_row(b, nx)
-                arm_a = self._solve_row(a, nx)
-                arm_b = self._solve_row(b, nx)
+        """Rows are CURVES in the image (see row_ny_at): evaluate every
+        row's height at THIS nx, then bracket the query ny between adjacent
+        curves. A flat-line model overestimated reach at the image edges —
+        the same radius really sits lower there."""
+        curves = sorted(((row_ny_at(r, nx), r) for r in rs), key=lambda p: p[0])
+        lo_ny, lo_row = curves[0]
+        hi_ny, hi_row = curves[-1]
+        if ny < lo_ny - float(lo_row.get("ny_tol", NY_TOL_DEFAULT)):
+            return None                    # too far, above the farthest arc
+        if ny > hi_ny + float(hi_row.get("ny_tol", NY_TOL_DEFAULT)):
+            return None                    # too close, below the nearest arc
+        ny = min(max(ny, lo_ny), hi_ny)    # clamp into the strip
+        if len(curves) == 1:
+            return self._solve_row(lo_row, nx)
+        for (a_ny, a_row), (b_ny, b_row) in zip(curves, curves[1:]):
+            if ny <= b_ny:
+                if b_ny - a_ny <= 1e-9:    # curves touch at this nx
+                    return self._solve_row(a_row, nx)
+                t = (ny - a_ny) / (b_ny - a_ny)
+                if t <= 1e-9:              # sitting ON curve a: only a matters
+                    return self._solve_row(a_row, nx)
+                if t >= 1.0 - 1e-9:        # sitting ON curve b: only b matters
+                    return self._solve_row(b_row, nx)
+                arm_a = self._solve_row(a_row, nx)
+                arm_b = self._solve_row(b_row, nx)
                 if arm_a is None or arm_b is None:
                     return None            # nx outside one row's sampled span
                 return _lerp_arm(arm_a, arm_b, t)
-        return self._solve_row(rs[-1], nx)
+        return self._solve_row(curves[-1][1], nx)
 
     @staticmethod
     def _solve_row(row, nx: float):
