@@ -86,7 +86,9 @@ class RobotRuntime:
         self.arm = None
         try:
             from src.subsumption.arm_executor import ArmExecutor
-            self.arm = ArmExecutor()          # homes the arm on startup
+            # Does NOT move the arm at server boot — the first arm command
+            # after the operator presses START force-homes it.
+            self.arm = ArmExecutor()
         except Exception as exc:
             self.log.warning(f"arm unavailable ({exc}) — manual arm + grabs disabled")
 
@@ -241,8 +243,12 @@ class RobotRuntime:
         with self._arm_lock:
             planner = self._manual_arm_planner()
             if name == "home":
-                planner.home()
+                # Explicit user intent -> FORCE (works even when the tracked
+                # pose already claims home, e.g. right after server boot).
+                force = getattr(planner, "force_home", None)
+                (force or planner.home)()
                 self.arm._at_home = True
+                self.arm._force_next_home = False
             elif name == "bin":
                 planner.goto_named_pose("bin")
                 self.arm._at_home = False

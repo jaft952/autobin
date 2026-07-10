@@ -39,7 +39,12 @@ STEP_DEG, STEP_DELAY = 2.0, 0.5
 
 
 
-DESCEND_ORDER = [2, 3, 4, 1]       
+# Safe grab order (channel indices): CH1 base -> CH5 roll -> CH3 elbow ->
+# CH4 wrist -> CH2 shoulder (LAST = final descent onto the tin). CH5 is set
+# EARLY, while the arm is still lifted, so a stale roll from a previous grab
+# (e.g. 180 from a lying tin) is corrected before anything comes near the
+# floor. Gripper (CH6) closes after this, then CH2 lifts back up.
+GRAB_APPROACH_ORDER = [0, 4, 2, 3, 1]
 
 CH_NAMES = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist", "CH5 roll", "CH6 grip"]
 
@@ -65,7 +70,23 @@ class Arm:
             print("[wheels] brake available — held during grabs.")
         except Exception as exc:
             print(f"[wheels] no motor driver ({exc}); grabs run without brake.")
-        self.goto(HOME_ARM, label="startup home")
+        # NOTHING moves on startup (calibration tools must never surprise-
+        # move the arm; same policy as servo_jog.py). The tracked pose is
+        # ASSUMED to be home — if the arm isn't actually there, press 'h'
+        # first: it force-commands home regardless of the tracked pose.
+        print("[arm] startup: no movement. Tracked pose assumes HOME — press "
+              "'h' to force-home if the arm isn't actually there.")
+
+    def force_home(self):
+        """Command every servo to HOME + open gripper, ignoring the tracked
+        pose. With no feedback we ASSERT a known state instead of assuming one.
+        Used by the 'h' command (so 'h' always responds, even when the tracked
+        pose already says 'home')."""
+        print("[arm] force-home: commanding all channels to home.")
+        self.act.set_arm_angles(HOME_ARM)
+        self.act.set_gripper_angle(GRIPPER_OPEN)
+        self.arm = list(HOME_ARM)
+        self.gripper = GRIPPER_OPEN
 
     def brake_wheels(self):
         if self.wheels is not None:
@@ -80,6 +101,13 @@ class Arm:
         target = list(start)
         target[ch] = max(0.0, min(180.0, float(value)))
         stepped_move(self.act, start, target, STEP_DEG, STEP_DELAY)
+        # WRITE-THROUGH guarantee: the commanded channel ALWAYS receives its
+        # target, even when the tracked pose claims it's already there.
+        # There is no joint feedback, so tracking can be wrong (e.g. after
+        # boot) — the old diff-only path silently dropped such commands
+        # ('c1 96.7' did nothing because tracking said 96.7 already).
+        # A duplicate write is harmless; a dropped command is not.
+        self.act.set_channel_angle(ch, target[ch])
         if ch < 5:
             self.arm[ch] = target[ch]
         else:
@@ -89,8 +117,7 @@ class Arm:
         if label:
             print(f"[arm] {label}")
         for ch in range(5):
-            if abs(arm5[ch] - self.arm[ch]) > 1e-9:
-                self._one(ch, arm5[ch])
+            self._one(ch, arm5[ch])   # no diff-skip: every channel is asserted
 
     def set_gripper(self, v):
         self._one(5, v)
@@ -100,17 +127,25 @@ class Arm:
         print(f"[pose] {angles}  grip={self.gripper:.1f}")
 
     def grab(self, solved):
-        """solved = [CH1..CH5]. Open, swing, descend, close, lift.
-        Wheels are braked for the whole sequence so the arm's shaking can't
-        push the base off the calibrated spot."""
+        """solved = [CH1..CH5]. Safe ordered grab so nothing sweeps the floor:
+
+          1. lift to a high/folded pose (CH2/CH3/CH4) at the current azimuth
+          2. approach in order CH1 base -> CH5 roll -> CH3 -> CH4 -> CH2
+             (shoulder LAST = the only channel that lowers onto the tin), so
+             the wrist ROLL is set while the arm is still high — a stale roll
+             from a previous (e.g. lying) grab can no longer hit the ground
+          3. close gripper (CH6), then lift the shoulder back up, holding
+
+        Wheels are braked the whole time so the shaking can't drift the base."""
         print(f"[grab] pose CH1-5 = {solved}")
         self.brake_wheels()
         try:
             self.set_gripper(GRIPPER_OPEN)
-            self.goto([solved[0]] + LIFT_ARM[1:], "swing to azimuth (lifted)")
-            for ch in DESCEND_ORDER:
+            for ch in (1, 2, 3):                 # CH2, CH3, CH4 -> lift high
+                self._one(ch, LIFT_ARM[ch])
+            for ch in GRAB_APPROACH_ORDER:       # CH1, CH5, CH3, CH4, CH2(down)
                 self._one(ch, solved[ch])
-            self.set_gripper(GRIPPER_CLOSE)
+            self.set_gripper(GRIPPER_CLOSE)      # CH6 close on the tin
             self._one(1, LIFT_ARM[1])            # lift shoulder back up, holding
         finally:
             self.release_wheels()
@@ -258,8 +293,7 @@ def main():
             print("[cfg] calibrating the UPRIGHT grid now. Click the tin's "
                   "BASE (bottom-center, where it meets the floor).")
         elif line == "h":
-            arm.set_gripper(GRIPPER_OPEN)
-            arm.goto(HOME_ARM, "home")
+            arm.force_home()          # force: always re-homes, even if tracking thinks it's home
         elif line == "o":
             arm.set_gripper(GRIPPER_OPEN)
         elif line == "c":

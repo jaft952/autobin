@@ -20,7 +20,13 @@ GRIPPER_CLOSED = 40.0
 # step pacing invalidates the calibrated poses' behaviour (links sag
 # differently mid-path and the gripper ploughs the floor).
 ARC_LIFT_ARM      = [96.7, 96.7, 100.0, 100.0, 90.0]
-ARC_DESCEND_ORDER = [2, 3, 4, 1]     # CH3 elbow, CH4 wrist, CH5 roll, CH2 shoulder
+# Safe grab order (channel indices): CH1 base -> CH5 roll -> CH3 elbow ->
+# CH4 wrist -> CH2 shoulder (LAST = the only channel that lowers onto the
+# tin). CH5 is set EARLY, while the arm is still lifted, so a stale wrist
+# roll from a previous grab (e.g. 180 from a lying tin) is corrected before
+# anything nears the floor — otherwise the gripper can be driven into the
+# ground. Pre-lift (CH2/CH3/CH4 -> LIFT) happens before this.
+ARC_GRAB_ORDER    = [0, 4, 2, 3, 1]
 ARC_STEP_DEG      = 2.0
 ARC_STEP_DELAY    = 0.5
 
@@ -67,20 +73,28 @@ class GraspPlanner:
 
     def _move_stepped(self, target_arm, target_gripper):
         """Gently drive CH1-5 (stepped together) + CH6 gripper (instant) to a pose
-        via the shared stepped_move, tracking the new pose for the next call."""
+        via the shared stepped_move, tracking the new pose for the next call.
+        Ends with a WRITE-THROUGH of every channel: this is a FULL commanded
+        pose, so all six channels are asserted even if the tracked pose says
+        they're already there (tracking can be wrong — no joint feedback)."""
         start = list(self._arm) + [self._gripper]
         target = list(target_arm) + [target_gripper]
         stepped_move(self.actuator, start, target)
+        for ch, v in enumerate(target):
+            self.actuator.set_channel_angle(ch, v)
         self._arm, self._gripper = list(target_arm), float(target_gripper)
 
     def _move_one(self, ch: int, value: float):
         """Move a SINGLE channel gently (arc-grasp pacing), holding the rest.
         ch 0-4 = CH1-5, ch 5 = gripper. Mirrors the tuned Arm._one from
-        tests/test_arc_grasp.py."""
+        tests/test_arc_grasp.py. Ends with a WRITE-THROUGH of the commanded
+        channel so the command is never silently dropped when the tracked
+        pose already matches the target."""
         start = list(self._arm) + [self._gripper]
         target = list(start)
         target[ch] = max(0.0, min(180.0, float(value)))
         stepped_move(self.actuator, start, target, ARC_STEP_DEG, ARC_STEP_DELAY)
+        self.actuator.set_channel_angle(ch, target[ch])
         if ch < 5:
             self._arm[ch] = target[ch]
         else:
@@ -88,24 +102,39 @@ class GraspPlanner:
 
     def grab_arc_pose(self, solved: list) -> bool:
         """Execute the tuned arc-grasp sequence at a solved [CH1..CH5] pose
-        (from ArcGraspSolver): open, swing to azimuth lifted, descend one
-        channel at a time, close, lift shoulder — ends HOLDING the can.
-        Follow with dump_to_bin() to deposit it."""
+        (from ArcGraspSolver): open, lift high, approach in the safe channel
+        order (CH1->CH5->CH3->CH4->CH2), close, lift shoulder — ends HOLDING
+        the can. Follow with dump_to_bin() to deposit it."""
         if solved is None or len(solved) < 5:
             print("[GraspPlanner] grab_arc_pose: invalid pose, arm NOT moved.")
             return False
         print(f"[GraspPlanner] Arc grab at CH1-5 = {solved}")
         self.control_gripper("open")
-        # Swing to the azimuth with the arm lifted, channel by channel.
-        swing = [float(solved[0])] + ARC_LIFT_ARM[1:]
-        for ch in range(5):
-            if abs(swing[ch] - self._arm[ch]) > 1e-9:
-                self._move_one(ch, swing[ch])
-        # Descend onto the tin in the calibrated order.
-        for ch in ARC_DESCEND_ORDER:
+        # 1. lift to a high/folded pose at the current azimuth so the base
+        #    rotation and descent below can't drag the gripper on the floor.
+        for ch in (1, 2, 3):                     # CH2 shoulder, CH3 elbow, CH4 wrist
+            self._move_one(ch, ARC_LIFT_ARM[ch])
+        # 2. approach: CH1 base -> CH5 roll (WHILE HIGH) -> CH3 -> CH4 -> CH2
+        #    shoulder (final descent, LAST). Setting CH5 before descending is
+        #    what stops a stale roll from a previous grab hitting the floor.
+        for ch in ARC_GRAB_ORDER:               # [0, 4, 2, 3, 1]
             self._move_one(ch, float(solved[ch]))
         self.control_gripper("close")
-        self._move_one(1, ARC_LIFT_ARM[1])   # lift shoulder back up, holding
+        self._move_one(1, ARC_LIFT_ARM[1])       # lift shoulder back up, holding
+        self.kinematics.reset_warm_start()
+        return True
+
+    def force_home(self) -> bool:
+        """Command every servo to HOME + open the gripper DIRECTLY, ignoring
+        the tracked pose. Used at startup: with no joint feedback we can't know
+        where the arm actually is, so we ASSERT a known pose instead of
+        assuming it (the old startup assumed home and never moved a servo, so a
+        stale pose corrupted every later stepped move)."""
+        print("[GraspPlanner] Force-homing to a known pose at startup...")
+        self.actuator.set_arm_angles(HOME_ANGLES)
+        self.actuator.set_gripper_angle(GRIPPER_OPEN)
+        self._arm = list(HOME_ANGLES)
+        self._gripper = GRIPPER_OPEN
         self.kinematics.reset_warm_start()
         return True
 

@@ -55,8 +55,11 @@ class ArmExecutor:
             planner = GraspPlanner()
         self.planner = planner
         self._at_home = False
+        self._force_next_home = True  # first home since boot must be FORCED:
+        #   the arm's true pose is unknown (no feedback) and nothing may move
+        #   at server boot — the user starts the system from the dashboard,
+        #   and only THEN (first arm command after START) do we assert home.
         self._cooldown_until = 0.0
-        self._ensure_home()          # startup: known pose, mirrors the arm tools
 
     # ── Dispatch ──────────────────────────────────────────────────────────
 
@@ -83,6 +86,15 @@ class ArmExecutor:
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _ensure_home(self) -> None:
+        if self._force_next_home:
+            # First home since boot: FORCE-command every servo (we can't
+            # trust the tracked pose before the arm has ever been homed).
+            # Planners without force_home (test fakes) fall back to home().
+            force = getattr(self.planner, "force_home", None)
+            (force or self.planner.home)()
+            self._force_next_home = False
+            self._at_home = True
+            return
         if not self._at_home:
             self.planner.home()
             self._at_home = True
@@ -92,6 +104,10 @@ class ArmExecutor:
         now = time.monotonic()
         if now < self._cooldown_until:
             return
+        if self._force_next_home:
+            # Never start a grab from an unknown boot pose — assert home
+            # first (covers "tin already grabbable on the very first tick").
+            self._ensure_home()
         self._at_home = False
         try:
             if grab_fn():
