@@ -354,13 +354,17 @@ def test_executor_grab_dump_home_and_cooldown():
     with fake_exec_clock() as clock:
         planner = FakePlanner()
         ex = ArmExecutor(planner=planner)
-        assert planner.calls == ["home"]    # startup home, exactly once
-        planner.calls.clear()
+        # Boot must NOT move the arm — homing happens on the first command
+        # after the operator starts the system (user requirement 2026-07-08).
+        assert planner.calls == [], planner.calls
 
         grab = ActionCommand(3, True, (0, 0, 0), 'grab_arc', "",
                              {'pose': [100.0, 145.0, 75.0, 165.0, 90.0]})
         ex.execute(grab)
-        assert planner.calls == [("arc", (100.0, 145.0, 75.0, 165.0, 90.0)),
+        # First command since boot: force-home first (unknown boot pose;
+        # FakePlanner has no force_home -> falls back to home()), then grab.
+        assert planner.calls == ["home",
+                                 ("arc", (100.0, 145.0, 75.0, 165.0, 90.0)),
                                  "dump", "home"], planner.calls
 
         # Tin still visible next tick (mid-cooldown) -> must NOT re-grab.
@@ -379,12 +383,13 @@ def test_executor_stow_idempotent_and_failed_ik():
     with fake_exec_clock() as clock:
         planner = FakePlanner(ik_ok=False)
         ex = ArmExecutor(planner=planner)
-        planner.calls.clear()
+        assert planner.calls == []          # no movement at boot
 
         stow = ActionCommand(1, True, (0.5, 0, 0), 'stow', "")
-        ex.execute(stow)
+        ex.execute(stow)                    # first command -> force-home once
         ex.execute(stow)                    # already home -> no extra moves
-        assert planner.calls == [], planner.calls
+        assert planner.calls == ["home"], planner.calls
+        planner.calls.clear()
 
         # Unreachable IK grab: no dump, but the arm still returns home.
         ex.execute(ActionCommand(3, True, (0, 0, 0), 'grab_ik', "",
@@ -400,6 +405,53 @@ def test_executor_stow_idempotent_and_failed_ik():
         ex.execute(stow)
         assert planner.calls == [], planner.calls  # _grab already ended home
     print("PASS executor stow idempotence + failed IK grab does not dump")
+
+
+def test_command_write_through():
+    """User-reported bug (2026-07-08): typing 'c1 96.7' did NOTHING because
+    the tracked pose already said 96.7 — but the physical arm had never
+    moved. A commanded channel must ALWAYS be written to the servo, even
+    when tracking claims it's already at the target."""
+    from src.arm.grasp_planner import GraspPlanner
+    p = GraspPlanner()                       # DummyServo kit on dev machines
+    # Simulate tracking being wrong: physical servo somewhere else entirely.
+    p.actuator.kit.servo[0].angle = 50.0
+    assert p._arm[0] != 50.0                 # tracked pose disagrees
+    p.jog_channel(0, 0.0)                    # command == tracked value (no-op diff)
+    assert p.actuator.kit.servo[0].angle == p._arm[0], \
+        "command equal to tracked pose must still be written through"
+
+    # Full-pose moves assert every channel too (home() with tracking already
+    # at home must still command the servos).
+    p.actuator.kit.servo[2].angle = 10.0
+    p.home()
+    assert p.actuator.kit.servo[2].angle == p._arm[2], \
+        "full-pose move must write channels the tracker thinks are in place"
+    print("PASS commands write through stale tracking (jog + full pose)")
+
+
+def test_smooth_move_semantics():
+    """stepped_move v2 (smooth streaming): same (step_deg, step_delay) pace
+    as the old jump-and-sleep version — span/speed total duration — but
+    executed as a fine-grained eased trajectory. Ends EXACTLY on target."""
+    import time as _time
+    from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
+    act = ArmActuator()                          # DummyServo kit on dev machines
+
+    # 20 deg at (5 deg / 0.05 s) = 100 deg/s -> ~0.2 s total.
+    t0 = _time.monotonic()
+    stepped_move(act, [90.0] * 6, [110.0] + [90.0] * 5, step_deg=5.0, step_delay=0.05)
+    dt = _time.monotonic() - t0
+    assert 0.1 < dt < 0.6, f"expected ~0.2s (old pace preserved), got {dt:.3f}s"
+    assert act.kit.servo[0].angle == 110.0       # lands exactly on target
+
+    # instant channels bypass the ramp; no-op moves return immediately.
+    stepped_move(act, [90.0] * 6, [90.0] * 5 + [40.0], instant=(5,))
+    assert act.kit.servo[5].angle == 40.0
+    t0 = _time.monotonic()
+    stepped_move(act, [90.0] * 6, [90.0] * 6)
+    assert _time.monotonic() - t0 < 0.05, "no-op move must not sleep"
+    print("PASS smooth stepped_move keeps pace, lands exact, no-op is instant")
 
 
 # ── Arbitration: the full ground-litter stack ─────────────────────────────
@@ -455,6 +507,8 @@ ALL_TESTS = [
     test_approach_steering,
     test_executor_grab_dump_home_and_cooldown,
     test_executor_stow_idempotent_and_failed_ik,
+    test_command_write_through,
+    test_smooth_move_semantics,
     test_arbitration_stack,
 ]
 

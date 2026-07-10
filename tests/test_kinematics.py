@@ -54,7 +54,9 @@ def main():
 
             elif user_input == 'h':
                 print("back to home position ...")
-                planner.home()
+                # force: responds even when the tracked pose already says
+                # home (no joint feedback — 'h' must always actually command)
+                planner.force_home()
                 continue
 
             elif user_input == 'down':
