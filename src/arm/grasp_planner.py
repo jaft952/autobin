@@ -28,7 +28,7 @@ ARC_LIFT_ARM      = [96.7, 96.7, 100.0, 100.0, 90.0]
 # ground. Pre-lift (CH2/CH3/CH4 -> LIFT) happens before this.
 ARC_GRAB_ORDER    = [0, 4, 2, 3, 1]
 ARC_STEP_DEG      = 2.0
-ARC_STEP_DELAY    = 0.5
+ARC_STEP_DELAY    = 0.15
 
 # ── Real-world tip correction ────────────────────────────────────────────────
 # Ruler-measured 2026-07-04 (FREE mode, cm, z from the chassis deck):
