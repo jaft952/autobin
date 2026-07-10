@@ -15,6 +15,10 @@
   a             ADD SAMPLE to the nearest row: camera pops up -> click -> s
                 (stores clicked pixel-x + CURRENT CH1..CH5 in that row)
   g             GRAB TEST: camera pops up -> click the tin -> s -> arm grabs
+                (ends HOLDING so you can check the grip; 'b' to dump)
+  b             dump the held tin into the onboard bin (bin pose + open)
+  lie / stand   switch the calibration domain (LYING / UPRIGHT grid)
+  brake / coast wheel brake on/off (hold the base while testing)
   q             quit
 
 """
@@ -24,7 +28,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.arc_grasp import (
-    ArcGraspSolver, save_config, NY_TOL_DEFAULT, NX_TOL_DEFAULT,
+    ArcGraspSolver, save_config, row_ny_at, NY_TOL_DEFAULT, NX_TOL_DEFAULT,
 )
 from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
 
@@ -34,6 +38,7 @@ W, H = 1920, 1080
 
 HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
+BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]   # keep = GraspPlanner BIN_DROP_ANGLES
 GRIPPER_OPEN, GRIPPER_CLOSE = 0.0, 40.0
 STEP_DEG, STEP_DELAY = 2.0, 0.15      
 
@@ -126,6 +131,14 @@ class Arm:
         angles = "  ".join(f"{n.split()[0]}={v:.1f}" for n, v in zip(CH_NAMES, self.arm))
         print(f"[pose] {angles}  grip={self.gripper:.1f}")
 
+    def dump_to_bin(self):
+        """Carry the held tin to the onboard bin pose and release it there.
+        Mirrors GraspPlanner.dump_to_bin so manual tests can complete the
+        same grab -> bin cycle the autonomous stack runs."""
+        self.goto(BIN_ARM, "bin pose (carrying)")
+        self.set_gripper(GRIPPER_OPEN)
+        print("[arm] dumped — 'h' to home.")
+
     def grab(self, solved):
         """solved = [CH1..CH5]. Safe ordered grab so nothing sweeps the floor:
 
@@ -185,12 +198,18 @@ class Camera:
                 if not ok:
                     print("  camera read failed")
                     break
-                for r in rows:                 # calibrated arc rows
-                    yy = int(float(r["ny"]) * self.fh)
-                    cv2.line(frame, (0, yy), (self.fw, yy), (0, 200, 200), 1)
-                    for s in r["samples"]:     # sampled azimuth points on the arc
-                        xx = int(float(s["nx"]) * self.fw)
-                        cv2.drawMarker(frame, (xx, yy), (0, 200, 200),
+                for r in rows:                 # calibrated arc CURVES
+                    default_ny = float(r["ny"])
+                    pts = sorted((float(s["nx"]), float(s.get("ny", default_ny)))
+                                 for s in r["samples"])
+                    px = [(int(x * self.fw), int(y * self.fh)) for x, y in pts]
+                    for p1, p2 in zip(px, px[1:]):
+                        cv2.line(frame, p1, p2, (0, 200, 200), 1)
+                    if len(px) == 1:           # single sample: short tick
+                        x0, y0 = px[0]
+                        cv2.line(frame, (x0 - 40, y0), (x0 + 40, y0), (0, 200, 200), 1)
+                    for p in px:               # sampled azimuth points on the arc
+                        cv2.drawMarker(frame, p, (0, 200, 200),
                                        cv2.MARKER_DIAMOND, 10, 1)
                 if state["click"]:
                     cv2.drawMarker(frame, state["click"], (0, 0, 255),
@@ -256,7 +275,7 @@ def main():
         solver.reload()
         print(f"[cfg] saved. {solver.status()}")
 
-    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | brake coast | q")
+    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h b pose st | cam y a g | brake coast | q")
     print("Domains:  lie = calibrate LYING grid, stand = back to UPRIGHT grid.")
     print("          (place the tin in that pose, jog until the grab works, then y/a)")
     print("Wheels:   brake = hold the base (test by pushing it), coast = release.")
@@ -298,6 +317,8 @@ def main():
             arm.set_gripper(GRIPPER_OPEN)
         elif line == "c":
             arm.set_gripper(GRIPPER_CLOSE)
+        elif line == "b":
+            arm.dump_to_bin()         # carry to the bin pose and release
         elif line == "p":
             rows = solver.rows_for(pose)
             if not rows:
@@ -328,7 +349,9 @@ def main():
                 "ny": round(pt[1], 4),
                 "ny_tol": NY_TOL_DEFAULT,
                 "nx_tol": NX_TOL_DEFAULT,
-                "samples": [{"nx": round(pt[0], 4),
+                # samples carry their OWN ny: a constant-radius arc sits
+                # lower in the image at the edges, so the row is a curve.
+                "samples": [{"nx": round(pt[0], 4), "ny": round(pt[1], 4),
                              "arm": [round(v, 1) for v in arm.arm]}],
             }
             cfg[pose].setdefault("rows", []).append(row)
@@ -348,17 +371,21 @@ def main():
             if pt is None:
                 print("cancelled.")
                 continue
-            # attach to the row whose ny is closest to the clicked pixel-y
-            row = min(cfg[pose]["rows"], key=lambda r: abs(float(r["ny"]) - pt[1]))
-            gap = abs(float(row["ny"]) - pt[1])
+            # attach to the row whose CURVE (height at this nx) is closest
+            # to the clicked pixel-y — rows are arcs, not horizontal lines
+            row = min(cfg[pose]["rows"],
+                      key=lambda r: abs(row_ny_at(r, pt[0]) - pt[1]))
+            gap = abs(row_ny_at(row, pt[0]) - pt[1])
             if gap > 2 * float(row.get("ny_tol", NY_TOL_DEFAULT)):
                 print(f"[cal] WARNING: clicked ny={pt[1]:.3f} is far from the nearest "
-                      f"row (ny={float(row['ny']):.3f}) — same arc? Saving anyway; "
-                      f"'y' instead if this was a NEW distance.")
+                      f"row's curve ({row_ny_at(row, pt[0]):.3f} at this nx) — same "
+                      f"arc? Saving anyway; 'y' instead if this was a NEW distance.")
             row.setdefault("samples", []).append(
-                {"nx": round(pt[0], 4), "arm": [round(v, 1) for v in arm.arm]})
-            print(f"[cal] sample added to row ny={float(row['ny']):.3f}: "
-                  f"nx={pt[0]:.4f} arm={[round(v, 1) for v in arm.arm]}")
+                {"nx": round(pt[0], 4), "ny": round(pt[1], 4),
+                 "arm": [round(v, 1) for v in arm.arm]})
+            print(f"[cal] sample added to row (curve ny here "
+                  f"{row_ny_at(row, pt[0]):.3f}): nx={pt[0]:.4f} ny={pt[1]:.4f} "
+                  f"arm={[round(v, 1) for v in arm.arm]}")
             save_and_reload()
         elif line == "g":
             if not camera:
