@@ -92,7 +92,8 @@ ARC_KEY = "arc_grasp"    # key inside the LEGACY shared yaml only
 
 NY_TOL_NEAR_DEFAULT = 0.01   
 
-NX_TOL_DEFAULT = 0.02        
+NX_TOL_DEFAULT = 0.02
+NY_TOL_DEFAULT = 0.02         
 
 POSES = ("upright", "lying")
 
