@@ -2,6 +2,44 @@
 SERVO_MAX_PULSE_US = 2500
 SERVO_RANGE_DEG = 180
 
+# ── Last-commanded pose persistence ──────────────────────────────────────
+# The servos have no position feedback, so software tracks the commanded
+# pose — but that tracking used to die with the process: every tool started
+# by ASSUMING home, and when the physical arm was elsewhere, the first
+# "stepped" move ramped from the wrong start (or not at all) and the
+# write-through snapped the arm at full speed. Persisting the last commanded
+# pose across sessions gives ramps a truthful starting point. (If someone
+# moves the arm BY HAND while unpowered, the file is stale and the first
+# move still snaps — unavoidable without feedback.)
+
+
+def _last_pose_path():
+    from pathlib import Path
+    return Path(__file__).resolve().parents[2] / "arm" / "config" / "last_pose.json"
+
+
+def save_last_pose(angles6):
+    """Persist [CH1..CH5, gripper] after a completed move. Best-effort."""
+    try:
+        import json
+        p = _last_pose_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps([round(float(a), 1) for a in angles6[:6]]))
+    except Exception:
+        pass                                  # persistence must never break a move
+
+
+def load_last_pose():
+    """[CH1..CH5, gripper] from the previous session, or None."""
+    try:
+        import json
+        vals = json.loads(_last_pose_path().read_text())
+        if isinstance(vals, list) and len(vals) == 6:
+            return [max(0.0, min(float(SERVO_RANGE_DEG), float(v))) for v in vals]
+    except Exception:
+        pass
+    return None
+
 try:
     from adafruit_servokit import ServoKit
 except ImportError:

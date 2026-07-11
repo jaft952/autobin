@@ -107,7 +107,8 @@ class CollectLitterLayer(BaseLayer):
                     active=True,
                     motion_vector=(0, 0, 0),      # halt base for the grab
                     arm_action='grab_arc',
-                    arm_params={'pose': solved},
+                    # tin_pose picks the approach order (lying: elbow last)
+                    arm_params={'pose': solved, 'tin_pose': klass},
                     message=(f"ARC GRAB (lying {ang_txt}, CH5={solved[4]:.0f}) "
                              f"@ nx={nx:.2f} ny={ny:.2f}"),
                 )
@@ -121,7 +122,7 @@ class CollectLitterLayer(BaseLayer):
                 active=True,
                 motion_vector=(0, 0, 0),          # halt base for the grab
                 arm_action='grab_arc',
-                arm_params={'pose': solved},
+                arm_params={'pose': solved, 'tin_pose': 'upright'},
                 message=f"ARC GRAB (upright) @ nx={nx:.2f} ny={ny:.2f}",
             )
 

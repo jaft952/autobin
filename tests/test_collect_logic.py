@@ -134,8 +134,8 @@ class FakePlanner:
     def home(self):
         self.calls.append("home")
 
-    def grab_arc_pose(self, pose):
-        self.calls.append(("arc", tuple(round(v, 1) for v in pose)))
+    def grab_arc_pose(self, pose, tin_pose="upright"):
+        self.calls.append(("arc", tuple(round(v, 1) for v in pose), tin_pose))
         return self.arc_ok
 
     def dump_to_bin(self):
@@ -289,11 +289,13 @@ def test_layer3_routes_lying_and_axial():
     cmd = layer.evaluate(sensors)
     assert cmd.active and cmd.arm_action == 'grab_arc', cmd.message
     assert cmd.arm_params['pose'][4] == 180.0, cmd.arm_params
+    assert cmd.arm_params['tin_pose'] == 'lying', cmd.arm_params
     assert "lying" in cmd.message, cmd.message
 
     sensors.pose = {"klass": "axial", "angle": 12.3}    # angle meaningless
     cmd = layer.evaluate(sensors)
     assert cmd.active and cmd.arm_params['pose'][4] == 90.0, cmd.arm_params
+    assert cmd.arm_params['tin_pose'] == 'axial', cmd.arm_params
 
     # upright klass reads the GROUND point (0.5, 0.1): upright grid is
     # EMPTY anyway -> not grabbable
@@ -364,7 +366,7 @@ def test_executor_grab_dump_home_and_cooldown():
         # First command since boot: force-home first (unknown boot pose;
         # FakePlanner has no force_home -> falls back to home()), then grab.
         assert planner.calls == ["home",
-                                 ("arc", (100.0, 145.0, 75.0, 165.0, 90.0)),
+                                 ("arc", (100.0, 145.0, 75.0, 165.0, 90.0), "upright"),
                                  "dump", "home"], planner.calls
 
         # Tin still visible next tick (mid-cooldown) -> must NOT re-grab.
@@ -472,6 +474,52 @@ def test_curved_arc_rows():
     print("PASS curved arc rows (edge dips honored, flat-line lies rejected)")
 
 
+def test_pose_persists_across_sessions():
+    """User-reported (2026-07-11): 'h' in test_arc_live snapped to home at
+    full speed. Root cause: every session started by ASSUMING home, so when
+    the arm was really elsewhere the stepped ramp was a no-op and only the
+    write-through fired (one full-speed jump). The tracked pose is now
+    persisted after every move and reloaded on start, so ramps begin from
+    the arm's true last-commanded position."""
+    from src.arm.grasp_planner import GraspPlanner
+    p = GraspPlanner()
+    p.jog_channel(0, +7.0)                        # move + persist
+    moved_to = p._arm[0]
+
+    q = GraspPlanner()                            # "next session"
+    assert q._arm[0] == moved_to, \
+        "new session must resume the previous session's commanded pose"
+
+    q.force_home()                                # leave a clean state behind
+    r = GraspPlanner()
+    assert r._arm == q._arm and r._gripper == q._gripper
+    print("PASS commanded pose persists across sessions (ramps start true)")
+
+
+def test_grab_order_per_tin_pose():
+    """User-specified approach orders (2026-07-11): the LAST channel is the
+    descent onto the tin — upright: CH2 shoulder; lying: CH3 elbow.
+    Sequence = pre-lift (1,2,3) + pose order + final shoulder lift (1)."""
+    from src.arm.grasp_planner import GraspPlanner
+    p = GraspPlanner()
+    seq = []
+    p._move_one = lambda ch, v: seq.append(ch)     # spy on the channel order
+    p.control_gripper = lambda a: None
+    pose = [100.0, 140.0, 70.0, 160.0, 90.0]
+
+    p.grab_arc_pose(pose)                          # upright (default)
+    assert seq == [1, 2, 3] + [0, 4, 2, 3, 1] + [1], seq
+
+    seq.clear()
+    p.grab_arc_pose(pose, tin_pose="lying")        # elbow (CH3=idx 2) LAST
+    assert seq == [1, 2, 3] + [0, 4, 3, 1, 2] + [1], seq
+
+    seq.clear()
+    p.grab_arc_pose(pose, tin_pose="axial")        # axial grabs like lying
+    assert seq == [1, 2, 3] + [0, 4, 3, 1, 2] + [1], seq
+    print("PASS grab order: upright shoulder-last, lying/axial elbow-last")
+
+
 def test_smooth_move_semantics():
     """stepped_move v2 (smooth streaming): same (step_deg, step_delay) pace
     as the old jump-and-sleep version — span/speed total duration — but
@@ -551,6 +599,8 @@ ALL_TESTS = [
     test_executor_stow_idempotent_and_failed_ik,
     test_command_write_through,
     test_curved_arc_rows,
+    test_pose_persists_across_sessions,
+    test_grab_order_per_tin_pose,
     test_smooth_move_semantics,
     test_arbitration_stack,
 ]
