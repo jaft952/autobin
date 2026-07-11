@@ -30,7 +30,10 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arm.arc_grasp import ArcGraspSolver, row_ny_at, NY_TOL_DEFAULT, NX_TOL_DEFAULT
+from src.arm.arc_grasp import (
+    ArcGraspSolver, row_ny_at,
+    NY_TOL_DEFAULT, NY_TOL_NEAR_DEFAULT, NX_TOL_DEFAULT,
+)
 
 IMGSZ = 640
 INFER_EVERY = 1
@@ -77,7 +80,8 @@ def _classify(solver, nx, ny, pose, angle_deg):
     rs = solver.rows_for(pose)
     heights = sorted((row_ny_at(r, nx), r) for r in rs)
     lo = heights[0][0] - float(heights[0][1].get("ny_tol", NY_TOL_DEFAULT))
-    hi = heights[-1][0] + float(heights[-1][1].get("ny_tol", NY_TOL_DEFAULT))
+    hi = heights[-1][0] + float(heights[-1][1].get("ny_tol_near",
+                                                   NY_TOL_NEAR_DEFAULT))
     if ny < lo:
         return None, "tin TOO FAR - drive forward onto the arc"
     if ny > hi:
@@ -86,17 +90,19 @@ def _classify(solver, nx, ny, pose, angle_deg):
 
 
 def _draw_arcs(frame, solver):
-    """Upright grid in cyan, lying grid in magenta. Rows are CURVES: the
-    same radius sits lower in the image at the edges, so each row is drawn
-    as the polyline through its samples' own (nx, ny) points, with the
-    ny_tol band following the curve."""
+    """Upright grid in cyan, lying grid in magenta. Rows are CURVES drawn as
+    polylines through the samples' own (nx, ny) points. NO filled band —
+    it over-promised: the physically valid spot is ON the line or a little
+    ABOVE it (farther), so we draw the bright arc plus one faint line at
+    the far tolerance edge. Place the tin between those two lines."""
     import cv2
     import numpy as np
     fh, fw = frame.shape[:2]
     for pose, color in (("upright", (0, 220, 220)), ("lying", (220, 0, 220))):
+        faint = tuple(int(c * 0.45) for c in color)
         for r in solver.rows_for(pose):
             default_ny = float(r["ny"])
-            ntol = float(r.get("ny_tol", NY_TOL_DEFAULT))
+            far_tol = float(r.get("ny_tol", NY_TOL_DEFAULT))
             xtol = float(r.get("nx_tol", NX_TOL_DEFAULT))
             pts = sorted((float(s["nx"]), float(s.get("ny", default_ny)))
                          for s in r["samples"])
@@ -104,13 +110,9 @@ def _draw_arcs(frame, solver):
             ext = ([(max(0.0, pts[0][0] - xtol), pts[0][1])] + pts +
                    [(min(1.0, pts[-1][0] + xtol), pts[-1][1])])
             px = np.array([[int(x * fw), int(y * fh)] for x, y in ext], np.int32)
-            # grabbable band: the curve swept +/- its ny_tol
-            tol_px = int(ntol * fh)
-            band = np.vstack([px + [0, -tol_px], (px + [0, tol_px])[::-1]])
-            overlay = frame.copy()
-            cv2.fillPoly(overlay, [band], color)
-            cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, dst=frame)
-            # the arc itself
+            # faint upper line = how far ABOVE the arc still grabs
+            cv2.polylines(frame, [px + [0, -int(far_tol * fh)]], False, faint, 1)
+            # the arc itself — put the tin ON this line or slightly above
             cv2.polylines(frame, [px], False, color, 2)
             for x, y in pts:
                 cv2.drawMarker(frame, (int(x * fw), int(y * fh)), color,
@@ -126,7 +128,9 @@ def main():
     if not solver.ready:
         print("[cfg] no calibration — the viewer runs, but nothing will be grabbable.")
 
-    detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ)
+    # Defaults mirror the runtime: RUNTIME_MODEL_PATH, conf 0.5, device auto
+    # (NCNN export picked up automatically if present).
+    detector = AluminiumCanDetector(imgsz=IMGSZ)
     detector.start()
     arm = _make_arm()
 

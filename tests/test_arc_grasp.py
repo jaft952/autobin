@@ -35,7 +35,8 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.arc_grasp import (
-    ArcGraspSolver, save_config, row_ny_at, NY_TOL_DEFAULT, NX_TOL_DEFAULT,
+    ArcGraspSolver, save_config, row_ny_at,
+    NY_TOL_DEFAULT, NY_TOL_NEAR_DEFAULT, NX_TOL_DEFAULT,
 )
 from src.hardware.actuators.pca9685_driver import (
     ArmActuator, stepped_move, save_last_pose, load_last_pose,
@@ -195,25 +196,45 @@ class Camera:
     capture + manual clicks, i.e. the old behaviour.
     """
 
-    def __init__(self, model_path):
+    def __init__(self, model_path=None):
+        import time as _time
         self.detector = None
         self.cap = None
         try:
-            from src.perception.detector import AluminiumCanDetector
-            # Same resolution as the runtime CameraSensor so calibration and
-            # runtime literally share pixels (no FOV question between them).
+            from src.perception.detector import (
+                AluminiumCanDetector, RUNTIME_MODEL_PATH,
+            )
+            if model_path is None:
+                model_path = RUNTIME_MODEL_PATH   # calibrate with THE runtime model
+            # Same resolution AND confidence as the runtime CameraSensor so
+            # calibration and runtime literally share pixels + detections.
             self.detector = AluminiumCanDetector(model_path=model_path,
+                                                 conf_threshold=0.5,
                                                  frame_width=1280, frame_height=720)
             self.detector.start()
-            frame = self.detector.read_frame()
+            # The Brio returns None for the first few reads after opening —
+            # retry before concluding the camera is broken (a too-strict
+            # single read here used to silently drop the tool into manual
+            # mode, which looked like "the AI never marks the tin").
+            frame = None
+            for _ in range(20):
+                frame = self.detector.read_frame()
+                if frame is not None:
+                    break
+                _time.sleep(0.1)
             if frame is None:
-                raise RuntimeError("camera gave no frame")
+                raise RuntimeError("camera gave no frame after 2s")
             self.fh, self.fw = frame.shape[:2]
-            print(f"✓ camera+YOLO {self.fw}x{self.fh} — 's' stores the "
-                  f"DETECTED point; click only to override.")
+            print(f"✓ camera+YOLO {self.fw}x{self.fh} (model {model_path}) — "
+                  f"'s' stores the DETECTED point; click only to override.")
         except Exception as exc:
+            if self.detector is not None:
+                try:
+                    self.detector.stop()
+                except Exception:
+                    pass
             self.detector = None
-            print(f"[cam] detector unavailable ({exc}) — manual click mode.")
+            print(f"[cam] detector unavailable ({exc}) — MANUAL CLICK MODE.")
             from src.perception.detector import open_camera_capture
             self.cap, self.fw, self.fh, _fps = open_camera_capture(0, 1280, 720)
             print(f"✓ camera {self.fw}x{self.fh}")
@@ -307,6 +328,10 @@ class Camera:
                                         f"! detected {o.klass}, calibrating {pose}",
                                         (10, 62), font, 0.7, (0, 140, 255), 2)
 
+                if self.detector is None:
+                    cv2.putText(shown, "MANUAL MODE - detector unavailable, "
+                                "click the tin", (10, 62), font, 0.7,
+                                (0, 0, 255), 2)
                 if state["click"]:
                     cv2.drawMarker(shown, state["click"], (255, 0, 0),
                                    cv2.MARKER_TILTED_CROSS, 24, 2)
@@ -360,9 +385,10 @@ def handle_servo_command(arm: Arm, line: str) -> bool:
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="Arc-grasp calibration tool")
-    ap.add_argument("--model", default="src/models/inference_20062026.pt",
-                    help="YOLO weights for auto point-pick (same as runtime "
-                         "CameraSensor); falls back to manual clicks if missing")
+    ap.add_argument("--model", default=None,
+                    help="YOLO weights for auto point-pick; default = the "
+                         "runtime model (RUNTIME_MODEL_PATH in detector.py); "
+                         "falls back to manual clicks if it can't load")
     args = ap.parse_args()
 
     solver = ArcGraspSolver()
@@ -487,7 +513,8 @@ def main():
                 continue
             row = {
                 "ny": round(pt[1], 4),
-                "ny_tol": NY_TOL_DEFAULT,
+                "ny_tol": NY_TOL_DEFAULT,          # margin ABOVE the arc (far)
+                "ny_tol_near": NY_TOL_NEAR_DEFAULT,  # ~zero BELOW (closer = overshoot)
                 "nx_tol": NX_TOL_DEFAULT,
                 # samples carry their OWN ny: a constant-radius arc sits
                 # lower in the image at the edges, so the row is a curve.
