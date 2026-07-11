@@ -89,14 +89,10 @@ LEGACY_CONFIG_PATH = (Path(__file__).resolve().parents[1]
 CONFIG_PATH = Path(__file__).parent / "config" / "arc_grasp.yaml"
 ARC_KEY = "arc_grasp"    # key inside the LEGACY shared yaml only
 
-NY_TOL_DEFAULT = 0.05        # margin ABOVE the farthest arc (tin slightly
-                             # beyond the line is still reachable)
-NY_TOL_NEAR_DEFAULT = 0.01   # margin BELOW the nearest arc — nearly zero:
-                             # user-observed (2026-07-11) that a tin closer
-                             # than the calibrated line gets overshot; the
-                             # valid zone is ON the line or a bit above it,
-                             # never meaningfully below.
-NX_TOL_DEFAULT = 0.05        # horizontal extension past a row's sampled span
+
+NY_TOL_NEAR_DEFAULT = 0.01   
+
+NX_TOL_DEFAULT = 0.02        
 
 POSES = ("upright", "lying")
 
