@@ -2,7 +2,9 @@
 
 from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, GRIPPER_UP, GRIPPER_LEVEL
 from src.arm.analytical_ik import AnalyticalArmIK
-from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
+from src.hardware.actuators.pca9685_driver import (
+    ArmActuator, stepped_move, save_last_pose, load_last_pose,
+)
 
 
 
@@ -20,13 +22,18 @@ GRIPPER_CLOSED = 40.0
 # step pacing invalidates the calibrated poses' behaviour (links sag
 # differently mid-path and the gripper ploughs the floor).
 ARC_LIFT_ARM      = [96.7, 96.7, 100.0, 100.0, 90.0]
-# Safe grab order (channel indices): CH1 base -> CH5 roll -> CH3 elbow ->
-# CH4 wrist -> CH2 shoulder (LAST = the only channel that lowers onto the
-# tin). CH5 is set EARLY, while the arm is still lifted, so a stale wrist
-# roll from a previous grab (e.g. 180 from a lying tin) is corrected before
-# anything nears the floor — otherwise the gripper can be driven into the
-# ground. Pre-lift (CH2/CH3/CH4 -> LIFT) happens before this.
-ARC_GRAB_ORDER    = [0, 4, 2, 3, 1]
+# Safe grab orders (channel indices), PER TIN POSE (user-tuned 2026-07-11).
+# Common to both: CH1 base first, CH5 roll EARLY while the arm is still
+# lifted (a stale roll from a previous grab must be corrected before
+# anything nears the floor), and the final channel is the one that lowers
+# onto the tin. That final channel differs by pose:
+#   upright: ... -> CH3 -> CH4 -> CH2 shoulder LAST (descends onto the rim)
+#   lying:   ... -> CH4 -> CH2 -> CH3 elbow LAST (descends onto the body)
+# Pre-lift (CH2/CH3/CH4 -> LIFT) happens before either sequence.
+ARC_GRAB_ORDER = {
+    "upright": [0, 4, 2, 3, 1],   # CH1 -> CH5 -> CH3 -> CH4 -> CH2
+    "lying":   [0, 4, 3, 1, 2],   # CH1 -> CH5 -> CH4 -> CH2 -> CH3
+}
 ARC_STEP_DEG      = 2.0
 ARC_STEP_DELAY    = 0.15
 
@@ -68,8 +75,17 @@ class GraspPlanner:
         self.ik = AnalyticalArmIK()           # primary: closed-form solver
         self.kinematics = ArmKinematics()     # backup: numerical ikpy solver
         self.actuator = ArmActuator()         # Grabs hardware connection
-        self._arm = list(HOME_ANGLES)         # assumed current pose (for gentle moves)
-        self._gripper = GRIPPER_OPEN
+        # Tracked pose seeds every stepped ramp. Prefer the pose persisted by
+        # the PREVIOUS session (any tool/planner) over blindly assuming home —
+        # a wrong start turns "stepped" moves into full-speed snaps.
+        last = load_last_pose()
+        if last is not None:
+            self._arm, self._gripper = last[:5], last[5]
+            print(f"[GraspPlanner] resuming last commanded pose: "
+                  f"{[round(v, 1) for v in self._arm]} grip={self._gripper:.1f}")
+        else:
+            self._arm = list(HOME_ANGLES)     # no saved pose: assume home
+            self._gripper = GRIPPER_OPEN
 
     def _move_stepped(self, target_arm, target_gripper):
         """Gently drive CH1-5 (stepped together) + CH6 gripper (instant) to a pose
@@ -83,6 +99,7 @@ class GraspPlanner:
         for ch, v in enumerate(target):
             self.actuator.set_channel_angle(ch, v)
         self._arm, self._gripper = list(target_arm), float(target_gripper)
+        save_last_pose(self._arm + [self._gripper])
 
     def _move_one(self, ch: int, value: float):
         """Move a SINGLE channel gently (arc-grasp pacing), holding the rest.
@@ -99,25 +116,30 @@ class GraspPlanner:
             self._arm[ch] = target[ch]
         else:
             self._gripper = target[ch]
+        save_last_pose(self._arm + [self._gripper])
 
-    def grab_arc_pose(self, solved: list) -> bool:
+    def grab_arc_pose(self, solved: list, tin_pose: str = "upright") -> bool:
         """Execute the tuned arc-grasp sequence at a solved [CH1..CH5] pose
         (from ArcGraspSolver): open, lift high, approach in the safe channel
-        order (CH1->CH5->CH3->CH4->CH2), close, lift shoulder — ends HOLDING
-        the can. Follow with dump_to_bin() to deposit it."""
+        order FOR THIS TIN POSE (upright: shoulder last; lying: elbow last),
+        close, lift shoulder — ends HOLDING the can. Follow with
+        dump_to_bin() to deposit it. tin_pose: "upright" | "lying" | "axial"
+        ("axial" grabs like lying)."""
         if solved is None or len(solved) < 5:
             print("[GraspPlanner] grab_arc_pose: invalid pose, arm NOT moved.")
             return False
-        print(f"[GraspPlanner] Arc grab at CH1-5 = {solved}")
+        order = ARC_GRAB_ORDER["lying" if tin_pose in ("lying", "axial")
+                               else "upright"]
+        print(f"[GraspPlanner] Arc grab ({tin_pose}) at CH1-5 = {solved}")
         self.control_gripper("open")
         # 1. lift to a high/folded pose at the current azimuth so the base
         #    rotation and descent below can't drag the gripper on the floor.
         for ch in (1, 2, 3):                     # CH2 shoulder, CH3 elbow, CH4 wrist
             self._move_one(ch, ARC_LIFT_ARM[ch])
-        # 2. approach: CH1 base -> CH5 roll (WHILE HIGH) -> CH3 -> CH4 -> CH2
-        #    shoulder (final descent, LAST). Setting CH5 before descending is
-        #    what stops a stale roll from a previous grab hitting the floor.
-        for ch in ARC_GRAB_ORDER:               # [0, 4, 2, 3, 1]
+        # 2. approach in the pose-specific order; the last channel is the
+        #    one that lowers onto the tin. CH5 is set while still high so a
+        #    stale roll from a previous grab can't hit the floor.
+        for ch in order:
             self._move_one(ch, float(solved[ch]))
         self.control_gripper("close")
         self._move_one(1, ARC_LIFT_ARM[1])       # lift shoulder back up, holding

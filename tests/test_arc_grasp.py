@@ -16,7 +16,11 @@
                 Click the image only to OVERRIDE a bad detection ('x' clears).
   a             ADD SAMPLE to the nearest row: same auto-pick flow -> s
                 (stores the point's nx AND ny + CURRENT CH1..CH5 — rows are
-                 curves, the edges of an arc sit lower in the image)
+                 curves, the edges of an arc sit lower in the image).
+                REPLACES any existing sample within nx_tol of the new one,
+                so re-calibrating a spot overwrites instead of accumulating.
+  ls            list rows + samples (with indices) of the active domain
+  del R S       delete sample S of row R (see 'ls'; highest index first)
   g             GRAB TEST: camera pops up -> auto point -> s -> arm grabs
                 (ends HOLDING so you can check the grip; 'b' to dump)
   b             dump the held tin into the onboard bin (bin pose + open)
@@ -33,7 +37,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.arm.arc_grasp import (
     ArcGraspSolver, save_config, row_ny_at, NY_TOL_DEFAULT, NX_TOL_DEFAULT,
 )
-from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move
+from src.hardware.actuators.pca9685_driver import (
+    ArmActuator, stepped_move, save_last_pose, load_last_pose,
+)
 
 
 HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
@@ -44,12 +50,15 @@ STEP_DEG, STEP_DELAY = 2.0, 0.15
 
 
 
-# Safe grab order (channel indices): CH1 base -> CH5 roll -> CH3 elbow ->
-# CH4 wrist -> CH2 shoulder (LAST = final descent onto the tin). CH5 is set
-# EARLY, while the arm is still lifted, so a stale roll from a previous grab
-# (e.g. 180 from a lying tin) is corrected before anything comes near the
-# floor. Gripper (CH6) closes after this, then CH2 lifts back up.
-GRAB_APPROACH_ORDER = [0, 4, 2, 3, 1]
+# Safe grab orders (channel indices) PER TIN POSE — keep in sync with
+# grasp_planner.ARC_GRAB_ORDER. CH1 first, CH5 roll EARLY (while lifted, so
+# a stale roll from a previous grab can't hit the floor); the LAST channel
+# is the one that lowers onto the tin, and it differs by pose:
+#   upright: CH2 shoulder last    lying: CH3 elbow last (user 2026-07-11)
+GRAB_APPROACH_ORDER = {
+    "upright": [0, 4, 2, 3, 1],   # CH1 -> CH5 -> CH3 -> CH4 -> CH2
+    "lying":   [0, 4, 3, 1, 2],   # CH1 -> CH5 -> CH4 -> CH2 -> CH3
+}
 
 CH_NAMES = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist", "CH5 roll", "CH6 grip"]
 
@@ -77,10 +86,17 @@ class Arm:
             print(f"[wheels] no motor driver ({exc}); grabs run without brake.")
         # NOTHING moves on startup (calibration tools must never surprise-
         # move the arm; same policy as servo_jog.py). The tracked pose is
-        # ASSUMED to be home — if the arm isn't actually there, press 'h'
-        # first: it force-commands home regardless of the tracked pose.
-        print("[arm] startup: no movement. Tracked pose assumes HOME — press "
-              "'h' to force-home if the arm isn't actually there.")
+        # loaded from the LAST SESSION's persisted pose when available —
+        # that's what makes 'h' ramp smoothly instead of snapping: the
+        # stepped moves finally know where the arm really is.
+        last = load_last_pose()
+        if last is not None:
+            self.arm, self.gripper = last[:5], last[5]
+            print(f"[arm] startup: no movement. Resuming last commanded pose "
+                  f"{[round(v, 1) for v in self.arm]} grip={self.gripper:.1f}.")
+        else:
+            print("[arm] startup: no movement. No saved pose — assuming HOME; "
+                  "press 'h' to force-home if the arm isn't actually there.")
 
     def force_home(self):
         """Step every channel to HOME + open gripper, gently. goto/_one ramp
@@ -115,6 +131,7 @@ class Arm:
             self.arm[ch] = target[ch]
         else:
             self.gripper = target[ch]
+        save_last_pose(list(self.arm) + [self.gripper])
 
     def goto(self, arm5, label=""):
         if label:
@@ -137,24 +154,25 @@ class Arm:
         self.set_gripper(GRIPPER_OPEN)
         print("[arm] dumped — 'h' to home.")
 
-    def grab(self, solved):
+    def grab(self, solved, tin_pose="upright"):
         """solved = [CH1..CH5]. Safe ordered grab so nothing sweeps the floor:
 
           1. lift to a high/folded pose (CH2/CH3/CH4) at the current azimuth
-          2. approach in order CH1 base -> CH5 roll -> CH3 -> CH4 -> CH2
-             (shoulder LAST = the only channel that lowers onto the tin), so
-             the wrist ROLL is set while the arm is still high — a stale roll
-             from a previous (e.g. lying) grab can no longer hit the ground
+          2. approach in the POSE-SPECIFIC order (upright: shoulder last,
+             lying: elbow last) — CH5 roll is set while the arm is still
+             high, so a stale roll from a previous grab can't hit the ground
           3. close gripper (CH6), then lift the shoulder back up, holding
 
         Wheels are braked the whole time so the shaking can't drift the base."""
-        print(f"[grab] pose CH1-5 = {solved}")
+        order = GRAB_APPROACH_ORDER["lying" if tin_pose in ("lying", "axial")
+                                    else "upright"]
+        print(f"[grab] ({tin_pose}) pose CH1-5 = {solved}")
         self.brake_wheels()
         try:
             self.set_gripper(GRIPPER_OPEN)
             for ch in (1, 2, 3):                 # CH2, CH3, CH4 -> lift high
                 self._one(ch, LIFT_ARM[ch])
-            for ch in GRAB_APPROACH_ORDER:       # CH1, CH5, CH3, CH4, CH2(down)
+            for ch in order:                     # last channel = the descent
                 self._one(ch, solved[ch])
             self.set_gripper(GRIPPER_CLOSE)      # CH6 close on the tin
             self._one(1, LIFT_ARM[1])            # lift shoulder back up, holding
@@ -368,7 +386,7 @@ def main():
         solver.reload()
         print(f"[cfg] saved. {solver.status()}")
 
-    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h b pose st | cam y a g | brake coast | q")
+    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h b pose st ls del | cam y a g | brake coast | q")
     print("Domains:  lie = calibrate LYING grid, stand = back to UPRIGHT grid.")
     print("          (place the tin in that pose, jog until the grab works, then y/a)")
     print("Wheels:   brake = hold the base (test by pushing it), coast = release.")
@@ -425,6 +443,34 @@ def main():
             arm.print_pose()
         elif line == "st":
             print(f"[cfg] {solver.status()}")
+        elif line == "ls":
+            rows = cfg[pose].get("rows", [])
+            if not rows:
+                print(f"no {pose} rows.")
+                continue
+            for ri, r in enumerate(rows):
+                r.setdefault("samples", []).sort(key=lambda s: float(s["nx"]))
+                print(f"row {ri}: ny={r['ny']}  ny_tol={r.get('ny_tol', NY_TOL_DEFAULT)}  "
+                      f"nx_tol={r.get('nx_tol', NX_TOL_DEFAULT)}")
+                for si, s in enumerate(r["samples"]):
+                    ny_txt = (f"ny={s['ny']}" if "ny" in s
+                              else f"ny=({r['ny']} legacy-flat)")
+                    print(f"   [{si}] nx={s['nx']}  {ny_txt}  arm={s['arm']}")
+            print("delete with: del <row> <sample>   (highest index first!)")
+        elif line.startswith("del "):
+            parts = line.split()
+            try:
+                ri, si = int(parts[1]), int(parts[2])
+                row = cfg[pose]["rows"][ri]
+                row["samples"].sort(key=lambda s: float(s["nx"]))
+                gone = row["samples"].pop(si)
+                print(f"[cal] deleted row {ri} sample [{si}] nx={gone['nx']}")
+                if not row["samples"]:
+                    cfg[pose]["rows"].pop(ri)
+                    print(f"[cal] row {ri} had no samples left — row removed.")
+                save_and_reload()
+            except (IndexError, ValueError, KeyError) as e:
+                print(f"usage: del <row> <sample> — see 'ls' for indices ({e})")
         elif line == "cam":
             if camera:
                 camera.pick_point(solver.rows_for(pose), f"viewing only ({pose})",
@@ -474,11 +520,25 @@ def main():
                 print(f"[cal] WARNING: clicked ny={pt[1]:.3f} is far from the nearest "
                       f"row's curve ({row_ny_at(row, pt[0]):.3f} at this nx) — same "
                       f"arc? Saving anyway; 'y' instead if this was a NEW distance.")
-            row.setdefault("samples", []).append(
-                {"nx": round(pt[0], 4), "ny": round(pt[1], 4),
-                 "arm": [round(v, 1) for v in arm.arm]})
+            # REPLACE any existing sample(s) within nx_tol of the new one —
+            # re-calibrating the same spot must overwrite, not accumulate.
+            # (Legacy flat samples mixed with new ny-carrying ones make the
+            # curve zigzag; this sweeps them out as you re-add each side.)
+            new_nx = round(pt[0], 4)
+            tol = float(row.get("nx_tol", NX_TOL_DEFAULT))
+            samples = row.setdefault("samples", [])
+            stale = [s for s in samples if abs(float(s["nx"]) - new_nx) <= tol]
+            for s in stale:
+                samples.remove(s)
+            if stale:
+                print(f"[cal] replaced {len(stale)} old sample(s) within "
+                      f"nx±{tol} of {new_nx} (old nx: "
+                      f"{[round(float(s['nx']), 3) for s in stale]})")
+            samples.append({"nx": new_nx, "ny": round(pt[1], 4),
+                            "arm": [round(v, 1) for v in arm.arm]})
+            samples.sort(key=lambda s: float(s["nx"]))
             print(f"[cal] sample added to row (curve ny here "
-                  f"{row_ny_at(row, pt[0]):.3f}): nx={pt[0]:.4f} ny={pt[1]:.4f} "
+                  f"{row_ny_at(row, pt[0]):.3f}): nx={new_nx} ny={pt[1]:.4f} "
                   f"arm={[round(v, 1) for v in arm.arm]}")
             save_and_reload()
         elif line == "g":
@@ -501,7 +561,7 @@ def main():
             if pose == "lying":
                 print("[grab] lying test assumes tin points AT the robot "
                       f"(CH5={solved[4]:.0f}); angled tins: test_arc_live.py")
-            arm.grab(solved)
+            arm.grab(solved, tin_pose=pose)
         elif handle_servo_command(arm, line):
             pass
         else:

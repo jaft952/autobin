@@ -12,9 +12,10 @@ main loop hands the winning command here:
     'stow'/'retract'/     -                         ensure the arm is at the
     'deploy'                                        home/travel pose (no-op if
                                                     already there)
-    'grab_arc'            {'pose': [CH1..CH5]}      tuned arc sequence at the
-                                                    solved pose, then dump into
-                                                    the onboard bin, then home
+    'grab_arc'            {'pose': [CH1..CH5],      tuned arc sequence at the
+                           'tin_pose': 'upright'|   solved pose (channel order
+                           'lying'|'axial'}         differs per tin pose), then
+                                                    dump into the bin, then home
     'grab_ik'             {'target_m': (x, y)}      IK move_to on the floor
                                                     point, close, dump, home
     'stop' / None         -                         nothing (arm moves are
@@ -73,8 +74,10 @@ class ArmExecutor:
             self._ensure_home()
             return
         if action == 'grab_arc':
-            pose = (command.arm_params or {}).get('pose')
-            self._grab(lambda: self.planner.grab_arc_pose(pose))
+            params = command.arm_params or {}
+            pose = params.get('pose')
+            tin_pose = params.get('tin_pose', 'upright')
+            self._grab(lambda: self.planner.grab_arc_pose(pose, tin_pose=tin_pose))
             return
         if action == 'grab_ik':
             target = (command.arm_params or {}).get('target_m')

@@ -134,6 +134,7 @@ def main():
     show = True
     result = None
     solved = None
+    pose = "upright"          # updated per detection; used by 'g' for the order
     i = 0
 
     try:
@@ -205,7 +206,9 @@ def main():
                 elif arm is None:
                     print(f"[grab] (no hardware) would send {solved}")
                 else:
-                    arm.grab(solved)     # ends HOLDING — press 'b' to dump
+                    # ends HOLDING — press 'b' to dump; the approach order
+                    # follows the detected tin pose (lying: elbow last)
+                    arm.grab(solved, tin_pose=pose)
             if key == ord("b"):
                 if arm is None:
                     print("[bin] (no hardware) would dump to bin")
