@@ -15,6 +15,11 @@ from ultralytics import YOLO
 
 from src.perception.orientation import Orientation, estimate_orientation
 
+# THE production model — single source of truth. CameraSensor (runtime),
+# the calibration tools and the NCNN export all read this constant, so
+# switching to a newly trained checkpoint is a ONE-LINE change here.
+RUNTIME_MODEL_PATH = "src/models/best.pt"
+
 
 @dataclass
 class BoundingBox:
@@ -136,13 +141,13 @@ def _filter_contained_boxes(detections, contain_thresh=0.8):
 
 
 class AluminiumCanDetector:
-    DEFAULT_MODEL_PATH = "src/models/yolov11n-seg.pt"
+    DEFAULT_MODEL_PATH = RUNTIME_MODEL_PATH
 
     def __init__(
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.8,
+        conf_threshold: float = 0.5,       # keep = runtime CameraSensor
         frame_width: int = 1920,
         frame_height: int = 1080,
         device=None,

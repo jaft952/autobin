@@ -474,6 +474,31 @@ def test_curved_arc_rows():
     print("PASS curved arc rows (edge dips honored, flat-line lies rejected)")
 
 
+def test_asymmetric_ny_band():
+    """User-observed (2026-07-11): the valid spot is ON the arc or a little
+    ABOVE it (farther); a tin BELOW the line (closer) gets overshot. The
+    old symmetric +/-ny_tol band lied on the near side."""
+    path = Path(tempfile.mkdtemp()) / "arc_grasp.yaml"
+    save_config({
+        "version": 3,
+        "upright": {"rows": [{
+            "ny": 0.50, "ny_tol": 0.05, "nx_tol": 0.05, "samples": [
+                {"nx": 0.2, "ny": 0.50, "arm": [60.0, 140.0, 70.0, 160.0, 90.0]},
+                {"nx": 0.8, "ny": 0.50, "arm": [140.0, 140.0, 70.0, 160.0, 90.0]},
+            ]}]},
+        "lying": {"rows": []},
+    }, path)
+    solver = ArcGraspSolver(path)
+
+    assert solver.solve(0.5, 0.50) is not None      # on the line
+    assert solver.solve(0.5, 0.46) is not None      # a little ABOVE: ok (far tol)
+    assert solver.solve(0.5, 0.505) is not None     # hair below: detection jitter
+    # Clearly BELOW the line (closer): the old +/-0.05 band accepted this,
+    # the arm overshot the tin. Now rejected (near tol default 0.01).
+    assert solver.solve(0.5, 0.53) is None
+    print("PASS asymmetric band: above-line ok, below-line rejected")
+
+
 def test_pose_persists_across_sessions():
     """User-reported (2026-07-11): 'h' in test_arc_live snapped to home at
     full speed. Root cause: every session started by ASSUMING home, so when
@@ -599,6 +624,7 @@ ALL_TESTS = [
     test_executor_stow_idempotent_and_failed_ik,
     test_command_write_through,
     test_curved_arc_rows,
+    test_asymmetric_ny_band,
     test_pose_persists_across_sessions,
     test_grab_order_per_tin_pose,
     test_smooth_move_semantics,

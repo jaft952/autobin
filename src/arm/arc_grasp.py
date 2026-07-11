@@ -89,8 +89,14 @@ LEGACY_CONFIG_PATH = (Path(__file__).resolve().parents[1]
 CONFIG_PATH = Path(__file__).parent / "config" / "arc_grasp.yaml"
 ARC_KEY = "arc_grasp"    # key inside the LEGACY shared yaml only
 
-NY_TOL_DEFAULT = 0.05    # vertical band extension past the end rows
-NX_TOL_DEFAULT = 0.05    # horizontal extension past a row's sampled span
+NY_TOL_DEFAULT = 0.05        # margin ABOVE the farthest arc (tin slightly
+                             # beyond the line is still reachable)
+NY_TOL_NEAR_DEFAULT = 0.01   # margin BELOW the nearest arc — nearly zero:
+                             # user-observed (2026-07-11) that a tin closer
+                             # than the calibrated line gets overshot; the
+                             # valid zone is ON the line or a bit above it,
+                             # never meaningfully below.
+NX_TOL_DEFAULT = 0.05        # horizontal extension past a row's sampled span
 
 POSES = ("upright", "lying")
 
@@ -297,7 +303,9 @@ class ArcGraspSolver:
         hi_ny, hi_row = curves[-1]
         if ny < lo_ny - float(lo_row.get("ny_tol", NY_TOL_DEFAULT)):
             return None                    # too far, above the farthest arc
-        if ny > hi_ny + float(hi_row.get("ny_tol", NY_TOL_DEFAULT)):
+        # Below the nearest arc the tolerance is ASYMMETRIC and tiny: a tin
+        # closer than the calibrated line gets overshot by the grab pose.
+        if ny > hi_ny + float(hi_row.get("ny_tol_near", NY_TOL_NEAR_DEFAULT)):
             return None                    # too close, below the nearest arc
         ny = min(max(ny, lo_ny), hi_ny)    # clamp into the strip
         if len(curves) == 1:

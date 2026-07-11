@@ -28,7 +28,9 @@ import threading
 import time
 
 from src.hardware.sensors.interfaces import SensorInterface
-from src.perception.detector import AluminiumCanDetector, DetectionResult
+from src.perception.detector import (
+    AluminiumCanDetector, DetectionResult, RUNTIME_MODEL_PATH,
+)
 
 # If the newest inference result is older than this, report "no detection"
 # instead of acting on a frozen scene.
@@ -47,7 +49,7 @@ class CameraSensor(SensorInterface):
 
     def __init__(
         self,
-        model_path: str = "src/models/inference_20062026.pt",
+        model_path: str = RUNTIME_MODEL_PATH,   # single source of truth
         camera_index: int = 0,
         conf_threshold: float = 0.5,
         frame_width: int = 1280,
