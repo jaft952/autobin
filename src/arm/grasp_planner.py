@@ -4,6 +4,7 @@ from src.arm.kinematics import ArmKinematics, GRIPPER_DOWN, GRIPPER_UP, GRIPPER_
 from src.arm.analytical_ik import AnalyticalArmIK
 from src.hardware.actuators.pca9685_driver import (
     ArmActuator, stepped_move, save_last_pose, load_last_pose,
+    clamp_channel_angle,
 )
 
 
@@ -12,8 +13,14 @@ HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]
 BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]
 GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]
 
-GRIPPER_OPEN = 0.0
-GRIPPER_CLOSED = 40.0
+# Gripper commands for the MG996R gear gripper, SAFE WINDOW 0..60 deg
+# (user-measured 2026-07-12; enforced by pca9685_driver.CHANNEL_ANGLE_LIMITS).
+# OPEN parks a few degrees OFF the end-stop — parking ON a stop is the silent
+# stall that cooked two servos. CLOSE is PROVISIONAL: assumes the 0-side is
+# "open" like the old meshing; tune on a real can (step until 1-3 deg past
+# contact, no more) and keep in sync with tests/test_arc_grasp.py.
+GRIPPER_OPEN = 5.0
+GRIPPER_CLOSED = 20.0
 
 # ── Arc-grasp execution sequence (ported from tests/test_arc_grasp.py) ───────
 # The arc calibration poses were tuned WITH this exact sequence, so execution
@@ -109,7 +116,9 @@ class GraspPlanner:
         pose already matches the target."""
         start = list(self._arm) + [self._gripper]
         target = list(start)
-        target[ch] = max(0.0, min(180.0, float(value)))
+        # clamp through the per-channel limits so the TRACKED pose can never
+        # drift above what the hardware actually accepted (e.g. gripper 60)
+        target[ch] = clamp_channel_angle(ch, float(value))
         stepped_move(self.actuator, start, target, ARC_STEP_DEG, ARC_STEP_DELAY)
         self.actuator.set_channel_angle(ch, target[ch])
         if ch < 5:

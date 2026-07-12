@@ -13,8 +13,12 @@ SERVO_RANGE_DEG = 180
 # CALIBRATE ON THE PI with tests/servo_jog.py: from 90 step CH6 downward in
 # small steps; the FIRST position where it buzzes/strains is past the limit
 # — back off ~5 deg and put that here. Same toward closing.
-GRIPPER_MIN_DEG = 0.0     # TODO(Pi jog test): raise! e.g. 15-25 for MG996R
-GRIPPER_MAX_DEG = 180.0   # TODO(Pi jog test): lower to just past 'closed'
+# USER-MEASURED on the Pi 2026-07-12 (MG996R meshed into the gear gripper,
+# jog test): jaws travel freely over servo commands 0..60 deg; beyond 60 the
+# linkage hits its stop (the old YF-6125MG-era commands like servo_jog's
+# neutral 80 are PAST it — the clamp below is what keeps them harmless now).
+GRIPPER_MIN_DEG = 0.0
+GRIPPER_MAX_DEG = 60.0
 CHANNEL_ANGLE_LIMITS = {5: (GRIPPER_MIN_DEG, GRIPPER_MAX_DEG)}
 
 

@@ -40,13 +40,16 @@ from src.arm.arc_grasp import (
 )
 from src.hardware.actuators.pca9685_driver import (
     ArmActuator, stepped_move, save_last_pose, load_last_pose,
+    clamp_channel_angle,
 )
 
 
 HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
 BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]   # keep = GraspPlanner BIN_DROP_ANGLES
-GRIPPER_OPEN, GRIPPER_CLOSE = 0.0, 40.0
+# Safe window 0..60 (measured 2026-07-12, MG996R meshing); OPEN off the
+# stop, CLOSE provisional — tune on a can, keep = grasp_planner values.
+GRIPPER_OPEN, GRIPPER_CLOSE = 5.0, 20.0
 STEP_DEG, STEP_DELAY = 2.0, 0.15      
 
 
@@ -156,7 +159,8 @@ class Arm:
     def _one(self, ch, value):
         start = list(self.arm) + [self.gripper]
         target = list(start)
-        target[ch] = max(0.0, min(180.0, float(value)))
+        # per-channel limits so tracking never exceeds what hardware accepted
+        target[ch] = clamp_channel_angle(ch, float(value))
         stepped_move(self.act, start, target, STEP_DEG, STEP_DELAY)
         # WRITE-THROUGH guarantee: the commanded channel ALWAYS receives its
         # target, even when the tracked pose claims it's already there.
