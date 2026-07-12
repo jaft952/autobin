@@ -63,6 +63,43 @@ GRAB_APPROACH_ORDER = {
 
 CH_NAMES = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist", "CH5 roll", "CH6 grip"]
 
+# ── Row attachment for 'a' ───────────────────────────────────────────────
+# Samples on ONE arc share the CH2/CH3/CH4 fold (one radius = one posture);
+# only CH1 (azimuth) and CH5 (roll baseline) vary along the arc. So the
+# jogged POSTURE is the reliable key for "which row does this sample belong
+# to". Nearest-curve-ny alone mis-attached EDGE samples (user-hit
+# 2026-07-11): the arc dips at the edges, but the curve can't know that
+# before the edge sample exists — chicken and egg.
+POSE_ATTACH_CHANNELS = (1, 2, 3)      # CH2, CH3, CH4
+POSE_ATTACH_AMBIGUOUS_DEG = 15.0      # postures closer than this: ny decides
+POSE_ATTACH_NEW_ARC_DEG = 45.0        # nothing this close: probably a new arc
+
+
+def choose_row_for_sample(rows, cur_arm, nx, ny):
+    """Pick the row a new sample belongs to: best CH2-4 posture match,
+    falling back to nearest curve-ny only when postures are ambiguous.
+    Returns (row, posture_dist_deg, note)."""
+    def dist(r):
+        ss = r.get("samples") or []
+        if not ss:
+            return float("inf")
+        return min(sum(abs(float(s["arm"][i]) - float(cur_arm[i]))
+                       for i in POSE_ATTACH_CHANNELS) for s in ss)
+
+    scored = sorted(rows, key=dist)
+    best = scored[0]
+    best_d = dist(best)
+    note = ""
+    if len(scored) > 1 and dist(scored[1]) - best_d < POSE_ATTACH_AMBIGUOUS_DEG:
+        cands = [r for r in scored if dist(r) - best_d < POSE_ATTACH_AMBIGUOUS_DEG]
+        best = min(cands, key=lambda r: abs(row_ny_at(r, nx) - ny))
+        best_d = dist(best)
+        note = "postures ambiguous -> nearest curve decided"
+    elif best_d > POSE_ATTACH_NEW_ARC_DEG:
+        note = ("current CH2-4 matches NO row well — new distance? "
+                "consider 'y' instead")
+    return best, best_d, note
+
 
 class Arm:
     """Tracks pose and moves ONE channel at a time, gently.
@@ -538,15 +575,18 @@ def main():
             if pt is None:
                 print("cancelled.")
                 continue
-            # attach to the row whose CURVE (height at this nx) is closest
-            # to the clicked pixel-y — rows are arcs, not horizontal lines
-            row = min(cfg[pose]["rows"],
-                      key=lambda r: abs(row_ny_at(r, pt[0]) - pt[1]))
+            # attach by POSTURE: one arc = one CH2-4 fold, so the row whose
+            # samples match the currently jogged CH2-4 is the right home.
+            # (Nearest-curve-ny mis-attached edge samples — the dip at the
+            # edge isn't in the curve until the edge sample exists.)
+            row, pdist, note = choose_row_for_sample(
+                cfg[pose]["rows"], arm.arm, pt[0], pt[1])
+            print(f"[cal] attach by posture: CH2-4 distance {pdist:.0f} deg"
+                  + (f" — {note}" if note else ""))
             gap = abs(row_ny_at(row, pt[0]) - pt[1])
             if gap > 2 * float(row.get("ny_tol", NY_TOL_DEFAULT)):
-                print(f"[cal] WARNING: clicked ny={pt[1]:.3f} is far from the nearest "
-                      f"row's curve ({row_ny_at(row, pt[0]):.3f} at this nx) — same "
-                      f"arc? Saving anyway; 'y' instead if this was a NEW distance.")
+                print(f"[cal] note: clicked ny={pt[1]:.3f} is {gap:.3f} from this "
+                      f"row's current curve — fine at an edge (arcs dip there).")
             # REPLACE any existing sample(s) within nx_tol of the new one —
             # re-calibrating the same spot must overwrite, not accumulate.
             # (Legacy flat samples mixed with new ny-carrying ones make the

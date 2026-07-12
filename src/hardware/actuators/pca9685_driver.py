@@ -2,6 +2,28 @@
 SERVO_MAX_PULSE_US = 2500
 SERVO_RANGE_DEG = 180
 
+# ── Per-channel angle limits (command-scale degrees) ─────────────────────
+# The gripper linkage (CH6, index 5) was built around a YF-6125MG; the
+# MG996R now fitted has a SHORTER usable travel — commanding 0 deg (500 us)
+# drives it into its end-stop / linkage limit = SILENT continuous stall
+# (2-3 A with nothing in the jaws). That cooked two servos "after a few
+# grabs" and helped kill the XL4016 (2026-07-11). Every write path clamps
+# through these limits, so once they're set no code path can command the
+# gripper past its safe window.
+# CALIBRATE ON THE PI with tests/servo_jog.py: from 90 step CH6 downward in
+# small steps; the FIRST position where it buzzes/strains is past the limit
+# — back off ~5 deg and put that here. Same toward closing.
+GRIPPER_MIN_DEG = 0.0     # TODO(Pi jog test): raise! e.g. 15-25 for MG996R
+GRIPPER_MAX_DEG = 180.0   # TODO(Pi jog test): lower to just past 'closed'
+CHANNEL_ANGLE_LIMITS = {5: (GRIPPER_MIN_DEG, GRIPPER_MAX_DEG)}
+
+
+def clamp_channel_angle(ch: int, angle_deg: float) -> float:
+    """0-180 hardware clamp plus the per-channel safe window above."""
+    angle = max(0.0, min(float(SERVO_RANGE_DEG), float(angle_deg)))
+    lo, hi = CHANNEL_ANGLE_LIMITS.get(ch, (0.0, float(SERVO_RANGE_DEG)))
+    return max(lo, min(hi, angle))
+
 # ── Last-commanded pose persistence ──────────────────────────────────────
 # The servos have no position feedback, so software tracks the commanded
 # pose — but that tracking used to die with the process: every tool started
@@ -76,8 +98,7 @@ class ArmActuator:
             if i >= 5:
                 break
 
-            # Additional hardware safety bound block
-            angle = max(0.0, min(SERVO_RANGE_DEG, angle))
+            angle = clamp_channel_angle(i, angle)
 
             self.kit.servo[i].angle = angle
             print(f"[Actuator] CH{i+1} hardware written angle: {angle:.1f}°")
@@ -88,15 +109,15 @@ class ArmActuator:
         a commanded channel must always receive its target angle, even when
         the software's tracked pose claims it's already there (there is no
         joint feedback — tracking can be wrong, e.g. right after boot)."""
-        angle = max(0.0, min(SERVO_RANGE_DEG, angle_deg))
-        self.kit.servo[ch].angle = angle
+        self.kit.servo[ch].angle = clamp_channel_angle(ch, angle_deg)
 
     def set_gripper_angle(self, angle_deg: float):
         """
-        Controls the gripper separately (CH6). With actuation_range=180, the working
-        open/close commands are ~40 (closed) .. ~120 (open); see GraspPlanner.
+        Controls the gripper separately (CH6), clamped to the gripper's safe
+        window (see CHANNEL_ANGLE_LIMITS — the fitted servo's travel is
+        narrower than the linkage was designed for).
         """
-        angle = max(0.0, min(SERVO_RANGE_DEG, angle_deg))
+        angle = clamp_channel_angle(5, angle_deg)
         self.kit.servo[5].angle = angle
         print(f"[Actuator] CH6 (Gripper) hardware written angle: {angle:.1f}°")
 
@@ -128,7 +149,7 @@ def stepped_move(actuator, start, target, step_deg=5.0, step_delay=0.15, instant
     n = min(len(start), len(target))
 
     def write(ch, val):
-        actuator.kit.servo[ch].angle = max(0.0, min(SERVO_RANGE_DEG, val))
+        actuator.kit.servo[ch].angle = clamp_channel_angle(ch, val)
 
     for ch in instant:
         if ch < n:

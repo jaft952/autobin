@@ -474,6 +474,38 @@ def test_curved_arc_rows():
     print("PASS curved arc rows (edge dips honored, flat-line lies rejected)")
 
 
+def test_row_attach_by_posture():
+    """User-hit (2026-07-11): adding a LEFT-edge sample for the near arc got
+    saved into the far row, because attachment used nearest-curve-ny and the
+    edge dip isn't in the curve yet. One arc = one CH2-4 fold, so posture is
+    the reliable key (user's own suggestion). Data below mirrors their yaml."""
+    import test_arc_grasp as arc_tool          # sibling test-tool module
+
+    far_row = {"ny": 0.8889, "samples": [
+        {"nx": 0.5094, "ny": 0.8889, "arm": [95.0, 165.0, 20.0, 30.0, 90.0]},
+        {"nx": 0.8992, "ny": 0.9486, "arm": [127.0, 165.0, 20.0, 30.0, 90.0]}]}
+    near_row = {"ny": 0.8556, "samples": [
+        {"nx": 0.5086, "ny": 0.8556, "arm": [95.0, 120.0, 40.0, 40.0, 90.0]},
+        {"nx": 0.8727, "ny": 0.9000, "arm": [125.0, 130.0, 40.0, 40.0, 90.0]}]}
+    rows = [far_row, near_row]
+
+    # The exact mis-attach: left-edge click, arm folded like the NEAR family.
+    row, d, note = arc_tool.choose_row_for_sample(
+        rows, [65.0, 130.0, 40.0, 40.0, 90.0], 0.1078, 0.9264)
+    assert row is near_row, "posture 130/40/40 belongs to the near arc"
+    assert d <= 10.0 and not note, (d, note)
+
+    # Identical postures on both rows -> ny decides (documented fallback).
+    twin_a = {"ny": 0.5, "samples": [{"nx": 0.5, "ny": 0.5,
+                                      "arm": [90.0, 150.0, 30.0, 30.0, 90.0]}]}
+    twin_b = {"ny": 0.7, "samples": [{"nx": 0.5, "ny": 0.7,
+                                      "arm": [90.0, 150.0, 30.0, 30.0, 90.0]}]}
+    row, _d, note = arc_tool.choose_row_for_sample(
+        [twin_a, twin_b], [90.0, 150.0, 30.0, 30.0, 90.0], 0.5, 0.72)
+    assert row is twin_b and "ambiguous" in note, note
+    print("PASS row attachment by CH2-4 posture (ny only breaks ties)")
+
+
 def test_asymmetric_ny_band():
     """User-observed (2026-07-11): the valid spot is ON the arc or a little
     ABOVE it (farther); a tin BELOW the line (closer) gets overshot. The
@@ -543,6 +575,33 @@ def test_grab_order_per_tin_pose():
     p.grab_arc_pose(pose, tin_pose="axial")        # axial grabs like lying
     assert seq == [1, 2, 3] + [0, 4, 3, 1, 2] + [1], seq
     print("PASS grab order: upright shoulder-last, lying/axial elbow-last")
+
+
+def test_gripper_angle_clamp():
+    """User-hit (2026-07-11): the gripper linkage was built for a YF-6125MG;
+    the MG996R swap has shorter travel, and commanding OPEN=0 deg parked it
+    against its end-stop = silent stall that cooked two servos. Every write
+    path must clamp CH6 through CHANNEL_ANGLE_LIMITS."""
+    import src.hardware.actuators.pca9685_driver as drv
+    act = drv.ArmActuator()
+    saved = dict(drv.CHANNEL_ANGLE_LIMITS)
+    try:
+        drv.CHANNEL_ANGLE_LIMITS[5] = (20.0, 60.0)   # a calibrated safe window
+        act.set_gripper_angle(0.0)                   # old OPEN command
+        assert act.kit.servo[5].angle == 20.0        # clamped off the end-stop
+        act.set_channel_angle(5, 180.0)
+        assert act.kit.servo[5].angle == 60.0
+        # stepped_move's writes clamp too (ramp targets included)
+        drv.stepped_move(act, [90.0] * 6, [90.0] * 5 + [0.0],
+                         step_deg=50.0, step_delay=0.01)
+        assert act.kit.servo[5].angle == 20.0
+        # arm channels (no limits configured) still span 0-180
+        act.set_channel_angle(0, 0.0)
+        assert act.kit.servo[0].angle == 0.0
+    finally:
+        drv.CHANNEL_ANGLE_LIMITS.clear()
+        drv.CHANNEL_ANGLE_LIMITS.update(saved)
+    print("PASS gripper clamp: no write path can command past the safe window")
 
 
 def test_smooth_move_semantics():
@@ -624,9 +683,11 @@ ALL_TESTS = [
     test_executor_stow_idempotent_and_failed_ik,
     test_command_write_through,
     test_curved_arc_rows,
+    test_row_attach_by_posture,
     test_asymmetric_ny_band,
     test_pose_persists_across_sessions,
     test_grab_order_per_tin_pose,
+    test_gripper_angle_clamp,
     test_smooth_move_semantics,
     test_arbitration_stack,
 ]
