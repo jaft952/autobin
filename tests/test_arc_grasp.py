@@ -49,7 +49,7 @@ LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
 BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]   # keep = GraspPlanner BIN_DROP_ANGLES
 # Safe window 0..60 (measured 2026-07-12, MG996R meshing); OPEN off the
 # stop, CLOSE provisional — tune on a can, keep = grasp_planner values.
-GRIPPER_OPEN, GRIPPER_CLOSE = 5.0, 20.0
+GRIPPER_OPEN, GRIPPER_CLOSE = 5.0, 45.0
 STEP_DEG, STEP_DELAY = 2.0, 0.15      
 
 
