@@ -28,18 +28,18 @@ import RPi.GPIO as GPIO
 
 # ---- Pin assignments (BCM numbering) ----
 # Left motor (channel A)
-AIN1_PIN = 5
-AIN2_PIN = 6
-PWMA_PIN = 12
+AIN1_PIN = 24
+AIN2_PIN = 23
+PWMA_PIN = 18
 
 # Right motor (channel B)
-BIN1_PIN = 20
-BIN2_PIN = 21
+BIN1_PIN = 17
+BIN2_PIN = 27
 PWMB_PIN = 13
 
 # STBY enable pin. The TB6612FNG only runs when STBY is HIGH.
 # If you wired STBY straight to 3.3V, set STBY_PIN = None to skip it.
-STBY_PIN = 16
+STBY_PIN = 25
 
 # ---- PWM and movement settings ----
 PWM_FREQUENCY_HZ = 1000
