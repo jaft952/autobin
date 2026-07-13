@@ -267,6 +267,16 @@ class ChassisController:
         left_fraction = forward + steer   # Swapped
         right_fraction = forward - steer  # Swapped
 
+        # Apply per-motor trims here (the kinematics trim branches in
+        # PWMActuator.apply() assume positive=forward and never match this
+        # path's sign convention, so trim the fractions directly).
+        if forward < 0:  # driving forward
+            left_fraction *= self.cal.motor_a_forward_trim
+            right_fraction *= self.cal.motor_b_forward_trim
+        elif forward > 0:  # driving backward
+            left_fraction *= self.cal.motor_a_backward_trim
+            right_fraction *= self.cal.motor_b_backward_trim
+
         # Clamp each wheel to [-1, 1]
         left_fraction = max(-1.0, min(1.0, left_fraction))
         right_fraction = max(-1.0, min(1.0, right_fraction))
@@ -275,7 +285,8 @@ class ChassisController:
         left_speed = self.cal.forward_speed * left_fraction
         right_speed = self.cal.forward_speed * right_fraction
 
-        cmd = WheelCommand(left_speed, right_speed, forward < 0, "cascade")
+        # Trims already applied above — apply_trim=False prevents double-trimming.
+        cmd = WheelCommand(left_speed, right_speed, False, "cascade")
         self.actuator.apply(cmd)
 
     def stop(self) -> None:
