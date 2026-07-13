@@ -20,7 +20,7 @@ GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]
 # "open" like the old meshing; tune on a real can (step until 1-3 deg past
 # contact, no more) and keep in sync with tests/test_arc_grasp.py.
 GRIPPER_OPEN = 5.0
-GRIPPER_CLOSED = 20.0
+GRIPPER_CLOSED = 40.0
 
 # ── Arc-grasp execution sequence (ported from tests/test_arc_grasp.py) ───────
 # The arc calibration poses were tuned WITH this exact sequence, so execution
