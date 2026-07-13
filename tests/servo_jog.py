@@ -34,7 +34,10 @@ from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move, SERVO_RANGE_DEG
+from src.hardware.actuators.pca9685_driver import (
+    ArmActuator, stepped_move, SERVO_RANGE_DEG,
+    clamp_channel_angle, CHANNEL_ANGLE_LIMITS,
+)
 from src.arm.kinematics import SERVO_NEUTRAL_CMD
 
 # Forward kinematics is optional (needs ikpy). If unavailable we still jog/print.
@@ -47,6 +50,11 @@ except Exception as e:  # pragma: no cover
 
 # Neutral commands (actuation_range=180): CH1-5 from the calibrated model-zero, CH6 gripper.
 NEUTRAL = [SERVO_NEUTRAL_CMD[i] for i in range(1, 7)]  # CH1-5 arm, CH6 gripper
+# The kinematics gripper neutral (80, YF-6125MG era) sits PAST the fitted
+# MG996R gripper's safe window — home CH6 to the middle of its window instead
+# (adapts automatically if CHANNEL_ANGLE_LIMITS is retuned).
+_glo, _ghi = CHANNEL_ANGLE_LIMITS.get(5, (0.0, float(SERVO_RANGE_DEG)))
+NEUTRAL[5] = (_glo + _ghi) / 2.0
 NUM_CH = 16   # PCA9685 has 16 channels — allow jogging any of them (hardware testing)
 POSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_poses.txt")
 
@@ -74,7 +82,7 @@ def main():
         """Move CH(i+1) to val, ramping from the servo's ACTUAL current angle so it
         doesn't snap. ALL channels (incl. CH6) step gently — an instant gripper
         move spikes current and can brown out / drop the arm."""
-        val = max(0.0, min(SERVO_RANGE_DEG, float(val)))
+        val = clamp_channel_angle(i, float(val))   # per-channel safe window
         start = [cur(c) for c in range(NUM_CH)]
         target = list(start)
         target[i] = val
@@ -129,7 +137,8 @@ def main():
             print("  homing CH1 -> CH6 in sequence...")
             for i, a in enumerate(NEUTRAL):
                 apply(i, a)
-                act.kit.servo[i].angle = max(0.0, min(SERVO_RANGE_DEG, a))
+                a = clamp_channel_angle(i, a)      # never bypass the window
+                act.kit.servo[i].angle = a
                 angles[i] = a
             print(f"  homed CH1-6 -> {[round(a, 1) for a in NEUTRAL]}")
             last_ch = 0
