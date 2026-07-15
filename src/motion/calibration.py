@@ -3,12 +3,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class MotorPins:
+    # ZK-BM1 dual H-bridge: 4 input pins only, no ENA/ENB enable pins.
+    # Speed is set by PWM-ing the direction inputs directly (see PWMActuator).
+    #   Left  motor (A): in1 / in2
+    #   Right motor (B): in3 / in4
     in1: int = 17
     in2: int = 27
     in3: int = 22
     in4: int = 23
-    ena: int = 18
-    enb: int = 19
 
 
 @dataclass(frozen=True)

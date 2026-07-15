@@ -54,9 +54,18 @@ except Exception:  # pragma: no cover
 
 
 class PWMActuator:
-    """Hardware module: converts wheel command into GPIO + PWM signals."""
+    """Hardware module: converts wheel command into GPIO + PWM signals.
 
-    def __init__(self, pins: MotorPins | None = None, calibration: MotionCalibration | None = None, pwm_freq: int = 100) -> None:
+    Wired for the ZK-BM1 dual H-bridge, which has NO ENA/ENB enable pins.
+    Unlike an L298N (separate direction inputs + a PWM enable line), the
+    ZK-BM1 sets both direction AND speed on the two input pins per motor:
+    to run a motor, PWM one input and hold the other LOW; the duty cycle IS
+    the speed. So this driver keeps a PWM channel on all four input pins.
+        Left  motor (A): in1 / in2
+        Right motor (B): in3 / in4
+    """
+
+    def __init__(self, pins: MotorPins | None = None, calibration: MotionCalibration | None = None, pwm_freq: int = 1000) -> None:
         self.pins = pins or MotorPins()
         self.cal = calibration or MotionCalibration()
 
@@ -72,12 +81,15 @@ class PWMActuator:
             # GPIO mode already set, that's fine
             pass
 
-        GPIO.setup([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4, self.pins.ena, self.pins.enb], GPIO.OUT)
+        GPIO.setup([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4], GPIO.OUT)
 
-        self.pwm_a = GPIO.PWM(self.pins.ena, pwm_freq)
-        self.pwm_b = GPIO.PWM(self.pins.enb, pwm_freq)
-        self.pwm_a.start(0)
-        self.pwm_b.start(0)
+        # One PWM channel per input pin (ZK-BM1 has no separate enable line).
+        self.pwm_in1 = GPIO.PWM(self.pins.in1, pwm_freq)
+        self.pwm_in2 = GPIO.PWM(self.pins.in2, pwm_freq)
+        self.pwm_in3 = GPIO.PWM(self.pins.in3, pwm_freq)
+        self.pwm_in4 = GPIO.PWM(self.pins.in4, pwm_freq)
+        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
+            pwm.start(0)
 
     def apply(self, command: WheelCommand) -> None:
         left_speed = command.left_speed
@@ -117,56 +129,51 @@ class PWMActuator:
         self._set_right(right_speed)
 
     def stop(self) -> None:
-        """COAST (L298N 'Free Running Motor Stop'): En=L, motor windings open.
-        The wheels are free to spin — an external push (e.g. the arm shaking
-        the chassis) can roll the robot out of position. Use brake() to hold."""
-        GPIO.output([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4], GPIO.LOW)
-        self.pwm_a.ChangeDutyCycle(0)
-        self.pwm_b.ChangeDutyCycle(0)
+        """COAST ('Free Running Motor Stop'): both inputs of each motor LOW,
+        motor windings open. The wheels are free to spin — an external push
+        (e.g. the arm shaking the chassis) can roll the robot out of position.
+        Use brake() to hold."""
+        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
+            pwm.ChangeDutyCycle(0)
 
     def brake(self) -> None:
-        """ACTIVE BRAKE (L298N 'Fast Motor Stop'): both inputs of each motor
-        driven to the SAME level (LOW here) while En is HELD HIGH (PWM 100%).
-        This shorts the motor windings, so any attempt to turn the wheel — a
-        push forward or back — induces a current that opposes the motion
-        (dynamic braking). The robot resists being rolled, holding position
-        while the arm actuates. No mechanical brake exists; this is the
-        strongest hold the hardware allows. Stationary, it draws ~no current;
-        current only flows while something is actively trying to move it."""
-        GPIO.output([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4], GPIO.LOW)
-        self.pwm_a.ChangeDutyCycle(100)
-        self.pwm_b.ChangeDutyCycle(100)
+        """ACTIVE BRAKE ('Fast Motor Stop'): both inputs of each motor driven
+        HIGH (PWM 100%) at the same time. This shorts the motor windings, so
+        any attempt to turn the wheel — a push forward or back — induces a
+        current that opposes the motion (dynamic braking). The robot resists
+        being rolled, holding position while the arm actuates. No mechanical
+        brake exists; this is the strongest hold the hardware allows.
+        Stationary, it draws ~no current; current only flows while something
+        is actively trying to move it."""
+        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
+            pwm.ChangeDutyCycle(100)
 
     def close(self) -> None:
         self.stop()
-        self.pwm_a.stop()
-        self.pwm_b.stop()
+        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
+            pwm.stop()
         GPIO.cleanup()
 
     def _set_left(self, speed: float) -> None:
+        # ZK-BM1: PWM the forward input for +speed, the reverse input for
+        # -speed; the idle input is held at 0% (LOW). Duty cycle = speed.
         if speed > 0:
-            GPIO.output(self.pins.in1, 1)
-            GPIO.output(self.pins.in2, 0)
-            self.pwm_a.ChangeDutyCycle(abs(speed))
+            self.pwm_in1.ChangeDutyCycle(abs(speed))
+            self.pwm_in2.ChangeDutyCycle(0)
         elif speed < 0:
-            GPIO.output(self.pins.in1, 0)
-            GPIO.output(self.pins.in2, 1)
-            self.pwm_a.ChangeDutyCycle(abs(speed))
+            self.pwm_in1.ChangeDutyCycle(0)
+            self.pwm_in2.ChangeDutyCycle(abs(speed))
         else:
-            GPIO.output(self.pins.in1, 0)
-            GPIO.output(self.pins.in2, 0)
-            self.pwm_a.ChangeDutyCycle(0)
+            self.pwm_in1.ChangeDutyCycle(0)
+            self.pwm_in2.ChangeDutyCycle(0)
 
     def _set_right(self, speed: float) -> None:
         if speed > 0:
-            GPIO.output(self.pins.in3, 1)
-            GPIO.output(self.pins.in4, 0)
-            self.pwm_b.ChangeDutyCycle(abs(speed))
+            self.pwm_in3.ChangeDutyCycle(abs(speed))
+            self.pwm_in4.ChangeDutyCycle(0)
         elif speed < 0:
-            GPIO.output(self.pins.in3, 0)
-            GPIO.output(self.pins.in4, 1)
-            self.pwm_b.ChangeDutyCycle(abs(speed))
+            self.pwm_in3.ChangeDutyCycle(0)
+            self.pwm_in4.ChangeDutyCycle(abs(speed))
         else:
-            GPIO.output(self.pins.in3, 0)
-            GPIO.output(self.pins.in4, 0)
-            self.pwm_b.ChangeDutyCycle(0)
+            self.pwm_in3.ChangeDutyCycle(0)
+            self.pwm_in4.ChangeDutyCycle(0)
