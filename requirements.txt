@@ -1,29 +1,31 @@
-# use pip install -r requirements.txt
-# Core runtime
+# pip install -r requirements.txt
+
+# ── Core runtime (needed to run the robot, tools and web dashboard) ──────────
 numpy>=1.24.0
 opencv-python>=4.7.0
 PyYAML>=6.0
 
-# Perception 
+# Perception — YOLO11n-seg detector (ultralytics pulls a matching torch build)
 ultralytics>=8.0.0
 torch>=2.0.0
 torchvision>=0.15.0
 
 # Robotic arm inverse kinematics 
+# Robotic arm inverse kinematics (analytical solver seeds the ikpy backup)
 ikpy>=3.1
 
-# Web dashboard backend 
+# Web dashboard backend (web/server.py, web/runtime.py)
 flask>=3.0.0
 
-# Model training
+# ── Model training only (run on the dev/Windows machine, not the Pi) ─────────
 albumentations>=1.3.0     # data_preprocessing.py (augmentation)
 pandas>=1.5.0             # monitor_training.py (metrics table)
 matplotlib>=3.7.0         # monitor_training.py (curves)
 tqdm>=4.65.0              # convert_coco_to_yolo.py (progress bars)
 
+
 # ── Raspberry Pi hardware — UNCOMMENT on the Pi ───
-# Drivers for the L298N motor GPIO and the PCA9685 servo board.
 RPi.GPIO>=0.7                          # Pi 4/older. On Pi 5 / Bookworm use:
-# rpi-lgpio>=0.4                         #   drop-in RPi.GPIO replacement for Pi 5
 adafruit-circuitpython-servokit>=1.3   # provides `import adafruit_servokit`
 ncnn>=1.0.20230000
+
