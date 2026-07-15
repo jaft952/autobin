@@ -4,14 +4,18 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.grasp_planner import GraspPlanner
-from src.arm.kinematics import GRIPPER_DOWN
+from src.arm.kinematics import GRIPPER_DOWN, GRIPPER_UP, GRIPPER_LEVEL
 
 def print_menu():
     print("="*40)
     print("command :")
     print("  'x y z' : move to specific position in meters (such as: 0.15 0 0.1)")
     print("  'down'  : gripper-DOWN mode (constrained, for grasping)")
+    print("  'up'    : gripper-UP mode (approach from below, gripper points up)")
+    print("  'level' : gripper HORIZONTAL (grab a standing tin at its middle)")
     print("  'free'  : POSITION-ONLY mode (no orientation, comfortable poses)")
+    print("  'comp'  : sag compensation ON (default) - aims high to cancel tip droop")
+    print("  'raw'   : sag compensation OFF - command the raw model target")
     print("  'g'     : grasp (close gripper)")
     print("  'r'     : release (open gripper)")
     print("  'h'     : home ")
@@ -21,6 +25,8 @@ def print_menu():
     print("-"*40)
     print("  x,y,z are SIGNED components in meters (x=right, y=forward, z=up),")
     print("  NOT distances. e.g. '0 0.15 0.1' = 15cm forward, 10cm high.")
+    print("  z=0 is the CHASSIS DECK; z can go NEGATIVE below it — the FLOOR")
+    print("  is at z=-0.113 (wheel height). e.g. '0 0.25 -0.113' = touch floor.")
     print("  TIP: high z + small horizontal = low torque (less sag).")
     print("="*40)
 
@@ -34,7 +40,9 @@ def main():
         return
 
     print_menu()
-    mode = {"tool": GRIPPER_DOWN, "name": "DOWN"}  # default: gripper points down
+    # Default is FREE (position-only, no "always point down") so you can probe the
+    # real reachable workspace. Type 'down' to re-enable the gripper-down constraint.
+    mode = {"tool": None, "name": "FREE", "comp": True}
 
     while True:
         try:
@@ -46,7 +54,9 @@ def main():
 
             elif user_input == 'h':
                 print("back to home position ...")
-                planner.home()
+                # force: responds even when the tracked pose already says
+                # home (no joint feedback — 'h' must always actually command)
+                planner.force_home()
                 continue
 
             elif user_input == 'down':
@@ -54,9 +64,29 @@ def main():
                 print("mode: gripper DOWN (constrained)")
                 continue
 
+            elif user_input == 'up':
+                mode["tool"], mode["name"] = GRIPPER_UP, "UP"
+                print("mode: gripper UP (approach from below)")
+                continue
+
+            elif user_input == 'level':
+                mode["tool"], mode["name"] = GRIPPER_LEVEL, "LEVEL"
+                print("mode: gripper HORIZONTAL (side approach, e.g. tin middle)")
+                continue
+
             elif user_input == 'free':
                 mode["tool"], mode["name"] = None, "FREE"
                 print("mode: POSITION-ONLY (no orientation constraint)")
+                continue
+
+            elif user_input == 'comp':
+                mode["comp"] = True
+                print("sag compensation ON: aiming at (target - measured tip error)")
+                continue
+
+            elif user_input == 'raw':
+                mode["comp"] = False
+                print("sag compensation OFF: commanding the raw model target")
                 continue
 
             elif user_input == 'g':
@@ -84,7 +114,8 @@ def main():
                 x, y, z = [float(p) for p in parts]
                 print(f"moving to position: X={x}, Y={y}, Z={z} ({mode['name']}) ...")
 
-                success = planner.move_to([x, y, z], tool_direction=mode["tool"])
+                success = planner.move_to([x, y, z], tool_direction=mode["tool"],
+                                          compensate=mode["comp"])
                 if success:
                     print(f"✅ successfully reached target position! ({x}, {y}, {z})")
                 else:

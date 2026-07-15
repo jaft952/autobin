@@ -14,10 +14,10 @@ class MotorPins:
 @dataclass(frozen=True)
 class MotionCalibration:
 
-    forward_speed: float = 40.0
-    backward_speed: float = 50.0
-    turn_speed: float = 40.0
-    arc_speed: float = 50.0
+    forward_speed: float = 100.0
+    backward_speed: float = 100.0
+    turn_speed: float = 100.0
+    arc_speed: float = 100.0
 
     motor_a_forward_trim: float = 1.0
     motor_b_forward_trim: float = 1.0

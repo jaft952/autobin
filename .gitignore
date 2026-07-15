@@ -72,6 +72,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# vscode
+.vscode
+
+
+
 # C extensions
 *.so
 
@@ -243,7 +248,7 @@ docs/
 # ========================
 # Machine Learning / AI
 # ========================
-
+yolo11*-seg*/
 runs/
 ai/training/scripts/runs/
 ai/training/results/
@@ -264,3 +269,5 @@ ai/data/datasets/autobin.v1i.yolov8/
 src/perception/config/color_config.yaml
 src/visual_servoing/config/servo_config.yaml
 # End of https://www.toptal.com/developers/gitignore/api/python,images
+# Arm runtime state (last commanded pose) - machine-specific, never commit
+src/arm/config/last_pose.json

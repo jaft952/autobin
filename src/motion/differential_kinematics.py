@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from src.motion.calibration import MotionCalibration
 
 
-@dataclass(frozen=True)
+@dataclass
 class WheelCommand:
     left_speed: float
     right_speed: float

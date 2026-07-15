@@ -1,37 +1,29 @@
-# YOLOv8 Aluminum Can Detection - Requirements
---extra-index-url https://download.pytorch.org/whl/cu121
-# Core ML Framework
+# use pip install -r requirements.txt
+# Core runtime
+numpy>=1.24.0
+opencv-python>=4.7.0
+PyYAML>=6.0
+
+# Perception 
+ultralytics>=8.0.0
 torch>=2.0.0
 torchvision>=0.15.0
-torchaudio>=2.0.0
 
-# YOLOv8
-ultralytics>=8.0.0
-
-# Data Processing
-numpy>=1.24.0
-pandas>=1.5.0
-opencv-python>=4.7.0
-Pillow>=9.5.0
-
-# Visualization & Logging
-matplotlib>=3.7.0
-tensorboard>=2.12.0
-
-# Utilities
-PyYAML>=6.0
-python-dotenv>=1.0.0
-requests>=2.28.0
-tqdm>=4.65.0
-
-# Optional: For advanced features
-scipy>=1.10.0
-scikit-learn>=1.2.0
-scikit-image>=0.20.0
-
-# Arm inverse kinematics
+# Robotic arm inverse kinematics 
 ikpy>=3.1
 
-# Raspberry Pi hardware (install on Pi only, not Windows)
-# adafruit-servokit>=1.3
-# RPi.GPIO>=0.7
+# Web dashboard backend 
+flask>=3.0.0
+
+# Model training
+albumentations>=1.3.0     # data_preprocessing.py (augmentation)
+pandas>=1.5.0             # monitor_training.py (metrics table)
+matplotlib>=3.7.0         # monitor_training.py (curves)
+tqdm>=4.65.0              # convert_coco_to_yolo.py (progress bars)
+
+# ── Raspberry Pi hardware — UNCOMMENT on the Pi ───
+# Drivers for the L298N motor GPIO and the PCA9685 servo board.
+RPi.GPIO>=0.7                          # Pi 4/older. On Pi 5 / Bookworm use:
+# rpi-lgpio>=0.4                         #   drop-in RPi.GPIO replacement for Pi 5
+adafruit-circuitpython-servokit>=1.3   # provides `import adafruit_servokit`
+ncnn>=1.0.20230000

@@ -24,8 +24,9 @@ Run:  python tests/servo_jog.py
 
 Note: the arm CH1-5 move SLOW/stepped (same gentle speed as the grasp in
 test_ibvs_centering.py); CH6 (gripper) SNAPS straight to its target. Tune
-STEP_DEG / STEP_DELAY below. The arm homes to neutral at startup so jogs ramp
-from a known pose (these servos have no position feedback).
+STEP_DEG / STEP_DELAY below. NOTHING moves on startup — press 'h' to home. These
+servos have no position feedback, so a jogged channel ramps from its real angle,
+but an un-jogged one ramps from the assumed neutral (home first if unsure).
 """
 import os
 import sys
@@ -33,7 +34,10 @@ from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.hardware.actuators.pca9685_driver import ArmActuator, stepped_move, SERVO_RANGE_DEG
+from src.hardware.actuators.pca9685_driver import (
+    ArmActuator, stepped_move, SERVO_RANGE_DEG,
+    clamp_channel_angle, CHANNEL_ANGLE_LIMITS,
+)
 from src.arm.kinematics import SERVO_NEUTRAL_CMD
 
 # Forward kinematics is optional (needs ikpy). If unavailable we still jog/print.
@@ -46,13 +50,18 @@ except Exception as e:  # pragma: no cover
 
 # Neutral commands (actuation_range=180): CH1-5 from the calibrated model-zero, CH6 gripper.
 NEUTRAL = [SERVO_NEUTRAL_CMD[i] for i in range(1, 7)]  # CH1-5 arm, CH6 gripper
+# The kinematics gripper neutral (80, YF-6125MG era) sits PAST the fitted
+# MG996R gripper's safe window — home CH6 to the middle of its window instead
+# (adapts automatically if CHANNEL_ANGLE_LIMITS is retuned).
+_glo, _ghi = CHANNEL_ANGLE_LIMITS.get(5, (0.0, float(SERVO_RANGE_DEG)))
+NEUTRAL[5] = (_glo + _ghi) / 2.0
 NUM_CH = 16   # PCA9685 has 16 channels — allow jogging any of them (hardware testing)
 POSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_poses.txt")
 
 # Slow, stepped servo motion — same speed as the grasp in tests/test_ibvs_centering.py
 # (GRASP_STEP_DEG / GRASP_STEP_DELAY). Keep these in sync if you retune the grasp.
-STEP_DEG = 5.0      # max degrees a servo moves per step (smaller = slower/smoother)
-STEP_DELAY = 0.15   # seconds paused between steps (bigger = slower)
+STEP_DEG = 2.0      # smaller = gentler move = lower peak current (weak supply)
+STEP_DELAY = 0.5    # longer = the supply recovers between steps
 
 
 def main():
@@ -64,26 +73,20 @@ def main():
     def cur(ch):
         """The servo's last-commanded angle (hardware truth), falling back to the
         tracked value when it was never set / was released. These servos have NO
-        position feedback, so the true angle is unknown until we command it once —
-        hence the startup home below, so ramps start from a real position."""
+        position feedback, so the true angle is unknown until we command it once
+        (via a jog or 'h')."""
         a = act.kit.servo[ch].angle
         return float(a) if a is not None else float(angles[ch])
 
-    # Home CH1-6 to neutral at startup so the tracked angles match the real arm.
-    # Without this, the first jog of each channel ramps from a GUESSED start and the
-    # servo snaps to it (the "fast jump then stepped") before stepping smoothly.
-    print("  homing CH1-6 to neutral so jogs start from a known pose...")
-    for ch, a in enumerate(NEUTRAL):
-        act.kit.servo[ch].angle = max(0.0, min(SERVO_RANGE_DEG, a))
-
     def apply(i, val):
         """Move CH(i+1) to val, ramping from the servo's ACTUAL current angle so it
-        doesn't snap. CH1-5 step slowly; CH6 (gripper) snaps via instant=(5,)."""
-        val = max(0.0, min(SERVO_RANGE_DEG, float(val)))
+        doesn't snap. ALL channels (incl. CH6) step gently — an instant gripper
+        move spikes current and can brown out / drop the arm."""
+        val = clamp_channel_angle(i, float(val))   # per-channel safe window
         start = [cur(c) for c in range(NUM_CH)]
         target = list(start)
         target[i] = val
-        stepped_move(act, start, target, STEP_DEG, STEP_DELAY, instant=(5,))
+        stepped_move(act, start, target, STEP_DEG, STEP_DELAY)
         angles[:] = start
         angles[i] = val
         print(f"  CH{i + 1} = {val:.1f}°")
@@ -128,12 +131,15 @@ def main():
             print("  RELEASED all servos (no signal — arm is limp). "
                   "Set any channel to re-engage.")
         elif cmd == "h":
-            # Home to neutral ONE CHANNEL AT A TIME, in order CH1 -> CH6 (not all
-            # together). apply() ramps each channel slowly from its actual angle;
-            # CH6 (gripper) snaps. Each channel finishes before the next starts.
+            # Home to neutral ONE CHANNEL AT A TIME, CH1 -> CH6. apply() ramps each
+            # from its actual angle; then force-write neutral so the channel goes
+            # home even if the tracked pose already matched it (no position feedback).
             print("  homing CH1 -> CH6 in sequence...")
             for i, a in enumerate(NEUTRAL):
                 apply(i, a)
+                a = clamp_channel_angle(i, a)      # never bypass the window
+                act.kit.servo[i].angle = a
+                angles[i] = a
             print(f"  homed CH1-6 -> {[round(a, 1) for a in NEUTRAL]}")
             last_ch = 0
         elif cmd == "p":

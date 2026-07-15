@@ -60,7 +60,18 @@ class PWMActuator:
         self.pins = pins or MotorPins()
         self.cal = calibration or MotionCalibration()
 
-        GPIO.setmode(GPIO.BCM)
+        # Clean up GPIO state from previous runs, then set mode
+        try:
+            GPIO.cleanup()  # type: ignore
+        except Exception:
+            pass
+
+        try:
+            GPIO.setmode(GPIO.BCM)  # type: ignore
+        except RuntimeError:
+            # GPIO mode already set, that's fine
+            pass
+
         GPIO.setup([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4, self.pins.ena, self.pins.enb], GPIO.OUT)
 
         self.pwm_a = GPIO.PWM(self.pins.ena, pwm_freq)
@@ -106,9 +117,25 @@ class PWMActuator:
         self._set_right(right_speed)
 
     def stop(self) -> None:
+        """COAST (L298N 'Free Running Motor Stop'): En=L, motor windings open.
+        The wheels are free to spin — an external push (e.g. the arm shaking
+        the chassis) can roll the robot out of position. Use brake() to hold."""
         GPIO.output([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4], GPIO.LOW)
         self.pwm_a.ChangeDutyCycle(0)
         self.pwm_b.ChangeDutyCycle(0)
+
+    def brake(self) -> None:
+        """ACTIVE BRAKE (L298N 'Fast Motor Stop'): both inputs of each motor
+        driven to the SAME level (LOW here) while En is HELD HIGH (PWM 100%).
+        This shorts the motor windings, so any attempt to turn the wheel — a
+        push forward or back — induces a current that opposes the motion
+        (dynamic braking). The robot resists being rolled, holding position
+        while the arm actuates. No mechanical brake exists; this is the
+        strongest hold the hardware allows. Stationary, it draws ~no current;
+        current only flows while something is actively trying to move it."""
+        GPIO.output([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4], GPIO.LOW)
+        self.pwm_a.ChangeDutyCycle(100)
+        self.pwm_b.ChangeDutyCycle(100)
 
     def close(self) -> None:
         self.stop()
