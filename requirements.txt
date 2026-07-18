@@ -1,11 +1,4 @@
-# AutoBin — Python dependencies (Raspberry Pi + Windows)
-#
-#   pip install -r requirements.txt
-#
-# NOTE on PyTorch: no CUDA index is forced here so this file installs on the
-# Pi (ARM), Windows-CPU, and Windows-GPU alike. The default index gives a CPU
-# build on Windows and an ARM build on Raspberry Pi OS (piwheels). The robot
-# auto-selects the device and uses NCNN on the Pi, so CPU torch is fine.
+
 #   -> Windows with an NVIDIA GPU and want CUDA? install torch separately:
 #      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
@@ -26,19 +19,11 @@ ikpy>=3.1
 flask>=3.0.0
 
 # ── Model training only (run on the dev/Windows machine, not the Pi) ─────────
-# Used by ai/training/scripts/subsystem2/*. Safe to skip on the Pi — comment
-# these out there if you don't train on-device.
 albumentations>=1.3.0     # data_preprocessing.py (augmentation)
 pandas>=1.5.0             # monitor_training.py (metrics table)
 matplotlib>=3.7.0         # monitor_training.py (curves)
 tqdm>=4.65.0              # convert_coco_to_yolo.py (progress bars)
 
-# ── Raspberry Pi hardware — UNCOMMENT on the Pi (won't install on Windows) ───
-# Drivers for the L298N motor GPIO and the PCA9685 servo board.
-# RPi.GPIO>=0.7                          # Pi 4/older. On Pi 5 / Bookworm use:
-# rpi-lgpio>=0.4                         #   drop-in RPi.GPIO replacement for Pi 5
-# adafruit-circuitpython-servokit>=1.3   # provides `import adafruit_servokit`
-
-# ── Optional Pi inference speed-up (NCNN, ~2-4x faster than .pt on ARM) ──────
-# Needed only to run tests/export_ncnn.py and to load the exported model.
+# ── Raspberry Pi hardware (Pi only) ─────────────────────────────────────────
+# adafruit-circuitpython-servokit>=1.3 
 # ncnn>=1.0.20230000
