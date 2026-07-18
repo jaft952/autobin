@@ -128,11 +128,15 @@ def _make_chassis():
 def main(drive=False, speed=1.0):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
-    from src.perception.detector import AluminiumCanDetector
+    from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
 
     IMGSZ = 640
 
-    detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ, model_path="src/models/yolov11n-seg.pt")  # type: ignore
+    # RUNTIME_MODEL_PATH (src/models/best.pt) — same model the real runtime,
+    # test_arc_grasp.py, and the NCNN export target. The old hardcoded
+    # "yolov11n-seg.pt" here had no matching *_ncnn_model export, which is
+    # why this test never picked up NCNN acceleration.
+    detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ, model_path=RUNTIME_MODEL_PATH)  # type: ignore
     detector.start()
     centering = IBVSCentering()
     chassis = _make_chassis()
