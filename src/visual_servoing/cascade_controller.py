@@ -28,6 +28,11 @@ class VisionState:
     aligned: bool
     stable: bool
     confidence: float             # Detection confidence [0, 1]
+    result: Optional[object] = None  # the DetectionResult this state came from
+    # (untyped here to avoid pulling perception/detector's torch/ultralytics
+    # import into this hardware-agnostic module) — lets a display loop draw
+    # the bbox/mask via detector.get_annotated_frame(status.result) WITHOUT
+    # re-running inference or re-reading the camera itself.
 
     def quality(self) -> float:
         """Combined confidence: detection + segmentation area."""
@@ -372,7 +377,8 @@ class _VisionWorker(threading.Thread):
                     detected=result.found,
                     aligned=status.aligned,
                     stable=status.stable,
-                    confidence=result.best.confidence if result.best else 0.0
+                    confidence=result.best.confidence if result.best else 0.0,
+                    result=result,
                 )
 
                 # Push to shared buffer (non-blocking)

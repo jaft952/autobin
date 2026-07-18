@@ -87,18 +87,24 @@ def _draw_status_overlay(frame, status, cmd, driving=None):
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Show alignment and stability
+    # Solid banner behind the two status lines — plain outlined text got lost
+    # against a busy background, and the two lines sat close enough (25px
+    # apart at this font scale) to visually run into each other.
+    banner_top = fh - 72
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, banner_top), (fw, fh), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
+
+    # Motion command (upper line)
+    motion, angle, intensity = _interpret_motion_command(cmd)
+    motion_color = (0, 255, 0) if intensity > 0 else (170, 170, 170)
+    motion_text = f"Motion: {motion}  |  intensity={intensity:.2f}"
+    cv2.putText(frame, motion_text, (20, fh - 42), font, 0.7, motion_color, 2)
+
+    # Alignment / stability (lower line)
     color = (0, 255, 0) if status.stable else (0, 165, 255)
     text = f"aligned={status.aligned}  stable={status.stable}  quality={status.quality():.2f}"
-    cv2.putText(frame, text, (20, fh - 25), font, 0.8, (0, 0, 0), 4)
-    cv2.putText(frame, text, (20, fh - 25), font, 0.8, color, 2)
-
-    # Show motion command
-    motion, angle, intensity = _interpret_motion_command(cmd)
-    motion_color = (0, 255, 0) if intensity > 0 else (100, 100, 100)
-    motion_text = f"Motion: {motion}  |  intensity={intensity:.2f}"
-    cv2.putText(frame, motion_text, (20, fh - 50), font, 0.7, (0, 0, 0), 3)
-    cv2.putText(frame, motion_text, (20, fh - 50), font, 0.7, motion_color, 1)
+    cv2.putText(frame, text, (20, fh - 14), font, 0.7, color, 2)
 
     if driving is not None:
         dmode = "DRIVE ON" if driving else "DRIVE OFF"
@@ -159,31 +165,30 @@ def main(drive=False, speed=1.0):
             status = controller.get_status()
             cmd = controller.get_last_command()
 
-            # Always try to show camera feed
+            # Always try to show camera feed. Draw from the vision thread's
+            # OWN cached result (status.result) via get_annotated_frame() —
+            # this gives us the bbox/mask overlay for free, and critically
+            # avoids a SECOND call to detector.read_frame() here: the vision
+            # thread already reads the camera at ~30Hz, and a second reader
+            # racing it on the same VideoCapture is what caused the
+            # "V4L2: select() timeout" warnings.
             if show:
                 try:
-                    frame = detector.read_frame()
+                    frame = None
+                    if status is not None and status.result is not None:
+                        frame = detector.get_annotated_frame(status.result)
+
                     if frame is not None:
-                        # Draw status overlay with motion command
-                        if status:
-                            _draw_status_overlay(frame, status, cmd, driving if chassis is not None else None)
-                        else:
-                            # Show waiting message on frame
-                            import cv2
-                            fh = frame.shape[0]
-                            font = cv2.FONT_HERSHEY_SIMPLEX
-                            cv2.putText(frame, "[Waiting for detection...]", (20, fh - 25),
-                                       font, 0.8, (0, 165, 255), 2)
-
+                        _draw_status_overlay(frame, status, cmd, driving if chassis is not None else None)
                         cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
-                        key = cv2.waitKey(1) & 0xFF
 
-                        if key == ord("q"):
-                            break
-                        if key == ord("m") and chassis is not None:
-                            driving = not driving
-                            controller.set_driving(driving)  # actually gate the wheels
-                            print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
+                    if key == ord("m") and chassis is not None:
+                        driving = not driving
+                        controller.set_driving(driving)  # actually gate the wheels
+                        print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
 
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
