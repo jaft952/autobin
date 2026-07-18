@@ -1,10 +1,17 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 # pip install -r requirements.txt
 =======
 
 #   -> Windows with an NVIDIA GPU and want CUDA? install torch separately:
 #      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 >>>>>>> 67cae7f (modify requirement.txt)
+=======
+
+#   -> Windows with an NVIDIA GPU and want CUDA? install torch separately:
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+>>>>>>> 638aaea2c5af9c552cd037186821f048ce792c4e
 
 # ── Core runtime (needed to run the robot, tools and web dashboard) ──────────
 numpy>=1.24.0
@@ -30,6 +37,9 @@ matplotlib>=3.7.0         # monitor_training.py (curves)
 tqdm>=4.65.0              # convert_coco_to_yolo.py (progress bars)
 
 # ── Raspberry Pi hardware (Pi only) ─────────────────────────────────────────
+
 # RPi.GPIO>=0.7
 # adafruit-circuitpython-servokit>=1.3 
 # ncnn>=1.0.20230000
+
+
