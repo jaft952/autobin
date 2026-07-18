@@ -152,6 +152,7 @@ class AluminiumCanDetector:
         frame_height: int = 1080,
         device=None,
         imgsz: int = 640,
+        use_ncnn: bool = True,
     ):
         self._model_path = Path(model_path)
         self._camera_index = camera_index
@@ -162,6 +163,11 @@ class AluminiumCanDetector:
         # crashed on the Pi whenever a caller forgot to pass device="cpu".)
         self._device = device
         self._imgsz = imgsz
+        # True (default) = prefer the NCNN export next to the .pt if one
+        # exists, else fall back to the .pt. False forces the .pt even when
+        # an NCNN export is present — useful for A/B comparing the two, or
+        # working around an NCNN-side issue without deleting the export.
+        self._use_ncnn = use_ncnn
 
         self._model: Optional[YOLO] = None
         self._cap: Optional[cv2.VideoCapture] = None
@@ -277,12 +283,16 @@ class AluminiumCanDetector:
     def _pick_model_path(self) -> Path:
         """Prefer an NCNN export sitting next to the .pt — on the Pi's ARM
         CPU it runs the SAME weights 2-4x faster (fp32, no accuracy change).
-        Create it once on the Pi with tests/export_ncnn.py."""
-        if self._model_path.suffix == ".pt":
+        Create it once on the Pi with tests/export_ncnn.py. Pass
+        use_ncnn=False to the constructor to force the .pt even when an
+        NCNN export exists (A/B comparison, or sidestepping an NCNN issue)."""
+        if self._use_ncnn and self._model_path.suffix == ".pt":
             ncnn = self._model_path.with_name(self._model_path.stem + "_ncnn_model")
             if ncnn.is_dir():
                 print(f"✓ Using NCNN export: {ncnn}")
                 return ncnn
+        if not self._use_ncnn:
+            print(f"✓ NCNN disabled (use_ncnn=False) — using {self._model_path}")
         return self._model_path
 
     def _load_model(self):
@@ -292,7 +302,15 @@ class AluminiumCanDetector:
         if not self._model_path.exists():
             raise FileNotFoundError(f"Model not found: {self._model_path}")
         path = self._pick_model_path()
-        self._model = YOLO(str(path))
+        # task="segment" is required for the NCNN export: unlike a .pt
+        # checkpoint (which embeds its task), the NCNN .param/.bin pair
+        # carries no task metadata, so ultralytics falls back to
+        # task="detect" ("Unable to automatically guess model task" warning)
+        # and misparses this seg model's (1, 37, 8400) output — 4 box coords
+        # + 1 conf + 32 mask coefficients read as if it were a plain
+        # detector — which skips proper NMS and floods dozens of garbage
+        # boxes. Harmless to pass for the .pt path too (already correct there).
+        self._model = YOLO(str(path), task="segment")
         print(f"✓ Model loaded: {path}")
         # Warmup: the first predict pays one-off graph/init cost (hundreds of
         # ms); do it here on a dummy frame so the first real tick is fast.

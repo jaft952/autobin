@@ -11,12 +11,18 @@ Usage:
     python test_ibvs_centering.py                 -> cascade control (default)
     python test_ibvs_centering.py --drive         -> cascade control + chassis motion ON
     python test_ibvs_centering.py --drive --speed 0.5   -> half speed (too fast? turn this down)
+    python test_ibvs_centering.py --pt            -> force the .pt weights (skip NCNN)
 
 --speed scales EVERY motor command sent to the chassis (0..1, default 1.0).
 It's applied after cascade_controller's own MIN_SPEED floor, so even the
 weakest correction gets scaled down too — lower this first if the base
 lunges toward the tin too fast; the forward/steer ratio (curve shape) is
 unaffected.
+
+--pt forces the .pt checkpoint even if an NCNN export sits next to it
+(default: NCNN preferred when present, auto-falls back to .pt otherwise —
+see AluminiumCanDetector's use_ncnn param). Use this to A/B compare, or to
+sidestep an NCNN-specific issue without deleting the export.
 """
 
 import os
@@ -125,7 +131,7 @@ def _make_chassis():
         return None
 
 
-def main(drive=False, speed=1.0):
+def main(drive=False, speed=1.0, use_ncnn=True):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -136,7 +142,9 @@ def main(drive=False, speed=1.0):
     # test_arc_grasp.py, and the NCNN export target. The old hardcoded
     # "yolov11n-seg.pt" here had no matching *_ncnn_model export, which is
     # why this test never picked up NCNN acceleration.
-    detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ, model_path=RUNTIME_MODEL_PATH)  # type: ignore
+    detector = AluminiumCanDetector(  # type: ignore
+        device="cpu", imgsz=IMGSZ, model_path=RUNTIME_MODEL_PATH, use_ncnn=use_ncnn
+    )
     detector.start()
     centering = IBVSCentering()
     chassis = _make_chassis()
@@ -252,4 +260,5 @@ if __name__ == "__main__":
     speed = 1.0
     if "--speed" in sys.argv:
         speed = float(sys.argv[sys.argv.index("--speed") + 1])
-    main(drive=drive, speed=speed)
+    use_ncnn = "--pt" not in sys.argv
+    main(drive=drive, speed=speed, use_ncnn=use_ncnn)
