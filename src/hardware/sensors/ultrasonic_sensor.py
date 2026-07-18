@@ -16,9 +16,8 @@ WIRING (BCM numbering, defaults below):
                      |
                     GND
 
-NOTE: BCM 5/6 were chosen because the L298N motor driver already occupies
-17/27/22/23/18/19 and the PCA9685 uses I2C (BCM 2/3). The old config default
-(trig=23) collided with motor IN4 — do not wire it there.
+NOTE: BCM 5/6 remain free of conflicts: the ZK-BM1 motor driver now uses
+BCM 12/13/18/19 (see MotorPins) and the PCA9685 uses I2C (BCM 2/3).
 
 DESIGN (matches the polled-sensor abstraction, see docs/subsumption_constraints.md):
     update()             — called once per main-loop tick; fires ONE ping and

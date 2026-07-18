@@ -3,6 +3,13 @@ from typing import Protocol
 from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 
+# ZK-BM1 accepts PWM up to ~2 kHz (board limit, guarded below). But RPi.GPIO
+# PWM is SOFTWARE-timed: above a few hundred Hz the duty cycle jitters badly
+# (at 1 kHz the period is 1 ms; ±0.1 ms scheduler jitter = ±10% duty error,
+# worse while YOLO loads the CPU). 200 Hz keeps the duty accurate.
+PWM_FREQ_HZ = 200
+ZKBM1_MAX_PWM_HZ = 2000
+
 
 class PWMProtocol(Protocol):
     def start(self, value: float) -> None: ...
@@ -43,7 +50,7 @@ class MockGPIO:
     def PWM(self, pin: int, freq: int) -> PWMProtocol:
         return MockPWM(pin, freq)
 
-    def cleanup(self) -> None:
+    def cleanup(self, _pins=None) -> None:
         return
 
 
@@ -65,13 +72,22 @@ class PWMActuator:
         Right motor (B): in3 / in4
     """
 
-    def __init__(self, pins: MotorPins | None = None, calibration: MotionCalibration | None = None, pwm_freq: int = 1000) -> None:
+    def __init__(self, pins: MotorPins | None = None, calibration: MotionCalibration | None = None, pwm_freq: int = PWM_FREQ_HZ) -> None:
+        if pwm_freq > ZKBM1_MAX_PWM_HZ:
+            raise ValueError(f"pwm_freq {pwm_freq} Hz exceeds the ZK-BM1's "
+                             f"~{ZKBM1_MAX_PWM_HZ} Hz input limit")
         self.pins = pins or MotorPins()
         self.cal = calibration or MotionCalibration()
 
-        # Clean up GPIO state from previous runs, then set mode
+        my_pins = [self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4]
+
+        # Release ONLY OUR OWN pins from a previous unclean run. A global
+        # GPIO.cleanup() here would tear down every other module's setup in
+        # this process — the ultrasonic's TRIG/ECHO pins are configured
+        # BEFORE the motor driver in the runtime, so a global cleanup made
+        # every later distance read fail.
         try:
-            GPIO.cleanup()  # type: ignore
+            GPIO.cleanup(my_pins)  # type: ignore
         except Exception:
             pass
 
@@ -81,7 +97,7 @@ class PWMActuator:
             # GPIO mode already set, that's fine
             pass
 
-        GPIO.setup([self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4], GPIO.OUT)
+        GPIO.setup(my_pins, GPIO.OUT)
 
         # One PWM channel per input pin (ZK-BM1 has no separate enable line).
         self.pwm_in1 = GPIO.PWM(self.pins.in1, pwm_freq)
@@ -157,9 +173,12 @@ class PWMActuator:
     def _set_left(self, speed: float) -> None:
         # ZK-BM1: PWM the forward input for +speed, the reverse input for
         # -speed; the idle input is held at 0% (LOW). Duty cycle = speed.
+        # ORDER MATTERS: drop the idle input to 0 BEFORE raising the active
+        # one — otherwise a direction change passes through a moment with
+        # BOTH inputs high, which the board treats as a brake pulse.
         if speed > 0:
-            self.pwm_in1.ChangeDutyCycle(abs(speed))
             self.pwm_in2.ChangeDutyCycle(0)
+            self.pwm_in1.ChangeDutyCycle(abs(speed))
         elif speed < 0:
             self.pwm_in1.ChangeDutyCycle(0)
             self.pwm_in2.ChangeDutyCycle(abs(speed))
@@ -169,8 +188,8 @@ class PWMActuator:
 
     def _set_right(self, speed: float) -> None:
         if speed > 0:
-            self.pwm_in3.ChangeDutyCycle(abs(speed))
             self.pwm_in4.ChangeDutyCycle(0)
+            self.pwm_in3.ChangeDutyCycle(abs(speed))
         elif speed < 0:
             self.pwm_in3.ChangeDutyCycle(0)
             self.pwm_in4.ChangeDutyCycle(abs(speed))
