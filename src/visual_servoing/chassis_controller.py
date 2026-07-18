@@ -248,6 +248,47 @@ class ChassisController:
         time.sleep(seconds)
         self.stop()
 
+    def set_motor_pwm(self, forward: float, steer: float) -> None:
+        """Direct motor control for cascade controller and other continuous-motion systems.
+
+        Args:
+            forward: Forward/backward speed [-1, 1]. Negative = forward, positive = backward.
+            steer: Turn rate [-1, 1]. Negative = turn left, positive = turn right.
+
+        Converts to differential wheel speeds (camera-backward configuration):
+            left_speed = forward + steer   (reversed from standard)
+            right_speed = forward - steer  (reversed from standard)
+        """
+        # Clamp to [-1, 1] range
+        forward = max(-1.0, min(1.0, forward))
+        steer = max(-1.0, min(1.0, steer))
+
+        # Convert to normalized wheel speeds (REVERSED for camera-backward config)
+        left_fraction = forward + steer   # Swapped
+        right_fraction = forward - steer  # Swapped
+
+        # Apply per-motor trims here (the kinematics trim branches in
+        # PWMActuator.apply() assume positive=forward and never match this
+        # path's sign convention, so trim the fractions directly).
+        if forward < 0:  # driving forward
+            left_fraction *= self.cal.motor_a_forward_trim
+            right_fraction *= self.cal.motor_b_forward_trim
+        elif forward > 0:  # driving backward
+            left_fraction *= self.cal.motor_a_backward_trim
+            right_fraction *= self.cal.motor_b_backward_trim
+
+        # Clamp each wheel to [-1, 1]
+        left_fraction = max(-1.0, min(1.0, left_fraction))
+        right_fraction = max(-1.0, min(1.0, right_fraction))
+
+        # Scale by calibration and apply
+        left_speed = self.cal.forward_speed * left_fraction
+        right_speed = self.cal.forward_speed * right_fraction
+
+        # Trims already applied above — apply_trim=False prevents double-trimming.
+        cmd = WheelCommand(left_speed, right_speed, False, "cascade")
+        self.actuator.apply(cmd)
+
     def stop(self) -> None:
         """Cut motor power and hold position (does not release GPIO)."""
         self.actuator.stop()
