@@ -331,7 +331,7 @@ def main():
                 print(f"[CASC] {name:14} fwd={forward:+.2f} steer={steer:+.2f} "
                       f"-> L={left:+6.1f} R={right:+6.1f} (speed={speed:.2f})")
 
-            end_motion()   # JOG: auto-stop after the burst; HOLD: no-op
+            after_drive()   # jog: auto-stop after the burst; held: track release
 
     except KeyboardInterrupt:
         pass
