@@ -19,10 +19,10 @@ class MotorPins:
 @dataclass(frozen=True)
 class MotionCalibration:
 
-    forward_speed: float = 100.0
-    backward_speed: float = 100.0
-    turn_speed: float = 100.0
-    arc_speed: float = 100.0
+    forward_speed: float = 90.0
+    backward_speed: float = 90.0
+    turn_speed: float = 90.0
+    arc_speed: float = 90.0
 
     motor_a_forward_trim: float = 1.0
     motor_b_forward_trim: float = 1.0
@@ -32,10 +32,14 @@ class MotionCalibration:
     motor_b_turn_trim: float = 1.0
 
 
-    invert_left: bool = True
+    # Direction flags — derived from the tests/test_wheels.py session on
+    # 2026-07-13 with the ZK-BM1 wiring (IN1/2=left, IN3/4=right):
+    #   observed IN1=left-forward (left motor polarity already correct) and
+    #   IN4=right-forward (right motor mirrored, as differential drives are).
+    # The old True/True/True values were for the L298N-era wiring — obsolete.
+    invert_left: bool = False
     invert_right: bool = True
 
-
-    swap_left_right: bool = True
+    swap_left_right: bool = False
 
     arc_inner_wheel_ratio: float = 0.3
