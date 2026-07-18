@@ -26,6 +26,14 @@ Drive keys (same in every mode):
           resist being pushed; the same hold used during arm grabs)
   x     : quit
 
+MOVEMENT STYLE — starts in JOG:
+  JOG  (default): a tap drives for a short burst (~0.30 s) then auto-stops,
+                  so one key press = one small nudge.
+  HOLD (press j): a key sets the motion and it RUNS until you press space/f.
+                  Use this for sustained runs / watching steady behaviour.
+  j    : toggle JOG <-> HOLD
+  ] /[ : lengthen / shorten the JOG burst (0.05 s steps)
+
 Switch modes with the NUMBER keys 1 / 2 / 3 (not i/k — those are below).
 
 Tuning keys:
@@ -114,17 +122,34 @@ def main():
 
     mode = 1            # start at the lowest layer
     speed = 0.50        # command magnitude (0..1)
-    fwd_sign = -1.0     # set_motor_pwm convention: negative = forward
-    steer_sign = 1.0
+    # Polarity signs — FLIPPED 2026-07-13 after the user found forward/back
+    # AND left/right reversed on the ZK-BM1 chassis. 'i'/'k' still flip these
+    # live if a later rewire changes it again.
+    fwd_sign = 1.0      # w = forward
+    steer_sign = -1.0   # a = left
     protect = False     # reverse-protection off by default (to reproduce bug)
 
-    last_wheels = [0.0, 0.0]   # last applied left/right (for flip detection)
+    # Movement style:
+    #   "held" (default) — drive WHILE the key is held/repeating; auto-stop
+    #                      ~release_timeout after you let go. A terminal has
+    #                      no key-release event, so this watches for the key
+    #                      to stop repeating. Caveat: the OS key-repeat delay
+    #                      (~0.3-0.5s after the first press) causes one brief
+    #                      hitch before continuous motion — unavoidable here.
+    #   "jog"            — a single tap drives for jog_s then stops (a nudge).
+    style = "held"
+    jog_s = 0.30                 # jog burst seconds (tune with [ / ])
+    release_timeout = 0.40       # held: stop this long after the key stops
+
+    last_wheels = [0.0, 0.0]     # last applied left/right (for flip detection)
+    drive_state = {"last": 0.0, "moving": False}   # held-style bookkeeping
 
     print(__doc__)
     print(
         f"mode={MODE_NAMES[mode]} speed={speed:.2f} "
         f"fwd_sign={fwd_sign:+.0f} steer_sign={steer_sign:+.0f} "
-        f"protect={'ON' if protect else 'OFF'}"
+        f"protect={'ON' if protect else 'OFF'} "
+        f"style={style}" + (f" ({jog_s:.2f}s)" if style == "jog" else "")
     )
     print(
         f"calibration: forward_speed={cal.forward_speed} "
@@ -149,6 +174,7 @@ def main():
     def do_stop():
         actuator.stop()
         remember(0.0, 0.0)
+        drive_state["moving"] = False
         print("STOP (coast — wheels free)")
 
     def do_brake():
@@ -156,12 +182,35 @@ def main():
         # braking is a hardware state (shorted windings), not a wheel command.
         actuator.brake()
         remember(0.0, 0.0)
+        drive_state["moving"] = False
         print("BRAKE (active hold — try pushing the robot, it should resist)")
+
+    def after_drive():
+        """Called right after a motion command is applied.
+        jog  : run jog_s then auto-stop (tap = nudge).
+        held : mark 'moving'; idle_check() stops it once the key stops
+               repeating (i.e. you released it)."""
+        if style == "jog":
+            time.sleep(jog_s)
+            actuator.stop()
+            remember(0.0, 0.0)
+        else:
+            drive_state["last"] = time.time()
+            drive_state["moving"] = True
+
+    def idle_check():
+        """held-style: stop shortly after the key stops arriving (release)."""
+        if (style == "held" and drive_state["moving"]
+                and time.time() - drive_state["last"] > release_timeout):
+            actuator.stop()
+            remember(0.0, 0.0)
+            drive_state["moving"] = False
 
     try:
         while True:
             key = get_key(timeout=0.1)
             if key is None:
+                idle_check()          # held-style: stop after key release
                 continue
             key = key.lower()
 
@@ -194,6 +243,19 @@ def main():
                 protect = not protect
                 print(f"[protect] reverse-protection {'ON' if protect else 'OFF'}")
                 continue
+            if key == "j":
+                style = "jog" if style == "held" else "held"
+                do_stop()
+                print(f"[style] {'JOG — a tap drives ' + format(jog_s, '.2f') + 's then stops' if style == 'jog' else 'HELD — drive while key held, stop on release'}")
+                continue
+            if key in ("]", "}"):
+                jog_s = min(2.0, jog_s + 0.05)
+                print(f"[jog] burst = {jog_s:.2f}s")
+                continue
+            if key in ("[", "{"):
+                jog_s = max(0.05, jog_s - 0.05)
+                print(f"[jog] burst = {jog_s:.2f}s")
+                continue
             if key == " ":
                 do_stop()
                 continue
@@ -212,6 +274,7 @@ def main():
                 print(f"[wheel] {'LEFT' if key == 'l' else 'RIGHT'} only  "
                       f"L={left:+.1f} R={right:+.1f}  "
                       f"(swap_left_right={cal.swap_left_right} may swap physical side)")
+                after_drive()
                 continue
 
             if key not in KEY_MAP:
@@ -267,6 +330,8 @@ def main():
                 remember(left, right)
                 print(f"[CASC] {name:14} fwd={forward:+.2f} steer={steer:+.2f} "
                       f"-> L={left:+6.1f} R={right:+6.1f} (speed={speed:.2f})")
+
+            end_motion()   # JOG: auto-stop after the burst; HOLD: no-op
 
     except KeyboardInterrupt:
         pass
