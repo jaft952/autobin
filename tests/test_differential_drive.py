@@ -21,12 +21,18 @@ Drive keys (same in every mode):
   l/r : LEFT/RIGHT wheel only (finds a weak or dead motor;
         note swap_left_right still applies, so "LEFT" may be the
         other physical wheel — that itself is useful info)
-  space : stop                x : quit
+  space : stop (COAST — wheels left free to spin)
+  f     : BRAKE (active electrical hold — windings shorted, wheels
+          resist being pushed; the same hold used during arm grabs)
+  x     : quit
+
+Switch modes with the NUMBER keys 1 / 2 / 3 (not i/k — those are below).
 
 Tuning keys:
   +/- : speed up/down (0.05 steps)
-  i   : invert forward polarity (modes 1 and 3)
-  k   : invert steer polarity   (modes 1 and 3)
+  i   : invert forward polarity  (only affects modes 1 & 3; mode 2 uses the
+        kinematics' own calibrated directions and ignores this)
+  k   : invert steer polarity    (only affects modes 1 & 3, same reason)
   b   : toggle reverse-protection — inserts a short stop before any wheel
         flips direction. If stalling/buzzing goes away with this ON, the
         cause is current spikes from instant direction flips (power/driver,
@@ -143,7 +149,14 @@ def main():
     def do_stop():
         actuator.stop()
         remember(0.0, 0.0)
-        print("STOP")
+        print("STOP (coast — wheels free)")
+
+    def do_brake():
+        # Works in every mode: all three layers drive the SAME actuator, and
+        # braking is a hardware state (shorted windings), not a wheel command.
+        actuator.brake()
+        remember(0.0, 0.0)
+        print("BRAKE (active hold — try pushing the robot, it should resist)")
 
     try:
         while True:
@@ -183,6 +196,9 @@ def main():
                 continue
             if key == " ":
                 do_stop()
+                continue
+            if key == "f":
+                do_brake()
                 continue
 
             # ---------- single wheel tests ----------
