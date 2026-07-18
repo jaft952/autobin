@@ -1,4 +1,10 @@
+<<<<<<< HEAD
 # pip install -r requirements.txt
+=======
+
+#   -> Windows with an NVIDIA GPU and want CUDA? install torch separately:
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+>>>>>>> 67cae7f (modify requirement.txt)
 
 # ── Core runtime (needed to run the robot, tools and web dashboard) ──────────
 numpy>=1.24.0
@@ -23,9 +29,7 @@ pandas>=1.5.0             # monitor_training.py (metrics table)
 matplotlib>=3.7.0         # monitor_training.py (curves)
 tqdm>=4.65.0              # convert_coco_to_yolo.py (progress bars)
 
-
-# ── Raspberry Pi hardware — UNCOMMENT on the Pi ───
-RPi.GPIO>=0.7                          # Pi 4/older. On Pi 5 / Bookworm use:
-adafruit-circuitpython-servokit>=1.3   # provides `import adafruit_servokit`
-ncnn>=1.0.20230000
-
+# ── Raspberry Pi hardware (Pi only) ─────────────────────────────────────────
+# RPi.GPIO>=0.7
+# adafruit-circuitpython-servokit>=1.3 
+# ncnn>=1.0.20230000
