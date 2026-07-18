@@ -1,29 +1,37 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
 # pip install -r requirements.txt
-=======
-
+#
+# torch/torchvision are NOT pinned to a platform build here — `pip install
+# torch` picks whatever your platform's default PyPI wheel is, and that can
+# be WRONG for this project's two real targets:
+#
+#   -> Raspberry Pi / any ARM Linux board (no NVIDIA GPU) — MUST be CPU-only.
+#      A CUDA build (torch==X.Y.Z+cuNNN) still IMPORTS fine but SIGILLs the
+#      instant it runs real math (matmul/conv) — its CPU kernels use
+#      instructions this chip doesn't have. Diagnosed 2026-07-18 with
+#      tests/diagnose_runtime.py after test_ibvs_centering/test_arc_grasp
+#      both died with "Illegal instruction" during YOLO's first .predict.
+#      Install explicitly (don't rely on the default index):
+#          pip uninstall -y torch torchvision
+#          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#
 #   -> Windows with an NVIDIA GPU and want CUDA? install torch separately:
 #      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
->>>>>>> 67cae7f (modify requirement.txt)
-=======
-
-#   -> Windows with an NVIDIA GPU and want CUDA? install torch separately:
-#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
->>>>>>> 638aaea2c5af9c552cd037186821f048ce792c4e
+#
+# If neither applies (plain CPU dev machine), the `torch>=2.0.0` line below
+# is fine as-is.
 
 # ── Core runtime (needed to run the robot, tools and web dashboard) ──────────
 numpy>=1.24.0
 opencv-python>=4.7.0
 PyYAML>=6.0
 
-# Perception — YOLO11n-seg detector (ultralytics pulls a matching torch build)
+# Perception — YOLO11n-seg detector (ultralytics pulls a matching torch build
+# by default — see the platform note above before trusting that default on
+# the Pi or on a CUDA Windows box)
 ultralytics>=8.0.0
 torch>=2.0.0
 torchvision>=0.15.0
 
-# Robotic arm inverse kinematics 
 # Robotic arm inverse kinematics (analytical solver seeds the ikpy backup)
 ikpy>=3.1
 
@@ -39,7 +47,5 @@ tqdm>=4.65.0              # convert_coco_to_yolo.py (progress bars)
 # ── Raspberry Pi hardware (Pi only) ─────────────────────────────────────────
 
 # RPi.GPIO>=0.7
-# adafruit-circuitpython-servokit>=1.3 
+# adafruit-circuitpython-servokit>=1.3
 # ncnn>=1.0.20230000
-
-

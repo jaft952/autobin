@@ -8,8 +8,15 @@ Architecture:
   - Dynamic filter tuning based on mask_area confidence
 
 Usage:
-    python test_ibvs_centering.py           -> cascade control (default)
-    python test_ibvs_centering.py --drive   -> cascade control + chassis motion ON
+    python test_ibvs_centering.py                 -> cascade control (default)
+    python test_ibvs_centering.py --drive         -> cascade control + chassis motion ON
+    python test_ibvs_centering.py --drive --speed 0.5   -> half speed (too fast? turn this down)
+
+--speed scales EVERY motor command sent to the chassis (0..1, default 1.0).
+It's applied after cascade_controller's own MIN_SPEED floor, so even the
+weakest correction gets scaled down too — lower this first if the base
+lunges toward the tin too fast; the forward/steer ratio (curve shape) is
+unaffected.
 """
 
 import os
@@ -112,7 +119,7 @@ def _make_chassis():
         return None
 
 
-def main(drive=False):
+def main(drive=False, speed=1.0):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
     from src.perception.detector import AluminiumCanDetector
@@ -131,11 +138,16 @@ def main(drive=False):
     print(f"Vision: ~30 Hz (YOLO11n-seg + IBVS)")
     print(f"Motor: ~1000 Hz (smooth interpolation)")
     print(f"Drive: {'ON' if driving else 'OFF'}")
+    print(f"Speed scale: {speed:.2f}  (--speed 0.x to slow the approach down)")
     print(f"Keys: m = toggle drive, q = quit")
     print(f"{'='*70}\n")
 
-    # Create cascade controller (non-blocking threads)
-    controller = CascadeController(detector, centering, chassis)
+    # Create cascade controller (non-blocking threads). driving=driving here is
+    # the REAL gate on wheel output — chassis is wired in regardless of this
+    # flag, so without it the base would move on every detection even while
+    # this script's own `driving` variable (used only for the on-screen label)
+    # still read False.
+    controller = CascadeController(detector, centering, chassis, speed_scale=speed, driving=driving)
     controller.start()
 
     show = True
@@ -170,6 +182,7 @@ def main(drive=False):
                             break
                         if key == ord("m") and chassis is not None:
                             driving = not driving
+                            controller.set_driving(driving)  # actually gate the wheels
                             print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
 
                 except cv2.error:
@@ -227,4 +240,7 @@ def main(drive=False):
 
 if __name__ == "__main__":
     drive = "--drive" in sys.argv
-    main(drive=drive)
+    speed = 1.0
+    if "--speed" in sys.argv:
+        speed = float(sys.argv[sys.argv.index("--speed") + 1])
+    main(drive=drive, speed=speed)

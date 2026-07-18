@@ -256,21 +256,42 @@ class CascadeController:
     Non-blocking architecture for real-time performance.
     """
 
-    def __init__(self, detector, ibvs_centering, chassis_controller=None):
+    def __init__(self, detector, ibvs_centering, chassis_controller=None, speed_scale: float = 1.0,
+                 driving: bool = True):
         """
         Args:
             detector: AluminiumCanDetector instance
             ibvs_centering: IBVSCentering controller instance
             chassis_controller: Optional ChassisController for actual motor control
+            speed_scale: uniform multiplier (0..1) applied to every motor command
+                AFTER the MIN_SPEED floor in _interpolate_command, so it turns
+                the whole approach down (including the floor itself) while
+                keeping the forward/steer ratio — i.e. the curve shape — intact.
+            driving: whether motor commands actually reach the chassis. False
+                still runs vision/detection, just withholds wheel output — use
+                this (via set_driving()) for a real "drive off" switch; a
+                caller-side display flag alone does NOT stop the wheels,
+                because chassis_controller is wired in as soon as it's passed
+                here regardless of this flag's initial value.
         """
         self.detector = detector
         self.ibvs_centering = ibvs_centering
         self.chassis = chassis_controller
+        self.speed_scale = speed_scale
+        self.driving = driving
 
         self.buffer = TrackingBuffer(max_size=5)
         self.vision_thread = None
         self.motor_thread = None
         self.running = False
+
+    def set_driving(self, driving: bool):
+        """Actually enable/disable motor output (not just a display label).
+        Safe to call from any thread; the motor thread reads self.driving
+        on its own attribute (bool assignment is atomic under the GIL)."""
+        self.driving = driving
+        if self.motor_thread is not None:
+            self.motor_thread.driving = driving
 
     def start(self):
         """Launch vision and motor threads."""
@@ -280,7 +301,7 @@ class CascadeController:
             self.detector, self.ibvs_centering, self.buffer
         )
         self.motor_thread = _MotorWorker(
-            self.buffer, self.chassis
+            self.buffer, self.chassis, speed_scale=self.speed_scale, driving=self.driving
         )
 
         self.vision_thread.daemon = True
@@ -371,10 +392,18 @@ class _VisionWorker(threading.Thread):
 class _MotorWorker(threading.Thread):
     """Motor control thread (~1000 Hz)."""
 
-    def __init__(self, buffer: TrackingBuffer, chassis_controller=None):
+    def __init__(self, buffer: TrackingBuffer, chassis_controller=None, speed_scale: float = 1.0,
+                 driving: bool = True):
         super().__init__()
         self.buffer = buffer
         self.chassis = chassis_controller
+        self.speed_scale = speed_scale
+        # Plain bool attribute: safe to flip from another thread under the
+        # GIL, no lock needed. This is the ACTUAL gate on motor output — a
+        # caller that only changes its own "driving" display variable does
+        # NOT stop the wheels; it must call CascadeController.set_driving().
+        self.driving = driving
+        self._was_driving = driving
         self.running = False
 
         # Filters for X and Y axes
@@ -480,13 +509,27 @@ class _MotorWorker(threading.Thread):
         return MotorCommand(forward, steer, t)
 
     def _send_motor_command(self, cmd: MotorCommand):
-        """Send command to chassis motor driver."""
+        """Send command to chassis motor driver — gated by self.driving.
+
+        driving=False must ACTUALLY withhold motor output, not just change a
+        display label — a chassis is constructed and wired in regardless of
+        the --drive flag, so without this gate the base moves the instant a
+        detection comes in even while the UI still reads "DRIVE OFF"."""
         self.last_cmd = cmd  # Track for display/logging
-        if self.chassis:
-            try:
-                self.chassis.set_motor_pwm(cmd.forward, cmd.steer)
-            except Exception as e:
-                print(f"[Motor] Error sending command: {e}")
+        if not self.chassis:
+            return
+        try:
+            if self.driving:
+                self.chassis.set_motor_pwm(
+                    cmd.forward * self.speed_scale, cmd.steer * self.speed_scale
+                )
+            elif self._was_driving:
+                # Just turned off — actively cut power once, don't just stop
+                # sending new commands (the last PWM value would keep holding).
+                self.chassis.stop()
+            self._was_driving = self.driving
+        except Exception as e:
+            print(f"[Motor] Error sending command: {e}")
 
     def stop(self):
         self.running = False
