@@ -267,13 +267,14 @@ class ChassisController:
         left_fraction = forward + steer   # Swapped
         right_fraction = forward - steer  # Swapped
 
-        # Apply per-motor trims here (the kinematics trim branches in
-        # PWMActuator.apply() assume positive=forward and never match this
-        # path's sign convention, so trim the fractions directly).
-        if forward < 0:  # driving forward
+        # Apply per-motor trims here (PWMActuator's trim branches never match
+        # this path). On THIS robot positive forward = robot forward — verified
+        # via test_differential_drive CASC; the old `forward < 0` branch applied
+        # the forward trims while BACKING UP and vice versa.
+        if forward > 0:  # driving forward
             left_fraction *= self.cal.motor_a_forward_trim
             right_fraction *= self.cal.motor_b_forward_trim
-        elif forward > 0:  # driving backward
+        elif forward < 0:  # driving backward
             left_fraction *= self.cal.motor_a_backward_trim
             right_fraction *= self.cal.motor_b_backward_trim
 
