@@ -203,16 +203,38 @@ class AluminiumCanDetector:
             self._last_frame = frame
         return frame if ret else None
 
-    def infer(self, frame) -> DetectionResult:
-        """Run YOLO11n-seg and return DetectionResult with segmentation masks."""
+    def infer(self, frame, imgsz: Optional[int] = None,
+              fast: bool = False) -> DetectionResult:
+        """Run YOLO11n-seg and return DetectionResult with segmentation masks.
+
+        imgsz: per-call inference size override (e.g. 320 for a faster, less
+            accurate pass). NCNN exports may reject a size other than the one
+            they were exported at — on failure this falls back to the default
+            size permanently (logged once).
+        fast: skip per-detection orientation estimation (upright/lying) —
+            saves time when the caller only tracks position (cruise approach).
+        """
         result = DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
-        yolo_results = self._model.predict( # type: ignore
-            source=frame,
-            conf=self._conf_threshold,
-            device=self._resolve_device(),
-            imgsz=self._imgsz,
-            verbose=False,
-        )
+        size = imgsz or self._imgsz
+        if imgsz and getattr(self, "_imgsz_override_broken", False):
+            size = self._imgsz
+        try:
+            yolo_results = self._model.predict( # type: ignore
+                source=frame,
+                conf=self._conf_threshold,
+                device=self._resolve_device(),
+                imgsz=size,
+                verbose=False,
+            )
+        except Exception as exc:
+            if size == self._imgsz:
+                raise           # the normal size failed — a real error
+            # The override size was rejected (NCNN exports are fixed-shape):
+            # remember and permanently fall back to the export size.
+            self._imgsz_override_broken = True
+            print(f"[detector] imgsz={size} rejected by this model backend "
+                  f"({exc}); staying at {self._imgsz}.")
+            return self.infer(frame, imgsz=None, fast=fast)
         for r in yolo_results:
             polys = r.masks.xy if r.masks is not None else None
             for i, box in enumerate(r.boxes): # type: ignore
@@ -223,8 +245,9 @@ class AluminiumCanDetector:
                     BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=conf, mask_poly=poly)
                 )
         result.detections = _filter_contained_boxes(result.detections)
-        for d in result.detections:
-            d.orientation = estimate_orientation(frame, d)
+        if not fast:
+            for d in result.detections:
+                d.orientation = estimate_orientation(frame, d)
         return result
 
     def detect(self) -> DetectionResult:

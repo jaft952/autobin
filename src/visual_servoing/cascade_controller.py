@@ -292,8 +292,11 @@ class CascadeController:
             mode: "step" = pivot until the tin is central, then drive straight,
                 re-aim when it drifts out of the central 70%;
                 "chase" = car-like continuous pursuit (drive + steer together),
-                pivoting only if the tin nears the frame edge.
-                Both stop+brake once inside the arc-grasp zone.
+                pivoting only if the tin nears the frame edge;
+                "cruise" = chase without the stale-data brake-stops: fast
+                320px detection, dead-reckoning between frames, speed tapers
+                with distance for a smooth continuous approach.
+                All stop+brake once inside the arc-grasp zone.
         """
         self.detector = detector
         self.ibvs_centering = ibvs_centering
@@ -325,7 +328,8 @@ class CascadeController:
         self.running = True
 
         self.vision_thread = _VisionWorker(
-            self.detector, self.ibvs_centering, self.buffer
+            self.detector, self.ibvs_centering, self.buffer,
+            get_mode=lambda: self.mode
         )
         self.motor_thread = _MotorWorker(
             self.buffer, self.chassis, speed_scale=self.speed_scale,
@@ -361,11 +365,13 @@ class CascadeController:
 class _VisionWorker(threading.Thread):
     """Vision capture thread (~30 Hz)."""
 
-    def __init__(self, detector, ibvs_centering, buffer: TrackingBuffer):
+    def __init__(self, detector, ibvs_centering, buffer: TrackingBuffer,
+                 get_mode=None):
         super().__init__()
         self.detector = detector
         self.ibvs = ibvs_centering
         self.buffer = buffer
+        self.get_mode = get_mode or (lambda: "step")
         self.running = False
 
     def run(self):
@@ -383,7 +389,13 @@ class _VisionWorker(threading.Thread):
                     time.sleep(0.001)
                     continue
 
-                result = self.detector.infer(frame)
+                # cruise trades accuracy for detection RATE: 320px inference
+                # (auto-falls back if the model backend rejects it) and no
+                # orientation estimation. step/chase keep the full pipeline.
+                if self.get_mode() == "cruise":
+                    result = self.detector.infer(frame, imgsz=320, fast=True)
+                else:
+                    result = self.detector.infer(frame)
                 status = self.ibvs.update(result)
 
                 # Extract mask_area from best detection
@@ -431,7 +443,7 @@ class _MotorWorker(threading.Thread):
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
         self.driving = driving  # actual gate on motor output
         self._was_driving = driving
-        self.mode = mode        # "step" = aim-then-advance | "chase" = continuous arc pursuit
+        self.mode = mode        # "step" | "chase" | "cruise" (see CascadeController)
         self._aiming = False    # pivot-in-place state (both modes use it)
         self._last_good: Optional[VisionState] = None  # newest DETECTED state
         self._moving = False    # last command was nonzero -> brake on stop
@@ -477,10 +489,13 @@ class _MotorWorker(threading.Thread):
             # gone, camera dead) or already aligned -> zero, and
             # _send_motor_command turns that into an active BRAKE, not a coast
             # (coasting at speed is what kept overshooting the grasp zone).
+            # cruise keeps rolling between detections (dead-reckons on the
+            # spline + tapers speed with distance) instead of brake-waiting.
+            cmd_aged = ((t_now - self.last_vision_time) > CMD_MAX_AGE_S
+                        and self.mode != "cruise")
             good = self._last_good
             if (good is None or (t_now - good.timestamp) > DETECT_GRACE_S
-                    or good.aligned
-                    or (t_now - self.last_vision_time) > CMD_MAX_AGE_S):
+                    or good.aligned or cmd_aged):
                 # Lost/aligned -> stop; data merely AGED -> brake and wait for
                 # the next detection rather than acting on a stale decision.
                 cmd = MotorCommand(0.0, 0.0, t_now)
@@ -513,15 +528,18 @@ class _MotorWorker(threading.Thread):
         px_filt, vx_filt = self.filter_x.update(state.error_x, t)
         py_filt, vy_filt = self.filter_y.update(state.error_y, t)
 
-        # Set trajectory splines for next update (33ms at 30Hz)
-        t_next = t + 0.033
+        # Spline horizon: cruise dead-reckons the error trend across the real
+        # inference gap so the base can keep rolling between detections;
+        # step/chase only bridge one nominal frame.
+        horizon = 0.30 if self.mode == "cruise" else 0.033
+        t_next = t + horizon
 
         self.interp_x.set_waypoints(
-            px_filt, px_filt + vx_filt * 0.033,
+            px_filt, px_filt + vx_filt * horizon,
             vx_filt, vx_filt, t, t_next
         )
         self.interp_y.set_waypoints(
-            py_filt, py_filt + vy_filt * 0.033,
+            py_filt, py_filt + vy_filt * horizon,
             vy_filt, vy_filt, t, t_next
         )
 
@@ -561,20 +579,23 @@ class _MotorWorker(threading.Thread):
         if self._aiming:
             forward = self.limiter_y.limit(0.0)
             steer = self.limiter_x.limit(-px * STEER_GAIN)
-        elif self.mode == "chase":
-            # Car-like continuous pursuit: keep rolling, steer while moving.
-            forward = self.limiter_y.limit(-py * FWD_GAIN)
-            steer = self.limiter_x.limit(-px * STEER_GAIN)
-        else:
+        elif self.mode == "step":
             # step: drive straight; lateral drift is handled by re-aiming.
             forward = self.limiter_y.limit(-py * FWD_GAIN)
             steer = self.limiter_x.limit(0.0)
+        else:
+            # chase/cruise: car-like — keep rolling, steer while moving.
+            # (P on distance already tapers cruise speed as the tin nears.)
+            forward = self.limiter_y.limit(-py * FWD_GAIN)
+            steer = self.limiter_x.limit(-px * STEER_GAIN)
 
         # MIN duty floor (stall avoidance) with a true deadband under it.
         # 0.50 boosted every small correction to a half-speed lunge -> ±0.4
         # error_x limit cycle around the target; 0.35 still beats stall.
+        # cruise floors LOWER so the taper can actually slow the approach —
+        # raise it if the base stalls while creeping in.
         mag = math.sqrt(forward**2 + steer**2)
-        MIN_SPEED = 0.35
+        MIN_SPEED = 0.22 if self.mode == "cruise" else 0.35
         if 0.01 < mag < MIN_SPEED:
             scale = MIN_SPEED / mag
             forward *= scale

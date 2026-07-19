@@ -9,12 +9,15 @@ Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x
   --turn  : steer speed multiplier, 0..1 (default: same as --speed; turning has
             no rolling friction, so it usually wants a LOWER value, e.g.
             --speed 0.6 --turn 0.3)
-  --mode  : step  = aim, drive straight, re-aim when tin leaves central 70% (default)
-            chase = car-like continuous pursuit: drive + steer at the same time,
-                    pivoting only if the tin nears the frame edge
-            (both brake inside the arc-grasp zone / on lost detection)
+  --mode  : step   = aim, drive straight, re-aim when tin leaves central 70% (default)
+            chase  = car-like continuous pursuit: drive + steer at the same time,
+                     pivoting only if the tin nears the frame edge
+            cruise = chase, but never stops to wait for detections: fast 320px
+                     inference (auto-fallback if the model rejects it),
+                     dead-reckons between frames, slows as it nears the tin
+            (all brake inside the arc-grasp zone / on lost detection)
   --pt    : force the .pt weights, skip NCNN (A/B comparison)
-Keys: m = toggle drive, g = toggle arm, n = switch step/chase, q = quit.
+Keys: m = toggle drive, g = toggle arm, n = cycle step/chase/cruise, q = quit.
 A grab brakes the base, runs the blocking arc-grasp sequence (grab -> dump ->
 home, 4 s cooldown via ArmExecutor), then releases the brake.
 """
@@ -242,7 +245,7 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
                             armed = not armed
                             print(f"\n[mode] arm {'ARMED — grabs when centered+stable' if armed else 'off'}\n")
                     if key == ord("n"):
-                        mode = "chase" if mode == "step" else "step"
+                        mode = {"step": "chase", "chase": "cruise", "cruise": "step"}[mode]
                         controller.set_mode(mode)
                         print(f"\n[mode] pursuit mode -> {mode.upper()}\n")
 
@@ -317,7 +320,7 @@ if __name__ == "__main__":
     mode = "step"
     if "--mode" in sys.argv:
         mode = sys.argv[sys.argv.index("--mode") + 1]
-        if mode not in ("step", "chase"):
-            sys.exit(f"--mode must be 'step' or 'chase', got '{mode}'")
+        if mode not in ("step", "chase", "cruise"):
+            sys.exit(f"--mode must be 'step', 'chase' or 'cruise', got '{mode}'")
     use_ncnn = "--pt" not in sys.argv
     main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn, mode=mode)
