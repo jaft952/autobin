@@ -97,6 +97,13 @@ class IBVSCentering:
         self._smoothed: Optional[Tuple[float, float]] = None
         self._missed = 0
         self._aligned_streak = 0
+        # Anywhere the arc-grasp grid can solve counts as aligned — the arm
+        # covers that whole area, so the base needn't chase the exact point.
+        try:
+            from src.arm.arc_grasp import ArcGraspSolver
+            self._arc: Optional[object] = ArcGraspSolver()
+        except Exception:
+            self._arc = None
 
     def reset(self):
         """Forget smoothing/debounce state (call when starting a new approach)."""
@@ -154,6 +161,14 @@ class IBVSCentering:
             error_y = max(error_y, cfg.tolerance + 0.2)
 
         aligned = math.hypot(error_x, error_y) <= cfg.tolerance
+        if not aligned and self._arc is not None:
+            # In-grid = grabbable right here, regardless of the sweet-spot error.
+            nx, ny = sx / detection.frame_width, sy / detection.frame_height
+            try:
+                pose = "lying" if is_lying else "upright"
+                aligned = self._arc.solve(nx, ny, pose=pose) is not None
+            except Exception:
+                pass
         self._aligned_streak = self._aligned_streak + 1 if aligned else 0
         stable = self._aligned_streak >= cfg.stable_frames
 

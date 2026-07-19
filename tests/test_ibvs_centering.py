@@ -23,52 +23,32 @@ from src.visual_servoing.cascade_controller import CascadeController
 
 
 def _interpret_motion_command(cmd):
-    """Convert motor command to human-readable motion description."""
+    """Human-readable motion from a MotorCommand.
+
+    Sign convention (hardware-verified via test_differential_drive CASC):
+    positive forward = robot forward, positive steer = turn LEFT."""
     if cmd is None:
         return "IDLE", 0, 0
 
     forward = cmd.forward
     steer = cmd.steer
-
-    # Determine motion type
     mag = math.sqrt(forward**2 + steer**2)
 
     if mag < 0.05:
-        motion = "HOLD"
-        angle = 0
-        intensity = 0
-    elif abs(steer) < 0.1:
-        # Mostly forward/backward
-        if forward < -0.2:
-            motion = "FORWARD"
-            angle = 0
-            intensity = abs(forward)
-        elif forward > 0.2:
-            motion = "BACKWARD"
-            angle = 0
-            intensity = abs(forward)
-        else:
-            motion = "HOLD"
-            angle = 0
-            intensity = 0
+        return "HOLD", 0, 0
+
+    side = "LEFT" if steer > 0 else "RIGHT"
+    if abs(steer) < 0.1:
+        motion = "FORWARD" if forward > 0 else "BACKWARD"
+        intensity = abs(forward)
+    elif abs(forward) < 0.1:
+        motion = f"TURN {side}"
+        intensity = abs(steer)
     else:
-        # Arc motion with turn
-        angle_deg = math.atan2(steer, -forward) * 180 / math.pi  # Convert to angle
+        motion = f"ARC {'FWD' if forward > 0 else 'BACK'}-{side}"
+        intensity = mag
 
-        if forward < -0.1:
-            motion = f"ARC_FWD ({angle_deg:+.0f}°)"
-            angle = angle_deg
-            intensity = abs(forward)
-        elif forward > 0.1:
-            motion = f"ARC_BACK ({angle_deg:+.0f}°)"
-            angle = angle_deg
-            intensity = abs(forward)
-        else:
-            motion = f"TURN ({angle_deg:+.0f}°)"
-            angle = angle_deg
-            intensity = abs(steer)
-
-    return motion, angle, intensity
+    return motion, steer, intensity
 
 
 def _draw_status_overlay(frame, status, cmd, driving=None):
@@ -79,13 +59,20 @@ def _draw_status_overlay(frame, status, cmd, driving=None):
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    banner_top = fh - 72  # dark banner so text stays legible over a busy background
+    banner_top = fh - 110  # dark banner so text stays legible over a busy background
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, banner_top), (fw, fh), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
 
-    # Motion command (upper line)
-    motion, angle, intensity = _interpret_motion_command(cmd)
+    # Big direction indicator (bottom-left): which way it is about to move.
+    motion, steer, intensity = _interpret_motion_command(cmd)
+    if intensity > 0:
+        arrow = "<<< " if steer > 0.05 else (" >>>" if steer < -0.05 else "")
+        big = f"{arrow}{motion}{arrow}" if arrow else motion
+        cv2.putText(frame, big, (20, fh - 72), font, 1.1, (0, 255, 255), 3)
+    else:
+        cv2.putText(frame, motion, (20, fh - 72), font, 1.1, (170, 170, 170), 3)
+
     motion_color = (0, 255, 0) if intensity > 0 else (170, 170, 170)
     motion_text = f"Motion: {motion}  |  intensity={intensity:.2f}"
     cv2.putText(frame, motion_text, (20, fh - 42), font, 0.7, motion_color, 2)
@@ -179,8 +166,11 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False):
 
     IMGSZ = 640
 
+    # 720p (matches CameraSensor runtime): the 1080p default overflowed the
+    # VNC screen, hiding the bottom status banner entirely.
     detector = AluminiumCanDetector(  # type: ignore
-        device="cpu", imgsz=IMGSZ, model_path=RUNTIME_MODEL_PATH, use_ncnn=use_ncnn
+        device="cpu", imgsz=IMGSZ, model_path=RUNTIME_MODEL_PATH, use_ncnn=use_ncnn,
+        frame_width=1280, frame_height=720,
     )
     detector.start()
     centering = IBVSCentering()

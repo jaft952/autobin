@@ -254,6 +254,11 @@ class VelocityLimiter:
         self.last_velocity += delta_v
         return self.last_velocity
 
+    def reset(self):
+        """Forget slew state. Call whenever output is force-zeroed, or the
+        next limit() slews FROM the stale value — a wrong-direction lurch."""
+        self.last_velocity = 0.0
+
 
 class CascadeController:
     """
@@ -437,6 +442,8 @@ class _MotorWorker(threading.Thread):
             stale = latest is None or (t_now - latest.timestamp) > VISION_STALE_S
             if stale or not latest.detected or latest.aligned:
                 cmd = MotorCommand(0.0, 0.0, t_now)
+                self.limiter_x.reset()   # else the next command slews from a
+                self.limiter_y.reset()   # stale value = random-direction lurch
             else:
                 cmd = self._interpolate_command(t_now)
 
@@ -489,13 +496,16 @@ class _MotorWorker(threading.Thread):
         px, _vx = self.interp_x.evaluate(t)
         py, _vy = self.interp_y.evaluate(t)
 
-        P_GAIN = 1.5
-        forward = self.limiter_y.limit(-py * P_GAIN)
-        steer = self.limiter_x.limit(-px * P_GAIN)
+        FWD_GAIN = 1.5
+        STEER_GAIN = 1.0   # yaw overshoots hard at vision rate — keep gentler than forward
+        forward = self.limiter_y.limit(-py * FWD_GAIN)
+        steer = self.limiter_x.limit(-px * STEER_GAIN)
 
         # MIN duty floor (stall avoidance) with a true deadband under it.
+        # 0.50 boosted every small correction to a half-speed lunge -> ±0.4
+        # error_x limit cycle around the target; 0.35 still beats stall.
         mag = math.sqrt(forward**2 + steer**2)
-        MIN_SPEED = 0.50
+        MIN_SPEED = 0.35
         if 0.01 < mag < MIN_SPEED:
             scale = MIN_SPEED / mag
             forward *= scale
