@@ -22,6 +22,13 @@ import math
 # camera stops the base almost immediately.
 DETECT_GRACE_S = 0.6
 
+# A motor command may only act on vision data at most this old — beyond it,
+# BRAKE and wait for the next detection instead of extrapolating. Without
+# this cap the interpolator holds the last spline indefinitely, so the base
+# kept executing a stale decision for the whole (slow) inference gap:
+# observed as "lunge N steps forward, N steps back" hunting at the target.
+CMD_MAX_AGE_S = 0.30
+
 
 @dataclass
 class VisionState:
@@ -472,7 +479,10 @@ class _MotorWorker(threading.Thread):
             # (coasting at speed is what kept overshooting the grasp zone).
             good = self._last_good
             if (good is None or (t_now - good.timestamp) > DETECT_GRACE_S
-                    or good.aligned):
+                    or good.aligned
+                    or (t_now - self.last_vision_time) > CMD_MAX_AGE_S):
+                # Lost/aligned -> stop; data merely AGED -> brake and wait for
+                # the next detection rather than acting on a stale decision.
                 cmd = MotorCommand(0.0, 0.0, t_now)
                 self.limiter_x.reset()   # else the next command slews from a
                 self.limiter_y.reset()   # stale value = random-direction lurch
