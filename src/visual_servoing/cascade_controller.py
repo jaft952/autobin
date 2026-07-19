@@ -527,7 +527,7 @@ class _MotorWorker(threading.Thread):
         try:
             if self.driving:
                 self.chassis.set_motor_pwm(
-                    cmd.forward * self.speed_scale, cmd.steer * self.speed_scale
+                    -cmd.forward * self.speed_scale, -cmd.steer * self.speed_scale
                 )
             elif self._was_driving:
                 # Just turned off — actively cut power once, don't just stop

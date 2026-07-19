@@ -192,8 +192,13 @@ def main(drive=False, speed=1.0, use_ncnn=True):
 
                     if frame is not None:
                         _draw_status_overlay(frame, status, cmd, driving if chassis is not None else None)
-                        cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
+                    else:
+                        import numpy as np
+                        frame = np.zeros((540, 960, 3), dtype=np.uint8)
+                        cv2.putText(frame, "[Waiting for first camera frame + detection...]",
+                                    (20, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
 
+                    cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
