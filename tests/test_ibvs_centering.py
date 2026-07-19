@@ -1,10 +1,14 @@
 """
 Real-time Visual Servoing with Cascade Control (multi-rate, smooth motion).
 
-Usage: python test_ibvs_centering.py [--drive] [--speed 0.x] [--pt]
+Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--pt]
   --drive : enable chassis motion (default off)
+  --arm   : enable arc-grasp grabbing when centered+stable (default off)
   --speed : motor command multiplier, 0..1 (default 1.0, too fast? lower it)
   --pt    : force the .pt weights, skip NCNN (A/B comparison)
+Keys: m = toggle drive, g = toggle arm, q = quit.
+A grab brakes the base, runs the blocking arc-grasp sequence (grab -> dump ->
+home, 4 s cooldown via ArmExecutor), then releases the brake.
 """
 
 import os
@@ -98,6 +102,64 @@ def _draw_status_overlay(frame, status, cmd, driving=None):
         cv2.putText(frame, dmode, (fw - 250, 32), font, 0.7, dcol, 1)
 
 
+def _make_arm():
+    """Init arc-grasp solver + executor (optional)."""
+    try:
+        from src.arm.arc_grasp import ArcGraspSolver
+        from src.subsumption.arm_executor import ArmExecutor
+        solver = ArcGraspSolver()
+        if not solver.ready():
+            print(f"[arm] arc_grasp calibration not ready ({solver.status()}) — arm mode unavailable.")
+            return None, None
+        executor = ArmExecutor()
+        print("[arm] arc-grasp ready — press 'g' to toggle grabbing.")
+        return executor, solver
+    except Exception as exc:
+        print(f"[arm] not available ({exc}); arm mode disabled.")
+        return None, None
+
+
+def _attempt_grab(controller, chassis, solver, arm_exec, result):
+    """Solve an arc pose from the current detection and run the blocking grab.
+    Brakes the base during the arm sequence, then restores the drive state."""
+    from src.subsumption.arbitrator import ActionCommand
+
+    best = result.best
+    if best is None:
+        return
+    o = best.orientation
+    klass = o.klass if o is not None else "upright"
+    if klass in ("lying", "axial"):
+        pos = result.normalized_center()  # same reference point as layer3
+        tin_pose = klass
+        solved = solver.solve(pos[0], pos[1], pose="lying",
+                              angle_deg=None if klass == "axial" else o.angle) if pos else None
+    else:
+        pos = result.normalized_base_center()  # ground contact
+        tin_pose = "upright"
+        solved = solver.solve(pos[0], pos[1], pose="upright") if pos else None
+    if solved is None:
+        print(f"[arm] tin ({klass}) at {pos} outside calibrated grid — no grab.")
+        return
+
+    print(f"[arm] GRAB ({tin_pose}) @ nx={pos[0]:.2f} ny={pos[1]:.2f} — braking base...")
+    was_driving = controller.driving
+    controller.set_driving(False)
+    try:
+        if chassis is not None:
+            chassis.actuator.brake()  # hold base against arm shake
+        arm_exec.execute(ActionCommand(
+            layer_id=3, active=True, motion_vector=(0, 0, 0),
+            arm_action='grab_arc',
+            arm_params={'pose': solved, 'tin_pose': tin_pose},
+            message='ibvs test grab'))
+    finally:
+        if chassis is not None:
+            chassis.stop()  # release brake -> coast
+        controller.set_driving(was_driving)
+    print("[arm] grab sequence done, drive restored.")
+
+
 def _make_chassis():
     """Initialize chassis controller (optional)."""
     try:
@@ -110,7 +172,7 @@ def _make_chassis():
         return None
 
 
-def main(drive=False, speed=1.0, use_ncnn=True):
+def main(drive=False, speed=1.0, use_ncnn=True, arm=False):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -125,14 +187,17 @@ def main(drive=False, speed=1.0, use_ncnn=True):
     chassis = _make_chassis()
     driving = drive and chassis is not None
 
+    arm_exec, solver = _make_arm() if arm else (None, None)
+    armed = arm and arm_exec is not None
+
     print(f"\n{'='*70}")
     print(f"Visual Servoing + Cascade Control")
     print(f"{'='*70}")
     print(f"Vision: ~30 Hz (YOLO11n-seg + IBVS)")
     print(f"Motor: ~1000 Hz (smooth interpolation)")
-    print(f"Drive: {'ON' if driving else 'OFF'}")
+    print(f"Drive: {'ON' if driving else 'OFF'}   Arm: {'ARMED' if armed else 'OFF'}")
     print(f"Speed scale: {speed:.2f}  (--speed 0.x to slow the approach down)")
-    print(f"Keys: m = toggle drive, q = quit")
+    print(f"Keys: m = toggle drive, g = toggle arm, q = quit")
     print(f"{'='*70}\n")
 
     controller = CascadeController(detector, centering, chassis, speed_scale=speed, driving=driving)
@@ -170,12 +235,24 @@ def main(drive=False, speed=1.0, use_ncnn=True):
                         driving = not driving
                         controller.set_driving(driving)  # actually gate the wheels
                         print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
+                    if key == ord("g"):
+                        if arm_exec is None:
+                            arm_exec, solver = _make_arm()
+                        if arm_exec is not None:
+                            armed = not armed
+                            print(f"\n[mode] arm {'ARMED — grabs when centered+stable' if armed else 'off'}\n")
 
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False
                 except Exception as e:
                     print(f"[display] error: {e}")
+
+            # Grab when armed and IBVS reports centered + stable (ArmExecutor's
+            # own 4 s cooldown stops the same tin re-triggering every loop).
+            if (armed and arm_exec is not None and status is not None
+                    and status.stable and status.result is not None):
+                _attempt_grab(controller, chassis, solver, arm_exec, status.result)
 
             # Print status to console with motion details
             if status and cmd:
@@ -226,8 +303,9 @@ def main(drive=False, speed=1.0, use_ncnn=True):
 
 if __name__ == "__main__":
     drive = "--drive" in sys.argv
+    arm = "--arm" in sys.argv
     speed = 1.0
     if "--speed" in sys.argv:
         speed = float(sys.argv[sys.argv.index("--speed") + 1])
     use_ncnn = "--pt" not in sys.argv
-    main(drive=drive, speed=speed, use_ncnn=use_ncnn)
+    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm)
