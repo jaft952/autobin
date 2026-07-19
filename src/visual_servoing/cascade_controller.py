@@ -16,9 +16,11 @@ from dataclasses import dataclass
 from typing import Tuple, Optional, List
 import math
 
-# Motor output is zeroed when the newest vision state is older than this —
-# a camera drop must stop the base, not leave it repeating the last command.
-VISION_STALE_S = 1.0
+# Motor output is zeroed (and the base BRAKED) when the newest DETECTED
+# vision state is older than this. Long enough to bridge 1-2 dropped YOLO
+# frames without stutter-braking; short enough that a lost tin or a dead
+# camera stops the base almost immediately.
+DETECT_GRACE_S = 0.6
 
 
 @dataclass
@@ -267,7 +269,8 @@ class CascadeController:
     """
 
     def __init__(self, detector, ibvs_centering, chassis_controller=None, speed_scale: float = 1.0,
-                 driving: bool = True, steer_scale: Optional[float] = None):
+                 driving: bool = True, steer_scale: Optional[float] = None,
+                 mode: str = "step"):
         """
         Args:
             detector: AluminiumCanDetector instance
@@ -279,12 +282,18 @@ class CascadeController:
                 = same as speed_scale
             driving: whether motor commands actually reach the chassis — the real
                 gate; see set_driving()
+            mode: "step" = pivot until the tin is central, then drive straight,
+                re-aim when it drifts out of the central 70%;
+                "chase" = car-like continuous pursuit (drive + steer together),
+                pivoting only if the tin nears the frame edge.
+                Both stop+brake once inside the arc-grasp zone.
         """
         self.detector = detector
         self.ibvs_centering = ibvs_centering
         self.chassis = chassis_controller
         self.speed_scale = speed_scale
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
+        self.mode = mode
         self.driving = driving
 
         self.buffer = TrackingBuffer(max_size=5)
@@ -298,6 +307,12 @@ class CascadeController:
         if self.motor_thread is not None:
             self.motor_thread.driving = driving
 
+    def set_mode(self, mode: str):
+        """Switch pursuit mode live: "step" or "chase"."""
+        self.mode = mode
+        if self.motor_thread is not None:
+            self.motor_thread.mode = mode
+
     def start(self):
         """Launch vision and motor threads."""
         self.running = True
@@ -307,7 +322,7 @@ class CascadeController:
         )
         self.motor_thread = _MotorWorker(
             self.buffer, self.chassis, speed_scale=self.speed_scale,
-            steer_scale=self.steer_scale, driving=self.driving
+            steer_scale=self.steer_scale, driving=self.driving, mode=self.mode
         )
 
         self.vision_thread.daemon = True
@@ -400,7 +415,8 @@ class _MotorWorker(threading.Thread):
     """Motor control thread (~1000 Hz)."""
 
     def __init__(self, buffer: TrackingBuffer, chassis_controller=None, speed_scale: float = 1.0,
-                 driving: bool = True, steer_scale: Optional[float] = None):
+                 driving: bool = True, steer_scale: Optional[float] = None,
+                 mode: str = "step"):
         super().__init__()
         self.buffer = buffer
         self.chassis = chassis_controller
@@ -408,7 +424,10 @@ class _MotorWorker(threading.Thread):
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
         self.driving = driving  # actual gate on motor output
         self._was_driving = driving
-        self._aiming = False    # aim-then-advance mode state
+        self.mode = mode        # "step" = aim-then-advance | "chase" = continuous arc pursuit
+        self._aiming = False    # pivot-in-place state (both modes use it)
+        self._last_good: Optional[VisionState] = None  # newest DETECTED state
+        self._moving = False    # last command was nonzero -> brake on stop
         self.running = False
 
         # Filters for X and Y axes
@@ -436,18 +455,24 @@ class _MotorWorker(threading.Thread):
             t_start = time.time()
             t_now = t_start
 
-            # Check for new vision data
+            # Check for new vision data. Only DETECTED states feed the
+            # filters — undetected frames carry error 0,0 and would drag the
+            # splines toward "target centered" during a dropout.
             latest = self.buffer.get_latest()
-            if latest and latest.timestamp > self.last_vision_time:
+            if (latest and latest.detected
+                    and latest.timestamp > self.last_vision_time):
                 self._handle_vision_update(latest)
                 self.last_vision_time = latest.timestamp
+                self._last_good = latest
 
-            # Watchdog + aligned gate. No target, stale vision (camera died /
-            # thread stalled), or already aligned -> hold still. Without the
-            # stale check the last interpolated command repeats FOREVER when
-            # the camera drops mid-run.
-            stale = latest is None or (t_now - latest.timestamp) > VISION_STALE_S
-            if stale or not latest.detected or latest.aligned:
+            # Gate. DETECT_GRACE_S bridges 1-2 dropped detections so the base
+            # doesn't stutter-brake through YOLO flicker; anything older (tin
+            # gone, camera dead) or already aligned -> zero, and
+            # _send_motor_command turns that into an active BRAKE, not a coast
+            # (coasting at speed is what kept overshooting the grasp zone).
+            good = self._last_good
+            if (good is None or (t_now - good.timestamp) > DETECT_GRACE_S
+                    or good.aligned):
                 cmd = MotorCommand(0.0, 0.0, t_now)
                 self.limiter_x.reset()   # else the next command slews from a
                 self.limiter_y.reset()   # stale value = random-direction lurch
@@ -506,21 +531,32 @@ class _MotorWorker(threading.Thread):
         FWD_GAIN = 1.5
         STEER_GAIN = 1.0   # yaw overshoots hard at vision rate — keep gentler than forward
 
-        # Aim-then-advance: pivot in place until the tin is inside the central
-        # band of the frame, then drive STRAIGHT at it — no arcing (arcs run
-        # away at forward speed). Hysteresis so the mode doesn't chatter.
-        AIM_ENTER = 0.35   # |err_x| beyond this = outside central 70% -> pivot
-        AIM_EXIT = 0.25    # keep pivoting until back inside this
+        # Pivot-in-place ("aiming") applies in BOTH modes, with different entry:
+        #   step  : tin outside the central 70% of the frame -> re-aim
+        #   chase : only when the tin nears the frame EDGE (about to be lost)
+        # Hysteresis so the state doesn't chatter at the boundary. Entering
+        # aim returns a ZERO command for this tick — _send_motor_command turns
+        # that into a BRAKE, so the base stops its lunge BEFORE pivoting.
+        AIM_ENTER = 0.35 if self.mode == "step" else 0.42
+        AIM_EXIT = 0.25
         if self._aiming:
             if abs(px) <= AIM_EXIT:
                 self._aiming = False
         elif abs(px) >= AIM_ENTER:
             self._aiming = True
+            self.limiter_x.reset()
+            self.limiter_y.reset()
+            return MotorCommand(0.0, 0.0, t)   # brake first, pivot next tick
 
         if self._aiming:
             forward = self.limiter_y.limit(0.0)
             steer = self.limiter_x.limit(-px * STEER_GAIN)
+        elif self.mode == "chase":
+            # Car-like continuous pursuit: keep rolling, steer while moving.
+            forward = self.limiter_y.limit(-py * FWD_GAIN)
+            steer = self.limiter_x.limit(-px * STEER_GAIN)
         else:
+            # step: drive straight; lateral drift is handled by re-aiming.
             forward = self.limiter_y.limit(-py * FWD_GAIN)
             steer = self.limiter_x.limit(0.0)
 
@@ -542,18 +578,37 @@ class _MotorWorker(threading.Thread):
 
         return MotorCommand(forward, steer, t)
 
+    def _brake(self):
+        """Active hold (shorted windings) — a coast at approach speed rolls
+        right past the grasp zone; that overshoot was observed on the robot."""
+        actuator = getattr(self.chassis, "actuator", None)
+        brake = getattr(actuator, "brake", None)
+        if brake is not None:
+            brake()
+        else:
+            self.chassis.stop()
+
     def _send_motor_command(self, cmd: MotorCommand):
-        """Send command to chassis motor driver — gated by self.driving."""
+        """Send command to chassis motor driver — gated by self.driving.
+        A zero command BRAKES once on the moving->stopped transition, then
+        goes quiet (no 1 kHz zero-PWM spam)."""
         self.last_cmd = cmd  # Track for display/logging
         if not self.chassis:
             return
         try:
             if self.driving:
-                self.chassis.set_motor_pwm(
-                    cmd.forward * self.speed_scale, cmd.steer * self.steer_scale
-                )
+                if abs(cmd.forward) < 0.01 and abs(cmd.steer) < 0.01:
+                    if self._moving:
+                        self._brake()
+                        self._moving = False
+                else:
+                    self.chassis.set_motor_pwm(
+                        cmd.forward * self.speed_scale, cmd.steer * self.steer_scale
+                    )
+                    self._moving = True
             elif self._was_driving:
                 self.chassis.stop()  # actively cut power once, not just stop sending
+                self._moving = False
             self._was_driving = self.driving
         except Exception as e:
             print(f"[Motor] Error sending command: {e}")

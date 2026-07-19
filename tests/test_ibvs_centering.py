@@ -1,15 +1,20 @@
 """
 Real-time Visual Servoing with Cascade Control (multi-rate, smooth motion).
 
-Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x] [--pt]
+Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x]
+                                     [--mode step|chase] [--pt]
   --drive : enable chassis motion (default off)
   --arm   : enable arc-grasp grabbing when centered+stable (default off)
   --speed : forward speed multiplier, 0..1 (default 1.0, too fast? lower it)
   --turn  : steer speed multiplier, 0..1 (default: same as --speed; turning has
             no rolling friction, so it usually wants a LOWER value, e.g.
             --speed 0.6 --turn 0.3)
+  --mode  : step  = aim, drive straight, re-aim when tin leaves central 70% (default)
+            chase = car-like continuous pursuit: drive + steer at the same time,
+                    pivoting only if the tin nears the frame edge
+            (both brake inside the arc-grasp zone / on lost detection)
   --pt    : force the .pt weights, skip NCNN (A/B comparison)
-Keys: m = toggle drive, g = toggle arm, q = quit.
+Keys: m = toggle drive, g = toggle arm, n = switch step/chase, q = quit.
 A grab brakes the base, runs the blocking arc-grasp sequence (grab -> dump ->
 home, 4 s cooldown via ArmExecutor), then releases the brake.
 """
@@ -162,7 +167,7 @@ def _make_chassis():
         return None
 
 
-def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None):
+def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step"):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -188,14 +193,14 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None):
     print(f"{'='*70}")
     print(f"Vision: ~30 Hz (YOLO11n-seg + IBVS)")
     print(f"Motor: ~1000 Hz (smooth interpolation)")
-    print(f"Drive: {'ON' if driving else 'OFF'}   Arm: {'ARMED' if armed else 'OFF'}")
+    print(f"Drive: {'ON' if driving else 'OFF'}   Arm: {'ARMED' if armed else 'OFF'}   Mode: {mode.upper()}")
     print(f"Speed scale: fwd={speed:.2f} turn={(turn if turn is not None else speed):.2f}  "
           f"(--speed / --turn 0.x to slow down)")
     print(f"Keys: m = toggle drive, g = toggle arm, q = quit")
     print(f"{'='*70}\n")
 
     controller = CascadeController(detector, centering, chassis, speed_scale=speed,
-                                   steer_scale=turn, driving=driving)
+                                   steer_scale=turn, driving=driving, mode=mode)
     controller.start()
 
     show = True
@@ -236,6 +241,10 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None):
                         if arm_exec is not None:
                             armed = not armed
                             print(f"\n[mode] arm {'ARMED — grabs when centered+stable' if armed else 'off'}\n")
+                    if key == ord("n"):
+                        mode = "chase" if mode == "step" else "step"
+                        controller.set_mode(mode)
+                        print(f"\n[mode] pursuit mode -> {mode.upper()}\n")
 
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
@@ -305,5 +314,10 @@ if __name__ == "__main__":
     turn = None
     if "--turn" in sys.argv:
         turn = float(sys.argv[sys.argv.index("--turn") + 1])
+    mode = "step"
+    if "--mode" in sys.argv:
+        mode = sys.argv[sys.argv.index("--mode") + 1]
+        if mode not in ("step", "chase"):
+            sys.exit(f"--mode must be 'step' or 'chase', got '{mode}'")
     use_ncnn = "--pt" not in sys.argv
-    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn)
+    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn, mode=mode)
