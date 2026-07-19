@@ -408,6 +408,7 @@ class _MotorWorker(threading.Thread):
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
         self.driving = driving  # actual gate on motor output
         self._was_driving = driving
+        self._aiming = False    # aim-then-advance mode state
         self.running = False
 
         # Filters for X and Y axes
@@ -504,8 +505,24 @@ class _MotorWorker(threading.Thread):
 
         FWD_GAIN = 1.5
         STEER_GAIN = 1.0   # yaw overshoots hard at vision rate — keep gentler than forward
-        forward = self.limiter_y.limit(-py * FWD_GAIN)
-        steer = self.limiter_x.limit(-px * STEER_GAIN)
+
+        # Aim-then-advance: pivot in place until the tin is inside the central
+        # band of the frame, then drive STRAIGHT at it — no arcing (arcs run
+        # away at forward speed). Hysteresis so the mode doesn't chatter.
+        AIM_ENTER = 0.35   # |err_x| beyond this = outside central 70% -> pivot
+        AIM_EXIT = 0.25    # keep pivoting until back inside this
+        if self._aiming:
+            if abs(px) <= AIM_EXIT:
+                self._aiming = False
+        elif abs(px) >= AIM_ENTER:
+            self._aiming = True
+
+        if self._aiming:
+            forward = self.limiter_y.limit(0.0)
+            steer = self.limiter_x.limit(-px * STEER_GAIN)
+        else:
+            forward = self.limiter_y.limit(-py * FWD_GAIN)
+            steer = self.limiter_x.limit(0.0)
 
         # MIN duty floor (stall avoidance) with a true deadband under it.
         # 0.50 boosted every small correction to a half-speed lunge -> ±0.4
