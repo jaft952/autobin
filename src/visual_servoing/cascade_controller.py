@@ -16,6 +16,10 @@ from dataclasses import dataclass
 from typing import Tuple, Optional, List
 import math
 
+# Motor output is zeroed when the newest vision state is older than this —
+# a camera drop must stop the base, not leave it repeating the last command.
+VISION_STALE_S = 1.0
+
 
 @dataclass
 class VisionState:
@@ -403,9 +407,10 @@ class _MotorWorker(threading.Thread):
         self.interp_x = TrajectoryInterpolator()
         self.interp_y = TrajectoryInterpolator()
 
-        # Velocity limiters
-        self.limiter_x = VelocityLimiter(max_accel=0.5, dt=0.001)
-        self.limiter_y = VelocityLimiter(max_accel=0.5, dt=0.001)
+        # Slew limiters on the motor command (2.0/s: full output in ~0.4 s —
+        # smooths spikes/flips without making the P-control feel laggy)
+        self.limiter_x = VelocityLimiter(max_accel=2.0, dt=0.001)
+        self.limiter_y = VelocityLimiter(max_accel=2.0, dt=0.001)
 
         self.last_vision_time = 0.0
         self.last_cmd: Optional[MotorCommand] = None
@@ -425,9 +430,12 @@ class _MotorWorker(threading.Thread):
                 self._handle_vision_update(latest)
                 self.last_vision_time = latest.timestamp
 
-            # Interpolate current setpoint; hold still once IBVS says aligned
-            # (arc_grasp covers an AREA, so chasing the exact point just limit-cycles).
-            if latest is not None and latest.aligned:
+            # Watchdog + aligned gate. No target, stale vision (camera died /
+            # thread stalled), or already aligned -> hold still. Without the
+            # stale check the last interpolated command repeats FOREVER when
+            # the camera drops mid-run.
+            stale = latest is None or (t_now - latest.timestamp) > VISION_STALE_S
+            if stale or not latest.detected or latest.aligned:
                 cmd = MotorCommand(0.0, 0.0, t_now)
             else:
                 cmd = self._interpolate_command(t_now)
@@ -469,34 +477,33 @@ class _MotorWorker(threading.Thread):
         )
 
     def _interpolate_command(self, t: float) -> MotorCommand:
-        """Interpolate setpoint at current time."""
-        px, vx = self.interp_x.evaluate(t)
-        py, vy = self.interp_y.evaluate(t)
+        """P-control on the filtered position error.
 
-        # Velocity limiting (prevent jerky acceleration)
-        vx_lim = self.limiter_x.limit(vx)
-        vy_lim = self.limiter_y.limit(vy)
+        Signs follow the hardware-verified set_motor_pwm convention from
+        test_differential_drive CASC mode: positive forward = robot forward,
+        positive steer = turn left. error_y + = too close -> back up;
+        error_x + = tin right of center -> turn right. Hence both negated.
+        (The old version drove on the error's VELOCITY estimate, so with a
+        static tin the command was mostly filter noise boosted to MIN_SPEED —
+        random-looking spins.)"""
+        px, _vx = self.interp_x.evaluate(t)
+        py, _vy = self.interp_y.evaluate(t)
 
-        # Convert error → motor command with gain
-        # Scale factor of 0.8 ensures reasonable motor speeds
-        forward = vy_lim * 0.8   # Flip for camera-backward config
-        steer = vx_lim * 0.8     # error_x → steer
+        P_GAIN = 1.5
+        forward = self.limiter_y.limit(-py * P_GAIN)
+        steer = self.limiter_x.limit(-px * P_GAIN)
 
-        # Apply minimum speed to overcome floor friction
-        # Boost all weak commands to ensure motor movement
+        # MIN duty floor (stall avoidance) with a true deadband under it.
         mag = math.sqrt(forward**2 + steer**2)
-        MIN_SPEED = 0.50  # Minimum motor command magnitude
+        MIN_SPEED = 0.50
         if 0.01 < mag < MIN_SPEED:
             scale = MIN_SPEED / mag
             forward *= scale
             steer *= scale
         elif mag < 0.01:
-            # Deadband: boosting near-zero noise to MIN_SPEED caused limit-cycle
-            # spinning at the target — hold still instead.
             forward = 0.0
             steer = 0.0
 
-        # Clamp to [-1, 1] range
         forward = max(-1.0, min(1.0, forward))
         steer = max(-1.0, min(1.0, steer))
 
@@ -509,9 +516,8 @@ class _MotorWorker(threading.Thread):
             return
         try:
             if self.driving:
-                # Signs negated: set_motor_pwm's convention is inverted on this chassis.
                 self.chassis.set_motor_pwm(
-                    -cmd.forward * self.speed_scale, -cmd.steer * self.speed_scale
+                    cmd.forward * self.speed_scale, cmd.steer * self.speed_scale
                 )
             elif self._was_driving:
                 self.chassis.stop()  # actively cut power once, not just stop sending
