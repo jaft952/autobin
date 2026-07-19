@@ -1,10 +1,13 @@
 """
 Real-time Visual Servoing with Cascade Control (multi-rate, smooth motion).
 
-Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--pt]
+Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x] [--pt]
   --drive : enable chassis motion (default off)
   --arm   : enable arc-grasp grabbing when centered+stable (default off)
-  --speed : motor command multiplier, 0..1 (default 1.0, too fast? lower it)
+  --speed : forward speed multiplier, 0..1 (default 1.0, too fast? lower it)
+  --turn  : steer speed multiplier, 0..1 (default: same as --speed; turning has
+            no rolling friction, so it usually wants a LOWER value, e.g.
+            --speed 0.6 --turn 0.3)
   --pt    : force the .pt weights, skip NCNN (A/B comparison)
 Keys: m = toggle drive, g = toggle arm, q = quit.
 A grab brakes the base, runs the blocking arc-grasp sequence (grab -> dump ->
@@ -159,7 +162,7 @@ def _make_chassis():
         return None
 
 
-def main(drive=False, speed=1.0, use_ncnn=True, arm=False):
+def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -186,11 +189,13 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False):
     print(f"Vision: ~30 Hz (YOLO11n-seg + IBVS)")
     print(f"Motor: ~1000 Hz (smooth interpolation)")
     print(f"Drive: {'ON' if driving else 'OFF'}   Arm: {'ARMED' if armed else 'OFF'}")
-    print(f"Speed scale: {speed:.2f}  (--speed 0.x to slow the approach down)")
+    print(f"Speed scale: fwd={speed:.2f} turn={(turn if turn is not None else speed):.2f}  "
+          f"(--speed / --turn 0.x to slow down)")
     print(f"Keys: m = toggle drive, g = toggle arm, q = quit")
     print(f"{'='*70}\n")
 
-    controller = CascadeController(detector, centering, chassis, speed_scale=speed, driving=driving)
+    controller = CascadeController(detector, centering, chassis, speed_scale=speed,
+                                   steer_scale=turn, driving=driving)
     controller.start()
 
     show = True
@@ -297,5 +302,8 @@ if __name__ == "__main__":
     speed = 1.0
     if "--speed" in sys.argv:
         speed = float(sys.argv[sys.argv.index("--speed") + 1])
+    turn = None
+    if "--turn" in sys.argv:
+        turn = float(sys.argv[sys.argv.index("--turn") + 1])
     use_ncnn = "--pt" not in sys.argv
-    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm)
+    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn)

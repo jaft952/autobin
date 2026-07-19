@@ -267,13 +267,16 @@ class CascadeController:
     """
 
     def __init__(self, detector, ibvs_centering, chassis_controller=None, speed_scale: float = 1.0,
-                 driving: bool = True):
+                 driving: bool = True, steer_scale: Optional[float] = None):
         """
         Args:
             detector: AluminiumCanDetector instance
             ibvs_centering: IBVSCentering controller instance
             chassis_controller: Optional ChassisController for actual motor control
-            speed_scale: uniform multiplier (0..1) applied to every motor command
+            speed_scale: multiplier (0..1) on the forward component
+            steer_scale: multiplier (0..1) on the steer component — turning has
+                no rolling friction so it runs away at the forward scale; None
+                = same as speed_scale
             driving: whether motor commands actually reach the chassis — the real
                 gate; see set_driving()
         """
@@ -281,6 +284,7 @@ class CascadeController:
         self.ibvs_centering = ibvs_centering
         self.chassis = chassis_controller
         self.speed_scale = speed_scale
+        self.steer_scale = speed_scale if steer_scale is None else steer_scale
         self.driving = driving
 
         self.buffer = TrackingBuffer(max_size=5)
@@ -302,7 +306,8 @@ class CascadeController:
             self.detector, self.ibvs_centering, self.buffer
         )
         self.motor_thread = _MotorWorker(
-            self.buffer, self.chassis, speed_scale=self.speed_scale, driving=self.driving
+            self.buffer, self.chassis, speed_scale=self.speed_scale,
+            steer_scale=self.steer_scale, driving=self.driving
         )
 
         self.vision_thread.daemon = True
@@ -395,11 +400,12 @@ class _MotorWorker(threading.Thread):
     """Motor control thread (~1000 Hz)."""
 
     def __init__(self, buffer: TrackingBuffer, chassis_controller=None, speed_scale: float = 1.0,
-                 driving: bool = True):
+                 driving: bool = True, steer_scale: Optional[float] = None):
         super().__init__()
         self.buffer = buffer
         self.chassis = chassis_controller
         self.speed_scale = speed_scale
+        self.steer_scale = speed_scale if steer_scale is None else steer_scale
         self.driving = driving  # actual gate on motor output
         self._was_driving = driving
         self.running = False
@@ -527,7 +533,7 @@ class _MotorWorker(threading.Thread):
         try:
             if self.driving:
                 self.chassis.set_motor_pwm(
-                    cmd.forward * self.speed_scale, cmd.steer * self.speed_scale
+                    cmd.forward * self.speed_scale, cmd.steer * self.steer_scale
                 )
             elif self._was_driving:
                 self.chassis.stop()  # actively cut power once, not just stop sending
