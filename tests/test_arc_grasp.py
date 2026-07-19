@@ -250,7 +250,7 @@ class Camera:
             # Same resolution AND confidence as the runtime CameraSensor so
             # calibration and runtime literally share pixels + detections.
             self.detector = AluminiumCanDetector(model_path=model_path,
-                                                 conf_threshold=0.5,
+                                                 conf_threshold=0.8,
                                                  frame_width=1280, frame_height=720)
             self.detector.start()
             # The Brio returns None for the first few reads after opening —

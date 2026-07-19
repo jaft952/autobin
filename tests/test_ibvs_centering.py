@@ -1,28 +1,10 @@
 """
 Real-time Visual Servoing with Cascade Control (multi-rate, smooth motion).
 
-Architecture:
-  - Vision thread: ~30 Hz (YOLO11n-seg detection + IBVS error computation)
-  - Motor thread: ~1000 Hz (smooth interpolation + velocity limiting)
-  - Non-blocking synchronization via TrackingBuffer
-  - Dynamic filter tuning based on mask_area confidence
-
-Usage:
-    python test_ibvs_centering.py                 -> cascade control (default)
-    python test_ibvs_centering.py --drive         -> cascade control + chassis motion ON
-    python test_ibvs_centering.py --drive --speed 0.5   -> half speed (too fast? turn this down)
-    python test_ibvs_centering.py --pt            -> force the .pt weights (skip NCNN)
-
---speed scales EVERY motor command sent to the chassis (0..1, default 1.0).
-It's applied after cascade_controller's own MIN_SPEED floor, so even the
-weakest correction gets scaled down too — lower this first if the base
-lunges toward the tin too fast; the forward/steer ratio (curve shape) is
-unaffected.
-
---pt forces the .pt checkpoint even if an NCNN export sits next to it
-(default: NCNN preferred when present, auto-falls back to .pt otherwise —
-see AluminiumCanDetector's use_ncnn param). Use this to A/B compare, or to
-sidestep an NCNN-specific issue without deleting the export.
+Usage: python test_ibvs_centering.py [--drive] [--speed 0.x] [--pt]
+  --drive : enable chassis motion (default off)
+  --speed : motor command multiplier, 0..1 (default 1.0, too fast? lower it)
+  --pt    : force the .pt weights, skip NCNN (A/B comparison)
 """
 
 import os
@@ -93,10 +75,7 @@ def _draw_status_overlay(frame, status, cmd, driving=None):
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Solid banner behind the two status lines — plain outlined text got lost
-    # against a busy background, and the two lines sat close enough (25px
-    # apart at this font scale) to visually run into each other.
-    banner_top = fh - 72
+    banner_top = fh - 72  # dark banner so text stays legible over a busy background
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, banner_top), (fw, fh), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
@@ -138,10 +117,6 @@ def main(drive=False, speed=1.0, use_ncnn=True):
 
     IMGSZ = 640
 
-    # RUNTIME_MODEL_PATH (src/models/best.pt) — same model the real runtime,
-    # test_arc_grasp.py, and the NCNN export target. The old hardcoded
-    # "yolov11n-seg.pt" here had no matching *_ncnn_model export, which is
-    # why this test never picked up NCNN acceleration.
     detector = AluminiumCanDetector(  # type: ignore
         device="cpu", imgsz=IMGSZ, model_path=RUNTIME_MODEL_PATH, use_ncnn=use_ncnn
     )
@@ -160,11 +135,6 @@ def main(drive=False, speed=1.0, use_ncnn=True):
     print(f"Keys: m = toggle drive, q = quit")
     print(f"{'='*70}\n")
 
-    # Create cascade controller (non-blocking threads). driving=driving here is
-    # the REAL gate on wheel output — chassis is wired in regardless of this
-    # flag, so without it the base would move on every detection even while
-    # this script's own `driving` variable (used only for the on-screen label)
-    # still read False.
     controller = CascadeController(detector, centering, chassis, speed_scale=speed, driving=driving)
     controller.start()
 
@@ -177,13 +147,7 @@ def main(drive=False, speed=1.0, use_ncnn=True):
             status = controller.get_status()
             cmd = controller.get_last_command()
 
-            # Always try to show camera feed. Draw from the vision thread's
-            # OWN cached result (status.result) via get_annotated_frame() —
-            # this gives us the bbox/mask overlay for free, and critically
-            # avoids a SECOND call to detector.read_frame() here: the vision
-            # thread already reads the camera at ~30Hz, and a second reader
-            # racing it on the same VideoCapture is what caused the
-            # "V4L2: select() timeout" warnings.
+            # Draw from the vision thread's cached result — avoids a second read_frame() race.
             if show:
                 try:
                     frame = None

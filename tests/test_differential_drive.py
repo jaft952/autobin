@@ -122,22 +122,11 @@ def main():
 
     mode = 1            # start at the lowest layer
     speed = 0.50        # command magnitude (0..1)
-    # Polarity signs — FLIPPED 2026-07-13 after the user found forward/back
-    # AND left/right reversed on the ZK-BM1 chassis. 'i'/'k' still flip these
-    # live if a later rewire changes it again.
-    fwd_sign = 1.0      # w = forward
-    steer_sign = -1.0   # a = left
+    fwd_sign = 1.0      # w = forward (flip live with 'i' if wiring changes)
+    steer_sign = -1.0   # a = left (flip live with 'k')
     protect = False     # reverse-protection off by default (to reproduce bug)
 
-    # Movement style:
-    #   "held" (default) — drive WHILE the key is held/repeating; auto-stop
-    #                      ~release_timeout after you let go. A terminal has
-    #                      no key-release event, so this watches for the key
-    #                      to stop repeating. Caveat: the OS key-repeat delay
-    #                      (~0.3-0.5s after the first press) causes one brief
-    #                      hitch before continuous motion — unavoidable here.
-    #   "jog"            — a single tap drives for jog_s then stops (a nudge).
-    style = "held"
+    style = "held"      # "held": drive while key repeats, stop on release. "jog": tap = short burst then stop.
     jog_s = 0.30                 # jog burst seconds (tune with [ / ])
     release_timeout = 0.40       # held: stop this long after the key stops
 
@@ -178,18 +167,13 @@ def main():
         print("STOP (coast — wheels free)")
 
     def do_brake():
-        # Works in every mode: all three layers drive the SAME actuator, and
-        # braking is a hardware state (shorted windings), not a wheel command.
-        actuator.brake()
+        actuator.brake()  # hardware brake state, applies regardless of mode
         remember(0.0, 0.0)
         drive_state["moving"] = False
         print("BRAKE (active hold — try pushing the robot, it should resist)")
 
     def after_drive():
-        """Called right after a motion command is applied.
-        jog  : run jog_s then auto-stop (tap = nudge).
-        held : mark 'moving'; idle_check() stops it once the key stops
-               repeating (i.e. you released it)."""
+        """jog: run jog_s then auto-stop. held: mark moving; idle_check() stops it on release."""
         if style == "jog":
             time.sleep(jog_s)
             actuator.stop()

@@ -51,7 +51,7 @@ class CameraSensor(SensorInterface):
         self,
         model_path: str = RUNTIME_MODEL_PATH,   # single source of truth
         camera_index: int = 0,
-        conf_threshold: float = 0.5,
+        conf_threshold: float = 0.8,
         frame_width: int = 1280,
         frame_height: int = 720,
     ):

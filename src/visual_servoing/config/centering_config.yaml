@@ -1,6 +1,9 @@
 target_x: 0.4805
 target_y: 0.9014
-tolerance: 0.01
+# 0.01 dated from the fixed-grab-pose era; arc_grasp v3 grabs from an area
+# (upright rows ny 0.808~0.889, nx 0.09~0.92), so the base only needs to
+# reach the neighborhood. Raise/lower if grabs miss / approach limit-cycles.
+tolerance: 0.05
 pixel_to_arm:
   homography:
   - [0.0008364453118010685, 0.0002586736045513931, -0.5638887012334292]

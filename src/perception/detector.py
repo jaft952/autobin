@@ -107,9 +107,24 @@ def open_camera_capture(camera_index: int = 0,
     """Open Logitech Brio 4K with platform-specific backend."""
     import cv2
     backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
-    cap = cv2.VideoCapture(camera_index, backend)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera {camera_index}. Try index 1.")
+    # After a mid-run USB drop the camera often re-enumerates at a new index,
+    # so fall back through a few before giving up.
+    tried = []
+    cap = None
+    for idx in dict.fromkeys([camera_index, 0, 1, 2]):
+        cap = cv2.VideoCapture(idx, backend)
+        if cap.isOpened():
+            if idx != camera_index:
+                print(f"[camera] index {camera_index} unavailable — using index {idx}")
+            break
+        cap.release()
+        cap = None
+        tried.append(idx)
+    if cap is None:
+        raise RuntimeError(
+            f"Cannot open camera (tried indices {tried}). If it worked before, the "
+            f"camera likely dropped off USB (power sag) — replug it or run: "
+            f"sudo modprobe -r uvcvideo && sudo modprobe uvcvideo")
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
@@ -147,7 +162,7 @@ class AluminiumCanDetector:
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.5,       # keep = runtime CameraSensor
+        conf_threshold: float = 0.8,       # keep = runtime CameraSensor
         frame_width: int = 1920,
         frame_height: int = 1080,
         device=None,
@@ -159,15 +174,9 @@ class AluminiumCanDetector:
         self._conf_threshold = conf_threshold
         self._frame_width = frame_width
         self._frame_height = frame_height
-        # None = auto: CUDA if available, else CPU. (The old default of 0
-        # crashed on the Pi whenever a caller forgot to pass device="cpu".)
-        self._device = device
+        self._device = device  # None = auto (CUDA if available, else CPU)
         self._imgsz = imgsz
-        # True (default) = prefer the NCNN export next to the .pt if one
-        # exists, else fall back to the .pt. False forces the .pt even when
-        # an NCNN export is present — useful for A/B comparing the two, or
-        # working around an NCNN-side issue without deleting the export.
-        self._use_ncnn = use_ncnn
+        self._use_ncnn = use_ncnn  # False forces .pt even if an NCNN export exists
 
         self._model: Optional[YOLO] = None
         self._cap: Optional[cv2.VideoCapture] = None
@@ -281,11 +290,7 @@ class AluminiumCanDetector:
         return self._device
 
     def _pick_model_path(self) -> Path:
-        """Prefer an NCNN export sitting next to the .pt — on the Pi's ARM
-        CPU it runs the SAME weights 2-4x faster (fp32, no accuracy change).
-        Create it once on the Pi with tests/export_ncnn.py. Pass
-        use_ncnn=False to the constructor to force the .pt even when an
-        NCNN export exists (A/B comparison, or sidestepping an NCNN issue)."""
+        """Prefer an NCNN export next to the .pt (2-4x faster on the Pi's ARM CPU)."""
         if self._use_ncnn and self._model_path.suffix == ".pt":
             ncnn = self._model_path.with_name(self._model_path.stem + "_ncnn_model")
             if ncnn.is_dir():
@@ -302,14 +307,8 @@ class AluminiumCanDetector:
         if not self._model_path.exists():
             raise FileNotFoundError(f"Model not found: {self._model_path}")
         path = self._pick_model_path()
-        # task="segment" is required for the NCNN export: unlike a .pt
-        # checkpoint (which embeds its task), the NCNN .param/.bin pair
-        # carries no task metadata, so ultralytics falls back to
-        # task="detect" ("Unable to automatically guess model task" warning)
-        # and misparses this seg model's (1, 37, 8400) output — 4 box coords
-        # + 1 conf + 32 mask coefficients read as if it were a plain
-        # detector — which skips proper NMS and floods dozens of garbage
-        # boxes. Harmless to pass for the .pt path too (already correct there).
+        # task="segment": the NCNN export has no embedded task metadata and
+        # defaults to "detect", which misparses this model's seg output.
         self._model = YOLO(str(path), task="segment")
         print(f"✓ Model loaded: {path}")
         # Warmup: the first predict pays one-off graph/init cost (hundreds of

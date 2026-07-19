@@ -1,34 +1,11 @@
 """
 tests/diagnose_runtime.py
 
-diagnose_imports.py proved every library IMPORTS fine. Yet test_ibvs_centering
-and test_arc_grasp still die with "Illegal instruction" (SIGILL) — and crucially
-they die AFTER "Model loaded" / "device auto-selected: cpu", i.e. during the
-FIRST real computation (the YOLO warmup .predict in detector._load_model), not
-at import. So an import-only check can never catch it.
+Locates a SIGILL by running escalating real ops (numpy, torch, YOLO predict)
+each in its own subprocess, twice (plain vs OPENBLAS_CORETYPE=ARMV8) — prints
+a grid and a VERDICT explaining the fix.
 
-This tool runs escalating RUNTIME operations — numpy math, torch math, a torch
-conv (the op YOLO leans on), then a real YOLO .predict — each in its OWN
-subprocess. A SIGILL kills the process outright: you cannot try/except it, you
-can only launch a child and read the signal it died from. Every stage is run
-TWICE: once normally, once with OPENBLAS_CORETYPE=ARMV8 set. So one run tells you
-BOTH which operation crashes AND whether that single env var fixes it.
-
-    python3 tests/diagnose_runtime.py
-    python3 tests/diagnose_runtime.py --model src/models/best.pt
-
-Reading the grid (OK / SIGILL / FAIL for each stage, plain vs +ARMV8):
-  * numpy_matmul is the lowest to crash
-        -> OpenBLAS auto-picked the wrong CPU core. If the +ARMV8 column is OK,
-           you're done: put  export OPENBLAS_CORETYPE=ARMV8  in ~/.bashrc.
-  * a torch_* stage is the lowest to crash (numpy fine)
-        -> the torch WHEEL is wrong for this CPU. You have torch 'x.y+cuXXX' — a
-           CUDA build — on a Pi with no NVIDIA GPU; its CPU kernels use
-           instructions this chip lacks. Install a CPU/ARM build (see footer).
-  * only yolo_predict crashes (numpy + torch fine)
-        -> the crash is inside ultralytics' torch inference path. Same torch-wheel
-           fix; OR sidestep torch entirely by running the NCNN export
-           (tests/export_ncnn.py) — NCNN inference does not use torch's kernels.
+    python3 tests/diagnose_runtime.py [--model src/models/best.pt]
 """
 
 import argparse
@@ -42,11 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-# ── Stages: escalating real computation, each a self-contained snippet ────────
-# Ordered low-level -> high-level so the FIRST crash points at the deepest
-# broken layer. Each prints "ok" on success; anything else (or a signal) is a
-# problem. Keep them small: they must start fast, we run each up to 4 times.
-
+# Ordered low- to high-level so the first crash points at the deepest broken layer.
 def _stages(model_path: str):
     return [
         (
@@ -104,9 +77,7 @@ def _run(code: str, armv8: bool) -> tuple[str, str]:
     if armv8:
         env["OPENBLAS_CORETYPE"] = "ARMV8"
     else:
-        # Make the plain column a fair test: don't inherit an ARMV8 that the
-        # user may already have exported, or both columns would look identical.
-        env.pop("OPENBLAS_CORETYPE", None)
+        env.pop("OPENBLAS_CORETYPE", None)  # don't inherit an already-exported ARMV8
     try:
         proc = subprocess.run(
             [sys.executable, "-c", code],

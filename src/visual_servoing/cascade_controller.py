@@ -23,16 +23,12 @@ class VisionState:
     timestamp: float
     error_x: float                # Normalized error [-1, 1]
     error_y: float                # Normalized error [-1, 1]
-    mask_area: Optional[int]      # Segmented pixel count (NEW: confidence metric)
+    mask_area: Optional[int]      # Segmented pixel count (confidence metric)
     detected: bool
     aligned: bool
     stable: bool
     confidence: float             # Detection confidence [0, 1]
-    result: Optional[object] = None  # the DetectionResult this state came from
-    # (untyped here to avoid pulling perception/detector's torch/ultralytics
-    # import into this hardware-agnostic module) — lets a display loop draw
-    # the bbox/mask via detector.get_annotated_frame(status.result) WITHOUT
-    # re-running inference or re-reading the camera itself.
+    result: Optional[object] = None  # DetectionResult, untyped to avoid importing torch here
 
     def quality(self) -> float:
         """Combined confidence: detection + segmentation area."""
@@ -269,15 +265,8 @@ class CascadeController:
             ibvs_centering: IBVSCentering controller instance
             chassis_controller: Optional ChassisController for actual motor control
             speed_scale: uniform multiplier (0..1) applied to every motor command
-                AFTER the MIN_SPEED floor in _interpolate_command, so it turns
-                the whole approach down (including the floor itself) while
-                keeping the forward/steer ratio — i.e. the curve shape — intact.
-            driving: whether motor commands actually reach the chassis. False
-                still runs vision/detection, just withholds wheel output — use
-                this (via set_driving()) for a real "drive off" switch; a
-                caller-side display flag alone does NOT stop the wheels,
-                because chassis_controller is wired in as soon as it's passed
-                here regardless of this flag's initial value.
+            driving: whether motor commands actually reach the chassis — the real
+                gate; see set_driving()
         """
         self.detector = detector
         self.ibvs_centering = ibvs_centering
@@ -291,9 +280,7 @@ class CascadeController:
         self.running = False
 
     def set_driving(self, driving: bool):
-        """Actually enable/disable motor output (not just a display label).
-        Safe to call from any thread; the motor thread reads self.driving
-        on its own attribute (bool assignment is atomic under the GIL)."""
+        """Enable/disable actual motor output. Safe to call from any thread."""
         self.driving = driving
         if self.motor_thread is not None:
             self.motor_thread.driving = driving
@@ -404,11 +391,7 @@ class _MotorWorker(threading.Thread):
         self.buffer = buffer
         self.chassis = chassis_controller
         self.speed_scale = speed_scale
-        # Plain bool attribute: safe to flip from another thread under the
-        # GIL, no lock needed. This is the ACTUAL gate on motor output — a
-        # caller that only changes its own "driving" display variable does
-        # NOT stop the wheels; it must call CascadeController.set_driving().
-        self.driving = driving
+        self.driving = driving  # actual gate on motor output
         self._was_driving = driving
         self.running = False
 
@@ -442,8 +425,12 @@ class _MotorWorker(threading.Thread):
                 self._handle_vision_update(latest)
                 self.last_vision_time = latest.timestamp
 
-            # Interpolate current setpoint
-            cmd = self._interpolate_command(t_now)
+            # Interpolate current setpoint; hold still once IBVS says aligned
+            # (arc_grasp covers an AREA, so chasing the exact point just limit-cycles).
+            if latest is not None and latest.aligned:
+                cmd = MotorCommand(0.0, 0.0, t_now)
+            else:
+                cmd = self._interpolate_command(t_now)
 
             # Apply to motor
             self._send_motor_command(cmd)
@@ -504,9 +491,10 @@ class _MotorWorker(threading.Thread):
             forward *= scale
             steer *= scale
         elif mag < 0.01:
-            # Very small command, apply minimum
-            forward = MIN_SPEED if forward < 0 else -MIN_SPEED if forward > 0 else 0
-            steer = MIN_SPEED if steer < 0 else -MIN_SPEED if steer > 0 else 0
+            # Deadband: boosting near-zero noise to MIN_SPEED caused limit-cycle
+            # spinning at the target — hold still instead.
+            forward = 0.0
+            steer = 0.0
 
         # Clamp to [-1, 1] range
         forward = max(-1.0, min(1.0, forward))
@@ -515,24 +503,18 @@ class _MotorWorker(threading.Thread):
         return MotorCommand(forward, steer, t)
 
     def _send_motor_command(self, cmd: MotorCommand):
-        """Send command to chassis motor driver — gated by self.driving.
-
-        driving=False must ACTUALLY withhold motor output, not just change a
-        display label — a chassis is constructed and wired in regardless of
-        the --drive flag, so without this gate the base moves the instant a
-        detection comes in even while the UI still reads "DRIVE OFF"."""
+        """Send command to chassis motor driver — gated by self.driving."""
         self.last_cmd = cmd  # Track for display/logging
         if not self.chassis:
             return
         try:
             if self.driving:
+                # Signs negated: set_motor_pwm's convention is inverted on this chassis.
                 self.chassis.set_motor_pwm(
                     -cmd.forward * self.speed_scale, -cmd.steer * self.speed_scale
                 )
             elif self._was_driving:
-                # Just turned off — actively cut power once, don't just stop
-                # sending new commands (the last PWM value would keep holding).
-                self.chassis.stop()
+                self.chassis.stop()  # actively cut power once, not just stop sending
             self._was_driving = self.driving
         except Exception as e:
             print(f"[Motor] Error sending command: {e}")
