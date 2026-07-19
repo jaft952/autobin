@@ -277,13 +277,18 @@ class CascadeController:
 
     def __init__(self, detector, ibvs_centering, chassis_controller=None, speed_scale: float = 1.0,
                  driving: bool = True, steer_scale: Optional[float] = None,
-                 mode: str = "step"):
+                 mode: str = "step", speed_min: float = 0.0):
         """
         Args:
             detector: AluminiumCanDetector instance
             ibvs_centering: IBVSCentering controller instance
             chassis_controller: Optional ChassisController for actual motor control
-            speed_scale: multiplier (0..1) on the forward component
+            speed_scale: multiplier (0..1) on the forward component — the MAX
+                forward output when speed_min is also given
+            speed_min: > 0 maps the forward output into [speed_min,
+                speed_scale] by error magnitude — far = max, close = min, so
+                the approach slows down but never below a speed that moves
+                (--speed 0.6-0.3 on the test CLI)
             steer_scale: multiplier (0..1) on the steer component — turning has
                 no rolling friction so it runs away at the forward scale; None
                 = same as speed_scale
@@ -302,6 +307,7 @@ class CascadeController:
         self.ibvs_centering = ibvs_centering
         self.chassis = chassis_controller
         self.speed_scale = speed_scale
+        self.speed_min = min(speed_min, speed_scale)
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
         self.mode = mode
         self.driving = driving
@@ -333,7 +339,8 @@ class CascadeController:
         )
         self.motor_thread = _MotorWorker(
             self.buffer, self.chassis, speed_scale=self.speed_scale,
-            steer_scale=self.steer_scale, driving=self.driving, mode=self.mode
+            steer_scale=self.steer_scale, driving=self.driving, mode=self.mode,
+            speed_min=self.speed_min
         )
 
         self.vision_thread.daemon = True
@@ -360,6 +367,11 @@ class CascadeController:
     def get_last_command(self) -> Optional[MotorCommand]:
         """Get last motor command sent (for display/logging)."""
         return self.motor_thread.last_cmd if self.motor_thread else None
+
+    def get_last_sent(self) -> Tuple[float, float]:
+        """Actual (forward, steer) values last sent to the chassis, after
+        speed_min/speed_scale/steer_scale mapping — for on-screen display."""
+        return self.motor_thread.last_sent if self.motor_thread else (0.0, 0.0)
 
 
 class _VisionWorker(threading.Thread):
@@ -435,12 +447,14 @@ class _MotorWorker(threading.Thread):
 
     def __init__(self, buffer: TrackingBuffer, chassis_controller=None, speed_scale: float = 1.0,
                  driving: bool = True, steer_scale: Optional[float] = None,
-                 mode: str = "step"):
+                 mode: str = "step", speed_min: float = 0.0):
         super().__init__()
         self.buffer = buffer
         self.chassis = chassis_controller
         self.speed_scale = speed_scale
+        self.speed_min = min(speed_min, speed_scale)
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
+        self.last_sent: Tuple[float, float] = (0.0, 0.0)
         self.driving = driving  # actual gate on motor output
         self._was_driving = driving
         self.mode = mode        # "step" | "chase" | "cruise" (see CascadeController)
@@ -595,7 +609,12 @@ class _MotorWorker(threading.Thread):
         # cruise floors LOWER so the taper can actually slow the approach —
         # raise it if the base stalls while creeping in.
         mag = math.sqrt(forward**2 + steer**2)
-        MIN_SPEED = 0.22 if self.mode == "cruise" else 0.35
+        if self.mode == "cruise":
+            # With an explicit speed_min the [min,max] output mapping is the
+            # floor — keep only a tiny one here so the taper can reach min.
+            MIN_SPEED = 0.05 if self.speed_min > 0 else 0.22
+        else:
+            MIN_SPEED = 0.35
         if 0.01 < mag < MIN_SPEED:
             scale = MIN_SPEED / mag
             forward *= scale
@@ -632,14 +651,26 @@ class _MotorWorker(threading.Thread):
                     if self._moving:
                         self._brake()
                         self._moving = False
+                    self.last_sent = (0.0, 0.0)
                 else:
-                    self.chassis.set_motor_pwm(
-                        cmd.forward * self.speed_scale, cmd.steer * self.steer_scale
-                    )
+                    # Forward output: plain scale, or — when speed_min is set —
+                    # mapped into [speed_min, speed_scale] by command magnitude
+                    # so the approach tapers but never crawls below speed_min.
+                    if self.speed_min > 0 and abs(cmd.forward) >= 0.01:
+                        fwd_out = math.copysign(
+                            self.speed_min + (self.speed_scale - self.speed_min)
+                            * min(1.0, abs(cmd.forward)),
+                            cmd.forward)
+                    else:
+                        fwd_out = cmd.forward * self.speed_scale
+                    steer_out = cmd.steer * self.steer_scale
+                    self.chassis.set_motor_pwm(fwd_out, steer_out)
+                    self.last_sent = (fwd_out, steer_out)
                     self._moving = True
             elif self._was_driving:
                 self.chassis.stop()  # actively cut power once, not just stop sending
                 self._moving = False
+                self.last_sent = (0.0, 0.0)
             self._was_driving = self.driving
         except Exception as e:
             print(f"[Motor] Error sending command: {e}")

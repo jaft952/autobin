@@ -5,7 +5,9 @@ Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x
                                      [--mode step|chase] [--pt]
   --drive : enable chassis motion (default off)
   --arm   : enable arc-grasp grabbing when centered+stable (default off)
-  --speed : forward speed multiplier, 0..1 (default 1.0, too fast? lower it)
+  --speed : forward speed multiplier, 0..1 (default 1.0, too fast? lower it).
+            MAX-MIN form e.g. --speed 0.6-0.3: far from the tin runs at 0.6,
+            tapers down as it approaches but never below 0.3 (no stall crawl)
   --turn  : steer speed multiplier, 0..1 (default: same as --speed; turning has
             no rolling friction, so it usually wants a LOWER value, e.g.
             --speed 0.6 --turn 0.3)
@@ -62,7 +64,7 @@ def _interpret_motion_command(cmd):
     return motion, steer, intensity
 
 
-def _draw_status_overlay(frame, status, cmd, driving=None):
+def _draw_status_overlay(frame, status, cmd, driving=None, sent=(0.0, 0.0)):
     """Draw cascade status and motion command on frame."""
     import cv2
     if frame is None:
@@ -85,7 +87,8 @@ def _draw_status_overlay(frame, status, cmd, driving=None):
         cv2.putText(frame, motion, (20, fh - 72), font, 1.1, (170, 170, 170), 3)
 
     motion_color = (0, 255, 0) if intensity > 0 else (170, 170, 170)
-    motion_text = f"Motion: {motion}  |  intensity={intensity:.2f}"
+    motion_text = (f"Motion: {motion}  |  speed fwd={abs(sent[0]):.2f} "
+                   f"turn={abs(sent[1]):.2f}")
     cv2.putText(frame, motion_text, (20, fh - 42), font, 0.7, motion_color, 2)
 
     # Alignment / stability (lower line)
@@ -170,7 +173,8 @@ def _make_chassis():
         return None
 
 
-def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step"):
+def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step",
+         speed_min=0.0):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -197,13 +201,15 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
     print(f"Vision: ~30 Hz (YOLO11n-seg + IBVS)")
     print(f"Motor: ~1000 Hz (smooth interpolation)")
     print(f"Drive: {'ON' if driving else 'OFF'}   Arm: {'ARMED' if armed else 'OFF'}   Mode: {mode.upper()}")
-    print(f"Speed scale: fwd={speed:.2f} turn={(turn if turn is not None else speed):.2f}  "
+    spd_txt = f"{speed:.2f}" if speed_min <= 0 else f"max={speed:.2f} min={speed_min:.2f}"
+    print(f"Speed scale: fwd={spd_txt} turn={(turn if turn is not None else speed):.2f}  "
           f"(--speed / --turn 0.x to slow down)")
     print(f"Keys: m = toggle drive, g = toggle arm, q = quit")
     print(f"{'='*70}\n")
 
     controller = CascadeController(detector, centering, chassis, speed_scale=speed,
-                                   steer_scale=turn, driving=driving, mode=mode)
+                                   steer_scale=turn, driving=driving, mode=mode,
+                                   speed_min=speed_min)
     controller.start()
 
     show = True
@@ -223,7 +229,9 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
                         frame = detector.get_annotated_frame(status.result)
 
                     if frame is not None:
-                        _draw_status_overlay(frame, status, cmd, driving if chassis is not None else None)
+                        _draw_status_overlay(frame, status, cmd,
+                                             driving if chassis is not None else None,
+                                             sent=controller.get_last_sent())
                     else:
                         import numpy as np
                         frame = np.zeros((540, 960, 3), dtype=np.uint8)
@@ -311,9 +319,15 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
 if __name__ == "__main__":
     drive = "--drive" in sys.argv
     arm = "--arm" in sys.argv
-    speed = 1.0
+    speed, speed_min = 1.0, 0.0
     if "--speed" in sys.argv:
-        speed = float(sys.argv[sys.argv.index("--speed") + 1])
+        raw = sys.argv[sys.argv.index("--speed") + 1]
+        parts = raw.split("-")
+        speed = float(parts[0])
+        if len(parts) > 1:
+            speed_min = float(parts[1])
+            if speed_min > speed:
+                sys.exit(f"--speed MAX-MIN: max ({speed}) must be >= min ({speed_min})")
     turn = None
     if "--turn" in sys.argv:
         turn = float(sys.argv[sys.argv.index("--turn") + 1])
@@ -323,4 +337,5 @@ if __name__ == "__main__":
         if mode not in ("step", "chase", "cruise"):
             sys.exit(f"--mode must be 'step', 'chase' or 'cruise', got '{mode}'")
     use_ncnn = "--pt" not in sys.argv
-    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn, mode=mode)
+    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn, mode=mode,
+         speed_min=speed_min)
