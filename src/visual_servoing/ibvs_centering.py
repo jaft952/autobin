@@ -179,13 +179,13 @@ class IBVSCentering:
         arc_ready = False
         if self._arc is not None:
             try:
-                arc_ready = self._arc.ready_for(pose)
+                arc_ready = self._arc.ready_for(pose) # type: ignore
             except Exception:
                 arc_ready = False
         if arc_ready:
             nx, ny = sx / detection.frame_width, sy / detection.frame_height
             try:
-                aligned = self._arc.solve(nx, ny, pose=pose) is not None
+                aligned = self._arc.solve(nx, ny, pose=pose) is not None # type: ignore
             except Exception:
                 aligned = math.hypot(error_x, error_y) <= cfg.tolerance
         else:

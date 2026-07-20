@@ -165,7 +165,7 @@ class Arm:
         re-engages, ramping from the tracked (possibly now-stale) pose."""
         try:
             for i in range(6):
-                self.act.kit.servo[i].angle = None
+                self.act.kit.servo[i].angle = None # type: ignore
             print("[arm] RELEASED — no PWM, arm is limp (any move re-engages).")
         except Exception as exc:
             print(f"[arm] release failed ({exc})")
@@ -333,7 +333,7 @@ class Camera:
 
         def on_mouse(event, x, y, flags, param):
             if event == cv2.EVENT_LBUTTONDOWN:
-                state["click"] = (x, y)
+                state["click"] = (x, y) # type: ignore
                 print(f"  manual override ({x},{y})  "
                       f"norm=({x / self.fw:.3f},{y / self.fh:.3f})")
 
@@ -347,7 +347,7 @@ class Camera:
 
         if self.detector is None:          # flush stale buffered frames
             for _ in range(5):
-                self.cap.read()
+                self.cap.read() # type: ignore
 
         try:
             i = 0
@@ -366,7 +366,7 @@ class Camera:
                     if shown is None:
                         shown = frame
                 else:
-                    ok, shown = self.cap.read()
+                    ok, shown = self.cap.read() #type: ignore
                     if not ok:
                         print("  camera read failed")
                         break
