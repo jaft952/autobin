@@ -192,12 +192,16 @@ def main():
                 else:
                     # Mirror ArmExecutor's real autonomous sequence
                     # (grab -> dump -> home): don't leave the arm parked
-                    # over the bin holding a pose — return to rest so it
-                    # isn't burning battery between grabs.
+                    # over the bin holding a pose — ramp home under power,
+                    # THEN cut PWM, so it isn't burning battery holding a
+                    # pose between grabs (rest() does both, in order).
                     arm.dump_to_bin()
-                    arm.force_home()
+                    arm.rest()
             if key == ord("h") and arm is not None:
-                arm.force_home()
+                # force_home() alone would leave it holding HOME under PWM
+                # forever — that's a pose, not rest. rest() ramps there
+                # under power, then cuts PWM so it actually goes idle.
+                arm.rest()
             if key == ord("r") and arm is not None:
                 arm.release()   # cut PWM — arm goes limp (servo_jog-style)
 

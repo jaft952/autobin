@@ -297,7 +297,7 @@ def _attempt_grab(controller, chassis, solver, arm, result, state):
         arm.brake_wheels()                    # grab() released it — hold for the carry
         try:
             arm.dump_to_bin()                 # bin pose + open
-            arm.force_home()
+            arm.rest()                        # ramp home under power, then cut PWM
         finally:
             arm.release_wheels()
     finally:

@@ -148,6 +148,13 @@ class Arm:
         else:
             print("[arm] startup: no movement. No saved pose — assuming HOME; "
                   "press 'h' to force-home if the arm isn't actually there.")
+        # The PCA9685 is a separate chip: it keeps outputting whatever angle
+        # it was last told even after the previous process exited (crash,
+        # kill -9, power-cycle skipped the cleanup release). So "no movement
+        # on startup" isn't the same as "at rest" — cut PWM explicitly here
+        # too, same as rest()'s second half, so a fresh run never inherits a
+        # stale session's servos silently holding a pose against gravity.
+        self.release()
 
     def force_home(self):
         """Step every channel to HOME + open gripper, gently. goto/_one ramp
@@ -169,6 +176,13 @@ class Arm:
             print("[arm] RELEASED — no PWM, arm is limp (any move re-engages).")
         except Exception as exc:
             print(f"[arm] release failed ({exc})")
+
+    def rest(self):
+        """True idle: ramp to HOME under power (so it arrives gently, not by
+        gravity), then cut PWM. The arm holds no pose and draws nothing
+        while idle; the next command re-engages and ramps from HOME."""
+        self.force_home()
+        self.release()
 
     def brake_wheels(self):
         if self.wheels is not None:
