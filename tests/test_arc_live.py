@@ -1,30 +1,3 @@
-"""
-tests/test_arc_live.py
-
-LIVE arc-grasp checker: YOLO detects the tin, its ground-contact pixel is fed
-to ArcGraspSolver every frame, and the overlay tells you whether the tin is
-GRABBABLE right now (inside a calibrated arc band) — plus which way to move
-if it isn't. Modeled on test_ibvs_centering's live loop.
-
-Meant for the "one arc calibrated, does it work?" stage: calibrate with
-tests/test_arc_grasp.py first (even a single row of 1-3 samples), then run
-this and slide the tin around the floor.
-
-Usage (Pi desktop):
-    python tests/test_arc_live.py
-
-Keys:
-    g = grab NOW using the solved pose (needs arm hardware; ends HOLDING
-        so you can check the grip — the autonomous stack dumps by itself)
-    b = dump the held tin into the onboard bin
-    h = arm home (forced)
-    q = quit
-
-Overlay:
-    yellow line(s)   calibrated arc(s), diamonds = azimuth samples
-    green banner     GRABBABLE + the CH1-5 the solver would send
-    orange banner    not grabbable + a hint (too far / too close / off side)
-"""
 import os
 import sys
 
