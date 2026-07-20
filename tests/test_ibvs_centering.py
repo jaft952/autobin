@@ -144,7 +144,7 @@ def _make_arm(chassis=None):
         from src.arm.arc_grasp import ArcGraspSolver
         from test_arc_grasp import Arm
         solver = ArcGraspSolver()
-        if not solver.ready():
+        if not solver.ready(): # type: ignore
             print(f"[arm] arc_grasp calibration not ready ({solver.status()}) — arm mode unavailable.")
             return None, None
         # ONE motor driver per process: hand the Arm the chassis' actuator
@@ -277,7 +277,7 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
                 try:
                     frame = None
                     if status is not None and status.result is not None:
-                        frame = detector.get_annotated_frame(status.result)
+                        frame = detector.get_annotated_frame(status.result) # type: ignore
 
                     if frame is not None:
                         _draw_status_overlay(frame, status, cmd,
