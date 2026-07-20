@@ -31,6 +31,7 @@
 """
 import os
 import sys
+from typing import Any
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -103,6 +104,9 @@ def choose_row_for_sample(rows, cur_arm, nx, ny):
     return best, best_d, note
 
 
+AUTO_WHEELS = object()   # Arm(wheels=...) default: open our own motor driver
+
+
 class Arm:
     """Tracks pose and moves ONE channel at a time, gently.
 
@@ -111,19 +115,26 @@ class Arm:
     spot. brake_wheels() shorts the motor windings so the base resists that
     push; it's best-effort (no motor driver wired -> just skipped)."""
 
-    def __init__(self):
+    def __init__(self, wheels=AUTO_WHEELS):
         self.act = ArmActuator()
         self.arm = list(HOME_ARM)
         self.gripper = GRIPPER_OPEN
         # Best-effort wheel brake: the motor driver may not be wired on the
         # calibration bench, so a failure here must not kill the arm tool.
-        self.wheels = None
-        try:
-            from src.hardware.actuators.pwm_driver import PWMActuator
-            self.wheels = PWMActuator()
-            print("[wheels] brake available — held during grabs.")
-        except Exception as exc:
-            print(f"[wheels] no motor driver ({exc}); grabs run without brake.")
+        # Callers that ALREADY own a PWMActuator (test_ibvs_centering's
+        # chassis) must pass it in: building a second one runs GPIO.cleanup
+        # on the shared motor pins and kills theirs.
+        self.wheels: Any = None
+        if wheels is not AUTO_WHEELS:
+            self.wheels = wheels
+            print("[wheels] using the caller's motor driver for the brake.")
+        else:
+            try:
+                from src.hardware.actuators.pwm_driver import PWMActuator
+                self.wheels = PWMActuator()
+                print("[wheels] brake available — held during grabs.")
+            except Exception as exc:
+                print(f"[wheels] no motor driver ({exc}); grabs run without brake.")
         # NOTHING moves on startup (calibration tools must never surprise-
         # move the arm; same policy as servo_jog.py). The tracked pose is
         # loaded from the LAST SESSION's persisted pose when available —

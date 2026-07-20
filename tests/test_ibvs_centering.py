@@ -20,8 +20,9 @@ Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x
             (all brake inside the arc-grasp zone / on lost detection)
   --pt    : force the .pt weights, skip NCNN (A/B comparison)
 Keys: m = toggle drive, g = toggle arm, n = cycle step/chase/cruise, q = quit.
-A grab brakes the base, runs the blocking arc-grasp sequence (grab -> dump ->
-home, 4 s cooldown via ArmExecutor), then releases the brake.
+A grab brakes the base and runs the blocking sequence from tests/test_arc_grasp.py
+(the SAME Arm.grab you tune with 'g' there) -> dump into the bin -> home, with a
+4 s cooldown, then releases the brake.
 """
 
 import os
@@ -30,9 +31,14 @@ import time
 import math
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))   # for test_arc_grasp
 
 from src.visual_servoing.ibvs_centering import IBVSCentering
 from src.visual_servoing.cascade_controller import CascadeController
+
+# Same cooldown ArmExecutor used: a tin still visible mid-lift (or a missed
+# grab) must not re-trigger the whole sequence on the very next loop.
+GRAB_COOLDOWN_S = 4.0
 
 
 def _interpret_motion_command(cmd):
@@ -103,27 +109,38 @@ def _draw_status_overlay(frame, status, cmd, driving=None, sent=(0.0, 0.0)):
         cv2.putText(frame, dmode, (fw - 250, 32), font, 0.7, dcol, 1)
 
 
-def _make_arm():
-    """Init arc-grasp solver + executor (optional)."""
+def _make_arm(chassis=None):
+    """Init arc-grasp solver + the SAME Arm class tests/test_arc_grasp.py uses.
+
+    Driving the calibration tool's Arm directly (instead of ArmExecutor ->
+    GraspPlanner) means the grab that runs here is byte-for-byte the one you
+    tune with 'g' in that tool: same lift pose, same per-tin-pose channel
+    order, same gripper limits, same persisted pose file."""
     try:
         from src.arm.arc_grasp import ArcGraspSolver
-        from src.subsumption.arm_executor import ArmExecutor
+        from test_arc_grasp import Arm
         solver = ArcGraspSolver()
         if not solver.ready():
             print(f"[arm] arc_grasp calibration not ready ({solver.status()}) — arm mode unavailable.")
             return None, None
-        executor = ArmExecutor()
-        print("[arm] arc-grasp ready — press 'g' to toggle grabbing.")
-        return executor, solver
+        # ONE motor driver per process: hand the Arm the chassis' actuator
+        # rather than letting it open a second one — PWMActuator.__init__
+        # runs GPIO.cleanup on the shared motor pins and would kill the
+        # chassis' PWM channels mid-run.
+        arm = Arm(wheels=chassis.actuator) if chassis is not None else Arm()
+        print("[arm] arc-grasp ready (test_arc_grasp.Arm) — press 'g' to toggle grabbing.")
+        return arm, solver
     except Exception as exc:
         print(f"[arm] not available ({exc}); arm mode disabled.")
         return None, None
 
 
-def _attempt_grab(controller, chassis, solver, arm_exec, result):
-    """Solve an arc pose from the current detection and run the blocking grab.
-    Brakes the base during the arm sequence, then restores the drive state."""
-    from src.subsumption.arbitrator import ActionCommand
+def _attempt_grab(controller, chassis, solver, arm, result, state):
+    """Solve an arc pose from the current detection and run test_arc_grasp's
+    blocking grab -> dump -> home. Brakes the base for the whole sequence,
+    then restores the drive state."""
+    if time.monotonic() < state["cooldown_until"]:
+        return
 
     best = result.best
     if best is None:
@@ -141,20 +158,29 @@ def _attempt_grab(controller, chassis, solver, arm_exec, result):
         solved = solver.solve(pos[0], pos[1], pose="upright") if pos else None
     if solved is None:
         print(f"[arm] tin ({klass}) at {pos} outside calibrated grid — no grab.")
+        # Cooldown on failure too: an out-of-grid tin stays centered+stable,
+        # so without this it would re-solve and re-print every single loop.
+        state["cooldown_until"] = time.monotonic() + GRAB_COOLDOWN_S
         return
 
     print(f"[arm] GRAB ({tin_pose}) @ nx={pos[0]:.2f} ny={pos[1]:.2f} — braking base...")
     was_driving = controller.driving
     controller.set_driving(False)
     try:
-        if chassis is not None:
-            chassis.actuator.brake()  # hold base against arm shake
-        arm_exec.execute(ActionCommand(
-            layer_id=3, active=True, motion_vector=(0, 0, 0),
-            arm_action='grab_arc',
-            arm_params={'pose': solved, 'tin_pose': tin_pose},
-            message='ibvs test grab'))
+        if not state["homed"]:
+            # First arm move of the session: the tracked pose came from the
+            # last session's file, so assert home before trusting it.
+            arm.force_home()
+            state["homed"] = True
+        arm.grab(solved, tin_pose=tin_pose)   # brakes the wheels internally
+        arm.brake_wheels()                    # grab() released it — hold for the carry
+        try:
+            arm.dump_to_bin()                 # bin pose + open
+            arm.force_home()
+        finally:
+            arm.release_wheels()
     finally:
+        state["cooldown_until"] = time.monotonic() + GRAB_COOLDOWN_S
         if chassis is not None:
             chassis.stop()  # release brake -> coast
         controller.set_driving(was_driving)
@@ -192,8 +218,9 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
     chassis = _make_chassis()
     driving = drive and chassis is not None
 
-    arm_exec, solver = _make_arm() if arm else (None, None)
-    armed = arm and arm_exec is not None
+    arm_ctl, solver = _make_arm(chassis) if arm else (None, None)
+    armed = arm and arm_ctl is not None
+    grab_state = {"cooldown_until": 0.0, "homed": False}
 
     print(f"\n{'='*70}")
     print(f"Visual Servoing + Cascade Control")
@@ -247,9 +274,9 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
                         controller.set_driving(driving)  # actually gate the wheels
                         print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
                     if key == ord("g"):
-                        if arm_exec is None:
-                            arm_exec, solver = _make_arm()
-                        if arm_exec is not None:
+                        if arm_ctl is None:
+                            arm_ctl, solver = _make_arm(chassis)
+                        if arm_ctl is not None:
                             armed = not armed
                             print(f"\n[mode] arm {'ARMED — grabs when centered+stable' if armed else 'off'}\n")
                     if key == ord("n"):
@@ -263,11 +290,13 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
                 except Exception as e:
                     print(f"[display] error: {e}")
 
-            # Grab when armed and IBVS reports centered + stable (ArmExecutor's
-            # own 4 s cooldown stops the same tin re-triggering every loop).
-            if (armed and arm_exec is not None and status is not None
+            # Grab when armed and IBVS reports centered + stable (the
+            # GRAB_COOLDOWN_S in grab_state stops the same tin re-triggering
+            # the sequence every loop).
+            if (armed and arm_ctl is not None and status is not None
                     and status.stable and status.result is not None):
-                _attempt_grab(controller, chassis, solver, arm_exec, status.result)
+                _attempt_grab(controller, chassis, solver, arm_ctl,
+                              status.result, grab_state)
 
             # Print status to console with motion details
             if status and cmd:
