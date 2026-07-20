@@ -37,6 +37,11 @@ class CenteringStatus:
     target_px: Optional[Tuple[int, int]]       # smoothed tin center in pixels (None if lost)
     mask_area: Optional[int] = None  # segmented pixel count (confidence metric)
     message: str = ""
+    # Where the tracked point SHOULD sit (the calibrated sweet spot, in pixels,
+    # for whichever pose was detected). target_px and goal_px are the two ends
+    # of the same error, in pixels — the metric approach planner projects both
+    # to the floor and plans a drive between them. None when nothing is seen.
+    goal_px: Optional[Tuple[int, int]] = None
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -196,6 +201,8 @@ class IBVSCentering:
             error_x=round(error_x, 3), error_y=round(error_y, 3),
             motion_vector=motion, target_px=(int(sx), int(sy)),
             mask_area=best.mask_area, message=msg,
+            goal_px=(int(target_x * detection.frame_width),
+                     int(target_y * detection.frame_height)),
         )
 
     # ── helpers ──────────────────────────────────────────────────────────

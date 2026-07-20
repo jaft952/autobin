@@ -14,9 +14,15 @@ Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x
   --mode  : step   = aim, drive straight, re-aim when tin leaves central 70% (default)
             chase  = car-like continuous pursuit: drive + steer at the same time,
                      pivoting only if the tin nears the frame edge
-            cruise = chase, but never stops to wait for detections: fast 320px
-                     inference (auto-fallback if the model rejects it),
-                     dead-reckons between frames, slows as it nears the tin
+            cruise = METRIC approach: projects the tin onto the floor (metres),
+                     plans a drive to the grasp spot, and dead-reckons the
+                     remaining distance from the wheel duties between frames,
+                     so it decelerates on schedule instead of executing a
+                     stale full-speed command until the next detection lands
+                     (that lag is what made it push the tin). Final 12 cm are
+                     small pulses with a pause between for a fresh look.
+                     Needs the floor calibration; without it, falls back to
+                     the old pixel chase. Watch the yellow PLAN d=... readout.
             (all brake inside the arc-grasp zone / on lost detection)
   --pt    : force the .pt weights, skip NCNN (A/B comparison)
 Keys: m = toggle drive, g = toggle arm, n = cycle step/chase/cruise, q = quit.
@@ -70,7 +76,18 @@ def _interpret_motion_command(cmd):
     return motion, steer, intensity
 
 
-def _draw_status_overlay(frame, status, cmd, driving=None, sent=(0.0, 0.0)):
+def _plan_text(controller):
+    """One-line summary of the metric approach plan, or '' in pixel mode."""
+    planner = getattr(controller, "planner", None)
+    if planner is None or not planner.has_plan:
+        return ""
+    cmd = controller.get_last_command()
+    phase = cmd.phase if cmd is not None and cmd.phase else "-"
+    return (f"PLAN {phase:5} d={planner.distance():.2f}m "
+            f"hdg={math.degrees(planner.heading()):+.0f}deg")
+
+
+def _draw_status_overlay(frame, status, cmd, driving=None, sent=(0.0, 0.0), plan=""):
     """Draw cascade status and motion command on frame."""
     import cv2
     if frame is None:
@@ -96,6 +113,13 @@ def _draw_status_overlay(frame, status, cmd, driving=None, sent=(0.0, 0.0)):
     motion_text = (f"Motion: {motion}  |  speed fwd={abs(sent[0]):.2f} "
                    f"turn={abs(sent[1]):.2f}")
     cv2.putText(frame, motion_text, (20, fh - 42), font, 0.7, motion_color, 2)
+
+    # Metric plan (cruise): how far the planner still thinks it has to go.
+    # Watch this while tuning — if it hits 0.00 while the tin is still ahead,
+    # the learned v_max is too high; if it stops short, too low.
+    if plan:
+        cv2.putText(frame, plan, (fw - 430, 64), font, 0.65, (0, 0, 0), 4)
+        cv2.putText(frame, plan, (fw - 430, 64), font, 0.65, (255, 220, 0), 1)
 
     # Alignment / stability (lower line)
     color = (0, 255, 0) if status.stable else (0, 165, 255)
@@ -258,7 +282,8 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
                     if frame is not None:
                         _draw_status_overlay(frame, status, cmd,
                                              driving if chassis is not None else None,
-                                             sent=controller.get_last_sent())
+                                             sent=controller.get_last_sent(),
+                                             plan=_plan_text(controller))
                     else:
                         import numpy as np
                         frame = np.zeros((540, 960, 3), dtype=np.uint8)
@@ -301,6 +326,7 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
             # Print status to console with motion details
             if status and cmd:
                 motion, _, intensity = _interpret_motion_command(cmd)
+                plan = _plan_text(controller)
                 print(
                     f"err=({status.error_x:+.3f},{status.error_y:+.3f})  "
                     f"mask_area={status.mask_area if status.mask_area else 'None':>7}  "
@@ -308,6 +334,7 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
                     f"aligned={status.aligned}  stable={status.stable}  "
                     f"| motion={motion:20}  intensity={intensity:.2f}  "
                     f"drive={'ON' if driving else 'OFF'}"
+                    + (f"  | {plan}" if plan else "")
                 )
             elif status:
                 print(

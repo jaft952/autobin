@@ -29,6 +29,12 @@ DETECT_GRACE_S = 0.6
 # observed as "lunge N steps forward, N steps back" hunting at the target.
 CMD_MAX_AGE_S = 0.30
 
+# IBVSCentering EMA-smooths the tracked pixel (ema_alpha 0.4), which delays the
+# reported point by roughly alpha/(1-alpha) frames on top of the inference
+# time. The metric planner back-dates observations by this much as well, or it
+# would think it is closer to the tin than it is.
+EMA_LAG_S = 0.05
+
 
 @dataclass
 class VisionState:
@@ -42,6 +48,14 @@ class VisionState:
     stable: bool
     confidence: float             # Detection confidence [0, 1]
     result: Optional[object] = None  # DetectionResult, untyped to avoid importing torch here
+    # When the FRAME was grabbed, not when inference finished. The metric
+    # planner needs this to subtract its own latency: timestamp is one whole
+    # inference later than the scene it describes.
+    capture_time: float = 0.0
+    # (right, forward) metres the base must travel to put the tin on the grasp
+    # spot. None when the ground model can't trust this pixel (too far / above
+    # the horizon / uncalibrated) — the caller then falls back to pixel P-control.
+    approach_xy: Optional[Tuple[float, float]] = None
 
     def quality(self) -> float:
         """Combined confidence: detection + segmentation area."""
@@ -61,6 +75,12 @@ class MotorCommand:
     forward: float      # [-1, 1]
     steer: float        # [-1, 1]
     timestamp: float
+    # True when ApproachPlanner produced these: they are FINAL duties (the
+    # planner already applied the speed cap and the stall floor to hit a
+    # metric velocity), so _send_motor_command must pass them through
+    # untouched instead of re-mapping them into [speed_min, speed_scale].
+    planned: bool = False
+    phase: str = ""     # planner phase, for the on-screen overlay
 
 
 class TrackingBuffer:
@@ -298,9 +318,13 @@ class CascadeController:
                 re-aim when it drifts out of the central 70%;
                 "chase" = car-like continuous pursuit (drive + steer together),
                 pivoting only if the tin nears the frame edge;
-                "cruise" = chase without the stale-data brake-stops: fast
-                320px detection, dead-reckoning between frames, speed tapers
-                with distance for a smooth continuous approach.
+                "cruise" = METRIC approach via ApproachPlanner: the tin is
+                projected onto the floor, a drive to the grasp spot is planned
+                in metres, and the remaining distance is dead-reckoned from the
+                duties actually sent. The deceleration ramp therefore shrinks
+                during the inference gap instead of holding a stale full-speed
+                command — the lag that made the base push the tin away. Falls
+                back to pixel P-control if the floor model isn't calibrated.
                 All stop+brake once inside the arc-grasp zone.
         """
         self.detector = detector
@@ -317,6 +341,30 @@ class CascadeController:
         self.vision_thread = None
         self.motor_thread = None
         self.running = False
+
+        # Metric approach planning (cruise). Optional by design: without floor
+        # calibration — or if numpy/yaml are missing — ground stays None and
+        # cruise behaves exactly as it did before, on pixel P-control.
+        self.ground = None
+        self.planner = None
+        try:
+            from src.visual_servoing.approach_planner import (
+                ApproachPlanner, DriveModel, GroundRange,
+            )
+            self.ground = GroundRange()
+            print(f"[approach] {self.ground.status()}")
+            if self.ground.ready:
+                self.drive_model = DriveModel()
+                print(f"[approach] {self.drive_model.status()}")
+                self.planner = ApproachPlanner(
+                    self.drive_model,
+                    max_forward_duty=self.speed_scale,
+                    max_steer_duty=self.steer_scale,
+                    stall_duty=max(self.speed_min, 0.22),
+                )
+        except Exception as exc:
+            print(f"[approach] metric planner unavailable ({exc}) — "
+                  f"cruise falls back to pixel control.")
 
     def set_driving(self, driving: bool):
         """Enable/disable actual motor output. Safe to call from any thread."""
@@ -336,12 +384,13 @@ class CascadeController:
 
         self.vision_thread = _VisionWorker(
             self.detector, self.ibvs_centering, self.buffer,
-            get_mode=lambda: self.mode
+            get_mode=lambda: self.mode, ground=self.ground
         )
         self.motor_thread = _MotorWorker(
             self.buffer, self.chassis, speed_scale=self.speed_scale,
             steer_scale=self.steer_scale, driving=self.driving, mode=self.mode,
-            speed_min=self.speed_min, steer_min=self.steer_min
+            speed_min=self.speed_min, steer_min=self.steer_min,
+            planner=self.planner
         )
 
         self.vision_thread.daemon = True
@@ -356,9 +405,16 @@ class CascadeController:
         """Stop both threads gracefully."""
         self.running = False
         if self.vision_thread:
+            self.vision_thread.stop()
             self.vision_thread.join(timeout=2.0)
         if self.motor_thread:
+            self.motor_thread.stop()
             self.motor_thread.join(timeout=2.0)
+        if self.planner is not None:
+            # Persist whatever the approach learned about this robot's real
+            # speed, so the next run starts calibrated instead of guessing.
+            self.drive_model.save()
+            print(f"[approach] {self.drive_model.status()}")
         print("✓ Cascade controller stopped")
 
     def get_status(self) -> Optional[VisionState]:
@@ -379,13 +435,29 @@ class _VisionWorker(threading.Thread):
     """Vision capture thread (~30 Hz)."""
 
     def __init__(self, detector, ibvs_centering, buffer: TrackingBuffer,
-                 get_mode=None):
+                 get_mode=None, ground=None):
         super().__init__()
         self.detector = detector
         self.ibvs = ibvs_centering
         self.buffer = buffer
         self.get_mode = get_mode or (lambda: "step")
+        self.ground = ground        # GroundRange or None -> pixel mode only
         self.running = False
+
+    def _approach_xy(self, status, result):
+        """Metres the base must travel so the tracked point lands on the
+        calibrated sweet spot. Both ends of the pixel error are projected onto
+        the floor, so the answer is a real displacement rather than a gain
+        applied to a pixel count."""
+        if (self.ground is None or not self.ground.ready
+                or not status.target_px or not status.goal_px):
+            return None
+        w = result.frame_width
+        tin = self.ground.project(status.target_px[0], status.target_px[1], w)
+        goal = self.ground.project(status.goal_px[0], status.goal_px[1], w)
+        if tin is None or goal is None:
+            return None
+        return (tin[0] - goal[0], tin[1] - goal[1])
 
     def run(self):
         """Main vision loop."""
@@ -396,7 +468,10 @@ class _VisionWorker(threading.Thread):
             t_start = time.time()
 
             try:
-                # Capture and detect
+                # Capture and detect. t_capture is stamped BEFORE inference:
+                # the planner subtracts this age, so it must describe the
+                # scene, not the moment the answer came back.
+                t_capture = time.time()
                 frame = self.detector.read_frame()
                 if frame is None:
                     time.sleep(0.001)
@@ -427,6 +502,9 @@ class _VisionWorker(threading.Thread):
                     stable=status.stable,
                     confidence=result.best.confidence if result.best else 0.0,
                     result=result,
+                    capture_time=t_capture,
+                    approach_xy=(self._approach_xy(status, result)
+                                 if result.found else None),
                 )
 
                 # Push to shared buffer (non-blocking)
@@ -448,7 +526,8 @@ class _MotorWorker(threading.Thread):
 
     def __init__(self, buffer: TrackingBuffer, chassis_controller=None, speed_scale: float = 1.0,
                  driving: bool = True, steer_scale: Optional[float] = None,
-                 mode: str = "step", speed_min: float = 0.0, steer_min: float = 0.0):
+                 mode: str = "step", speed_min: float = 0.0, steer_min: float = 0.0,
+                 planner=None):
         super().__init__()
         self.buffer = buffer
         self.chassis = chassis_controller
@@ -464,6 +543,11 @@ class _MotorWorker(threading.Thread):
         self._last_good: Optional[VisionState] = None  # newest DETECTED state
         self._moving = False    # last command was nonzero -> brake on stop
         self.running = False
+
+        # Metric approach planner — cruise only. None = fall back to the pixel
+        # P-control path (no ground calibration, or planner import failed).
+        self.planner = planner
+        self._planned_obs_t = 0.0     # capture_time of the last observation fed in
 
         # Filters for X and Y axes
         self.filter_x = AlphaBetaFilter(alpha=0.6, beta=0.3)
@@ -486,9 +570,21 @@ class _MotorWorker(threading.Thread):
         self.running = True
         dt = 1.0 / 1000  # 1000 Hz
 
+        last_tick = time.time()
+
         while self.running:
             t_start = time.time()
             t_now = t_start
+
+            # DEAD RECKONING (planner only): advance the metric plan by the
+            # motion the wheels performed since the last tick. This runs at
+            # 1 kHz whether or not vision has anything new to say — it is what
+            # lets the deceleration ramp shrink on schedule during the whole
+            # inference gap instead of holding a stale full-speed command.
+            if self.planner is not None:
+                self.planner.predict(t_now - last_tick, self.last_sent[0],
+                                     self.last_sent[1], t_now)
+            last_tick = t_now
 
             # Check for new vision data. Only DETECTED states feed the
             # filters — undetected frames carry error 0,0 and would drag the
@@ -499,6 +595,14 @@ class _MotorWorker(threading.Thread):
                 self._handle_vision_update(latest)
                 self.last_vision_time = latest.timestamp
                 self._last_good = latest
+                if (self.planner is not None and latest.approach_xy is not None
+                        and latest.capture_time > self._planned_obs_t):
+                    # Correct the plan, back-dated to when the frame was taken.
+                    # EMA_LAG_S also removes the IBVS smoothing delay, which is
+                    # latency the timestamp alone doesn't capture.
+                    self.planner.observe(latest.approach_xy,
+                                         latest.capture_time - EMA_LAG_S, t_now)
+                    self._planned_obs_t = latest.capture_time
 
             # Gate. DETECT_GRACE_S bridges 1-2 dropped detections so the base
             # doesn't stutter-brake through YOLO flicker; anything older (tin
@@ -510,10 +614,32 @@ class _MotorWorker(threading.Thread):
             cmd_aged = ((t_now - self.last_vision_time) > CMD_MAX_AGE_S
                         and self.mode != "cruise")
             good = self._last_good
-            if (good is None or (t_now - good.timestamp) > DETECT_GRACE_S
-                    or good.aligned or cmd_aged):
-                # Lost/aligned -> stop; data merely AGED -> brake and wait for
-                # the next detection rather than acting on a stale decision.
+            planner = self.planner
+            planning = (planner is not None and self.mode == "cruise"
+                        and planner.has_plan
+                        and good is not None and good.approach_xy is not None)
+            if good is not None and good.aligned:
+                cmd = MotorCommand(0.0, 0.0, t_now)
+                self.limiter_x.reset()
+                self.limiter_y.reset()
+                if planner is not None:
+                    planner.reset()        # arrived — next tin starts a new plan
+            elif planner is not None and planning:
+                # A live PLAN outlives the detection that created it: the tin
+                # usually drops out of the frame bottom during the last few
+                # centimetres, which is exactly when stopping in the right
+                # place matters. The planner's own COAST_S ends it if vision
+                # never comes back.
+                a = planner.command(t_now)
+                cmd = MotorCommand(a.forward, a.steer, t_now,
+                                   planned=True, phase=a.phase)
+                if not a.moving:
+                    self.limiter_x.reset()
+                    self.limiter_y.reset()
+            elif (good is None or (t_now - good.timestamp) > DETECT_GRACE_S
+                    or cmd_aged):
+                # Lost -> stop; data merely AGED -> brake and wait for the next
+                # detection rather than acting on a stale decision.
                 cmd = MotorCommand(0.0, 0.0, t_now)
                 self.limiter_x.reset()   # else the next command slews from a
                 self.limiter_y.reset()   # stale value = random-direction lurch
@@ -654,6 +780,13 @@ class _MotorWorker(threading.Thread):
                         self._brake()
                         self._moving = False
                     self.last_sent = (0.0, 0.0)
+                elif cmd.planned:
+                    # ApproachPlanner output is already a final duty aimed at a
+                    # metric velocity — re-mapping it through speed_min would
+                    # destroy the deceleration ramp it just computed.
+                    self.chassis.set_motor_pwm(cmd.forward, cmd.steer)
+                    self.last_sent = (cmd.forward, cmd.steer)
+                    self._moving = True
                 else:
                     # Forward output: plain scale, or — when speed_min is set —
                     # mapped into [speed_min, speed_scale] by command magnitude
