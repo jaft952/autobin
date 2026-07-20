@@ -277,7 +277,7 @@ class CascadeController:
 
     def __init__(self, detector, ibvs_centering, chassis_controller=None, speed_scale: float = 1.0,
                  driving: bool = True, steer_scale: Optional[float] = None,
-                 mode: str = "step", speed_min: float = 0.0):
+                 mode: str = "step", speed_min: float = 0.0, steer_min: float = 0.0):
         """
         Args:
             detector: AluminiumCanDetector instance
@@ -309,6 +309,7 @@ class CascadeController:
         self.speed_scale = speed_scale
         self.speed_min = min(speed_min, speed_scale)
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
+        self.steer_min = min(steer_min, self.steer_scale)
         self.mode = mode
         self.driving = driving
 
@@ -340,7 +341,7 @@ class CascadeController:
         self.motor_thread = _MotorWorker(
             self.buffer, self.chassis, speed_scale=self.speed_scale,
             steer_scale=self.steer_scale, driving=self.driving, mode=self.mode,
-            speed_min=self.speed_min
+            speed_min=self.speed_min, steer_min=self.steer_min
         )
 
         self.vision_thread.daemon = True
@@ -447,13 +448,14 @@ class _MotorWorker(threading.Thread):
 
     def __init__(self, buffer: TrackingBuffer, chassis_controller=None, speed_scale: float = 1.0,
                  driving: bool = True, steer_scale: Optional[float] = None,
-                 mode: str = "step", speed_min: float = 0.0):
+                 mode: str = "step", speed_min: float = 0.0, steer_min: float = 0.0):
         super().__init__()
         self.buffer = buffer
         self.chassis = chassis_controller
         self.speed_scale = speed_scale
         self.speed_min = min(speed_min, speed_scale)
         self.steer_scale = speed_scale if steer_scale is None else steer_scale
+        self.steer_min = min(steer_min, self.steer_scale)
         self.last_sent: Tuple[float, float] = (0.0, 0.0)
         self.driving = driving  # actual gate on motor output
         self._was_driving = driving
@@ -663,7 +665,13 @@ class _MotorWorker(threading.Thread):
                             cmd.forward)
                     else:
                         fwd_out = cmd.forward * self.speed_scale
-                    steer_out = cmd.steer * self.steer_scale
+                    if self.steer_min > 0 and abs(cmd.steer) >= 0.01:
+                        steer_out = math.copysign(
+                            self.steer_min + (self.steer_scale - self.steer_min)
+                            * min(1.0, abs(cmd.steer)),
+                            cmd.steer)
+                    else:
+                        steer_out = cmd.steer * self.steer_scale
                     self.chassis.set_motor_pwm(fwd_out, steer_out)
                     self.last_sent = (fwd_out, steer_out)
                     self._moving = True

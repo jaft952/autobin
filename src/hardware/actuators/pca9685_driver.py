@@ -17,8 +17,11 @@ SERVO_RANGE_DEG = 180
 # jog test): jaws travel freely over servo commands 0..60 deg; beyond 60 the
 # linkage hits its stop (the old YF-6125MG-era commands like servo_jog's
 # neutral 80 are PAST it — the clamp below is what keeps them harmless now).
+# MAX kept 5 deg inside that measured stop (55, not 60) as a safety margin —
+# same rationale as OPEN parking off the stop at the low end: don't command
+# right up to the mechanical limit you measured, in case of any drift.
 GRIPPER_MIN_DEG = 0.0
-GRIPPER_MAX_DEG = 60.0
+GRIPPER_MAX_DEG = 55.0
 CHANNEL_ANGLE_LIMITS = {5: (GRIPPER_MIN_DEG, GRIPPER_MAX_DEG)}
 
 
