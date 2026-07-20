@@ -165,15 +165,31 @@ class IBVSCentering:
         if not is_lying and box_h_frac >= cfg.too_close_box_height:
             error_y = max(error_y, cfg.tolerance + 0.2)
 
-        aligned = math.hypot(error_x, error_y) <= cfg.tolerance
-        if not aligned and self._arc is not None:
-            # In-grid = grabbable right here, regardless of the sweet-spot error.
+        # When the arc grid is calibrated for this pose, IT is the authoritative
+        # "can the arm reach here" test — not a fallback that only widens the
+        # sweet-spot check. cfg.tolerance is tuned independently (and looser,
+        # to avoid limit-cycling on a tight radius) from the arc's per-row
+        # ny_tol, so treating the pixel check as sufficient on its own let the
+        # base call itself "aligned/stable" well outside what the arm's grid
+        # would actually accept — the base stops, the arm looks at the same
+        # point and (correctly) refuses to grab. Only fall back to the raw
+        # pixel tolerance when there's no calibrated grid for this pose to
+        # ask (uncalibrated rig, or arm-free vision-only testing).
+        pose = "lying" if is_lying else "upright"
+        arc_ready = False
+        if self._arc is not None:
+            try:
+                arc_ready = self._arc.ready_for(pose)
+            except Exception:
+                arc_ready = False
+        if arc_ready:
             nx, ny = sx / detection.frame_width, sy / detection.frame_height
             try:
-                pose = "lying" if is_lying else "upright"
                 aligned = self._arc.solve(nx, ny, pose=pose) is not None
             except Exception:
-                pass
+                aligned = math.hypot(error_x, error_y) <= cfg.tolerance
+        else:
+            aligned = math.hypot(error_x, error_y) <= cfg.tolerance
         self._aligned_streak = self._aligned_streak + 1 if aligned else 0
         stable = self._aligned_streak >= cfg.stable_frames
 
