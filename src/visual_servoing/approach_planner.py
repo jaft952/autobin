@@ -98,7 +98,12 @@ W_MAX_BOUNDS = (0.40, 8.00)
 LEARN_GAIN = 0.15          # EMA weight per usable observation
 LEARN_MIN_TRAVEL_M = 0.02  # ignore observations too small to be signal
 LEARN_MIN_TURN_RAD = 0.09
-LEARN_MAX_RATIO = 2.5      # a wilder mismatch than this is a bad detection
+LEARN_MAX_RATIO = 2.5      # per-update clamp on the learned correction ratio
+# Below this many learned updates, the drive-speed cap ramps up from a
+# walking pace instead of trusting model.v_max at full requested speed. See
+# the safety-cap comment in command() — this is what actually keeps a badly
+# wrong DEFAULT from being driven at real full speed while it's corrected.
+CONFIDENCE_UPDATES = 6
 
 # ── Approach profile ─────────────────────────────────────────────────────────
 DECEL_MPS2 = 0.35          # deceleration ramp: v = sqrt(2*a*d)
@@ -114,7 +119,8 @@ ARRIVE_HEADING_RAD = math.radians(6)
 # handful of steps instead of creeping in fixed 1 cm increments.
 PULSE_CLOSE_FRACTION = 0.5
 PULSE_ON_MIN_S = 0.05
-PULSE_ON_MAX_S = 0.25
+PULSE_ON_MAX_S = 0.12     # bounds how far ANY single nudge can go even if
+                          # model.v_max is still badly wrong (cold start)
 PULSE_OFF_S = 0.35
 # How long the planner may run on dead reckoning alone. The tin often leaves
 # the frame bottom during the last few centimetres, exactly when stopping
@@ -266,19 +272,43 @@ class DriveModel:
         if abs(predicted) < 1e-6:
             return
         ratio = actual / predicted
-        if not (1.0 / LEARN_MAX_RATIO) < ratio < LEARN_MAX_RATIO:
-            return                       # bad detection, not a bad model
+        if ratio <= 0:
+            return    # sign mismatch: something is structurally wrong (bad
+                      # detection, wrong odometry replay), not just a scale
+                      # error — no clamp rescues a flipped sign.
+        # CLAMP the ratio rather than reject the observation outright. A
+        # rejection-based cap sounds like noise protection, but it silently
+        # discards the exact case that matters most: a default this far from
+        # the real robot's speed IS the "flying off" bug, and the biggest,
+        # most out-of-range ratios are the ones a bad default produces. This
+        # still bounds the influence of one bad sample (each update moves at
+        # most LEARN_GAIN of the way to the clamped ratio) while letting a
+        # SUSTAINED mismatch correct itself over a handful of observations
+        # instead of never correcting at all.
+        ratio = _clamp(ratio, 1.0 / LEARN_MAX_RATIO, LEARN_MAX_RATIO)
+        # Adaptive gain: behave like a running average while the model is
+        # new (gain 0.5, 0.33, 0.25, ...) so a bad default is mostly gone
+        # within a handful of observations, then settle into the steady
+        # LEARN_GAIN EMA once mature so occasional noisy frames can't drag a
+        # good estimate around.
+        gain = max(LEARN_GAIN, 1.0 / (self.updates + 2))
         cur = getattr(self, attr)
-        setattr(self, attr, _clamp(cur * (1 - LEARN_GAIN) + cur * ratio * LEARN_GAIN, *bounds))
+        setattr(self, attr, _clamp(cur * (1 - gain) + cur * ratio * gain, *bounds))
         self.updates += 1
         self._dirty = True
 
     def learn_linear(self, predicted_m: float, actual_m: float):
-        if abs(predicted_m) >= LEARN_MIN_TRAVEL_M:
+        # Gate on whichever of predicted/actual is bigger, not predicted
+        # alone: when v_max badly UNDERSHOOTS reality, command()'s own duty
+        # cap shrinks the PREDICTED motion right along with it, so a
+        # predicted-only gate silently filters out exactly the observations
+        # that would fix a badly-low guess. actual_m (from vision) has no
+        # such bias.
+        if max(abs(predicted_m), abs(actual_m)) >= LEARN_MIN_TRAVEL_M:
             self._learn("v_max", predicted_m, actual_m, V_MAX_BOUNDS)
 
     def learn_yaw(self, predicted_rad: float, actual_rad: float):
-        if abs(predicted_rad) >= LEARN_MIN_TURN_RAD:
+        if max(abs(predicted_rad), abs(actual_rad)) >= LEARN_MIN_TURN_RAD:
             self._learn("w_max", predicted_rad, actual_rad, W_MAX_BOUNDS)
 
 
@@ -397,27 +427,74 @@ class ApproachPlanner:
                               self._s_cum - s_then,
                               self._psi_cum - psi_then)
 
-        # Online drive-model fit: the plan thought it travelled pred_s since
-        # the last observation; the tin's measured range says it travelled
-        # (W_prev.y - W_now.y). The ratio corrects v_max. Each axis is learned
-        # only from motion that ISOLATES it — a range drop is clean forward
-        # travel only if we were barely turning, and a bearing change is clean
-        # yaw only if we were barely translating (driving straight past an
-        # off-axis tin swings its bearing too).
+        # Online drive-model fit. CRITICAL: duty = v_des / model.v_max in
+        # command(), and predict() computes s = model.v_max * duty * dt — the
+        # model.v_max CANCELS ALGEBRAICALLY, so the plan always assumes it
+        # travelled exactly v_des regardless of whether model.v_max is
+        # anywhere close to real. The only thing that keeps the deceleration
+        # ramp honest is THIS correction. An earlier version only applied it
+        # when the interval was almost pure translation or pure rotation —
+        # during real cruise driving (steer and forward together, every
+        # tick) that gate almost never opened, so v_max/w_max never left
+        # their defaults and the ramp ran on a fictional speed for the whole
+        # approach: never decelerated, rammed the tin, and once overshoot
+        # pushed the plan point behind the robot the heading flipped toward
+        # 180 deg and the aim state span to chase it (reported on hardware:
+        # "never slowed", "drove past", "veered off" — one bug, not three).
+        #
+        # Fix: solve for the EXACT (s, psi) that the _advance() model would
+        # need to turn W_prev into W_now, with no isolation requirement.
+        # _advance is s-then-rotate, i.e. (x1,y1) = R(-psi) . (x0, y0 - s):
+        # rotation preserves norm, so |x0,A| = |x1,y1| with A = y0 - s, and
+        # the rotation angle falls out of the two vectors' standard atan2.
         if self._pred_at_last_obs is not None:
             s_prev, psi_prev, W_prev = self._pred_at_last_obs
             pred_s = self._s_cum - s_prev
             pred_psi = self._psi_cum - psi_prev
-            if abs(pred_psi) < LEARN_MIN_TURN_RAD:
-                self.model.learn_linear(pred_s, W_prev[1] - W_now[1])
-            if abs(pred_s) < LEARN_MIN_TRAVEL_M:
-                self.model.learn_yaw(pred_psi,
-                                     math.atan2(W_now[0], W_now[1])
-                                     - math.atan2(W_prev[0], W_prev[1]))
+            decomposed = self._decompose_motion(W_prev, W_now, pred_s, pred_psi)
+            if decomposed is not None:
+                s_actual, psi_actual = decomposed
+                self.model.learn_linear(pred_s, s_actual)
+                self.model.learn_yaw(pred_psi, psi_actual)
 
         self.W = W_now
         self.last_obs_t = now
         self._pred_at_last_obs = (self._s_cum, self._psi_cum, W_now)
+
+    @staticmethod
+    def _decompose_motion(W_prev: Tuple[float, float], W_now: Tuple[float, float],
+                          pred_s: float = 0.0, pred_psi: float = 0.0
+                          ) -> Optional[Tuple[float, float]]:
+        """Invert _advance(): given W_prev and the resulting W_now, recover
+        the (s, psi) that explains the change exactly — no assumption that
+        the interval was pure translation or pure rotation. None if the pair
+        is too close to the robot (or too noisy) to invert reliably.
+
+        The norm-preservation step (rotation) only pins down A = y0 - s up to
+        a sign; the wrong root is typically off by roughly pi in the
+        recovered psi, not a small error, so the tie-break matters. pred_s /
+        pred_psi (the dead-reckoned guess for this same interval) break the
+        tie: whichever root lands closer to what the plan already expected is
+        the physical one — the correction can still be large, since only two
+        discrete candidates are being chosen between, not biased toward the
+        prediction's magnitude."""
+        x0, y0 = W_prev
+        x1, y1 = W_now
+        r2_now = x1 * x1 + y1 * y1
+        if r2_now < 0.02 ** 2 or x0 * x0 > r2_now + 1e-6:
+            return None                      # degenerate: can't invert safely
+        mag = math.sqrt(max(0.0, r2_now - x0 * x0))
+
+        def solve(a):
+            psi_ = math.atan2(a, x0) - math.atan2(y1, x1) if (x0 or a) else 0.0
+            psi_ = (psi_ + math.pi) % (2 * math.pi) - math.pi
+            return y0 - a, psi_
+
+        cands = [solve(mag)] if mag == 0 else [solve(mag), solve(-mag)]
+        s_scale = max(abs(pred_s), LEARN_MIN_TRAVEL_M)
+        psi_scale = max(abs(pred_psi), LEARN_MIN_TURN_RAD)
+        return min(cands, key=lambda c: ((c[0] - pred_s) / s_scale) ** 2
+                   + ((c[1] - pred_psi) / psi_scale) ** 2)
 
     # ── command (motor thread) ───────────────────────────────────────────
     def _pulse_length(self, d: float, phi: float) -> float:
@@ -443,6 +520,17 @@ class ApproachPlanner:
         if d <= ARRIVE_RANGE_M and abs(phi) <= ARRIVE_HEADING_RAD:
             return ApproachCommand(0.0, 0.0, "done", d, phi)
 
+        # Safety: the plan point has fallen BEHIND the robot (W.y < 0), which
+        # only happens from overshoot — a real drive-model mismatch, a stale
+        # plan, or a bad observation. The old behaviour treated this as "the
+        # heading error is now near +-180 deg" and tried to spin in place to
+        # face it, which is exactly the "veered off / flew off" failure: a
+        # runaway pivot chasing a point that isn't there. Stop and drop the
+        # plan instead — the next detection starts a fresh, sane one.
+        if self.W[1] < -ARRIVE_RANGE_M:
+            self.reset()
+            return ApproachCommand(0.0, 0.0, "overshoot", d, phi)
+
         # Pivot in place when badly off-heading. Hysteresis stops the state
         # chattering at the boundary; a pivot ALSO leaves the arrival distance
         # untouched, which is why it is worth doing separately from the drive.
@@ -457,8 +545,14 @@ class ApproachPlanner:
 
         # Final centimetres: discrete nudges, holding still between them so a
         # fresh detection lands before the next one. Rolling continuously here
-        # is what nudges the tin out of the grasp zone.
-        if d <= FINE_RANGE_M:
+        # is what nudges the tin out of the grasp zone. Widen the entry range
+        # while the drive model is still unconfirmed (few learned updates) —
+        # a low-confidence continuous "drive" ramp is exactly what overshoots,
+        # so downshift to the safe, bounded, pause-for-a-fresh-look pulses
+        # earlier rather than trusting the smooth ramp all the way in.
+        trust = min(1.0, self.model.updates / CONFIDENCE_UPDATES)
+        fine_range = FINE_RANGE_M * (2.0 - trust)
+        if d <= fine_range:
             if now >= self._pulse_until:
                 self._pulse_on = not self._pulse_on
                 self._pulse_until = now + (self._pulse_length(d, phi)
@@ -477,7 +571,20 @@ class ApproachPlanner:
         # Cruise: speed from the deceleration ramp on the REMAINING distance,
         # which the dead reckoning keeps current between detections. This is
         # what makes the base slow down on approach without waiting to be told.
+        #
+        # SAFETY CAP: duty = v_des / model.v_max only protects the approach if
+        # model.v_max is already close to true. Early on it usually isn't —
+        # and when the default undershoots the real speed, this ratio
+        # saturates at max_forward almost immediately, which defeats the
+        # ramp entirely: the plan can WANT to slow down, but the duty is
+        # already pinned at the cap regardless of what it computes, and the
+        # robot covers ground at full real speed for the several detections
+        # it takes the online fit to catch up. So trust the model's speed
+        # only in proportion to how many observations have confirmed it —
+        # cruise starts near a walking pace and only opens up to the
+        # requested max once the fit has actually been exercised.
+        cap = self.stall + (self.max_forward - self.stall) * trust
         v_des = math.sqrt(2.0 * DECEL_MPS2 * max(0.0, d - ARRIVE_RANGE_M))
-        duty = _clamp(v_des / max(self.model.v_max, 1e-6), self.stall, self.max_forward)
+        duty = _clamp(v_des / max(self.model.v_max, 1e-6), self.stall, cap)
         steer = _clamp(-phi * STEER_K, -self.max_steer, self.max_steer)
         return ApproachCommand(duty, steer, "drive", d, phi)
