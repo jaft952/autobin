@@ -190,7 +190,12 @@ def main():
                 if arm is None:
                     print("[bin] (no hardware) would dump to bin")
                 else:
+                    # Mirror ArmExecutor's real autonomous sequence
+                    # (grab -> dump -> home): don't leave the arm parked
+                    # over the bin holding a pose — return to rest so it
+                    # isn't burning battery between grabs.
                     arm.dump_to_bin()
+                    arm.force_home()
             if key == ord("h") and arm is not None:
                 arm.force_home()
             if key == ord("r") and arm is not None:
