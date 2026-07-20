@@ -144,7 +144,7 @@ def _make_arm(chassis=None):
         from src.arm.arc_grasp import ArcGraspSolver
         from test_arc_grasp import Arm
         solver = ArcGraspSolver()
-        if not solver.ready(): # type: ignore
+        if not solver.ready: # type: ignore
             print(f"[arm] arc_grasp calibration not ready ({solver.status()}) — arm mode unavailable.")
             return None, None
         # ONE motor driver per process: hand the Arm the chassis' actuator
