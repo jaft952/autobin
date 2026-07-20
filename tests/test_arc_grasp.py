@@ -44,12 +44,11 @@ from src.hardware.actuators.pca9685_driver import (
 )
 
 
-HOME_ARM = [96.7, 96.7, 150.0, 20.0, 90.0]
+HOME_ARM = [100.0, 30.0, 0.0, 150.0, 90.0]   # keep = GraspPlanner HOME_ANGLES
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
 BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]   # keep = GraspPlanner BIN_DROP_ANGLES
-# Safe window 0..60 (measured 2026-07-12, MG996R meshing); OPEN off the
-# stop, CLOSE provisional — tune on a can, keep = grasp_planner values.
-GRIPPER_OPEN, GRIPPER_CLOSE = 5.0, 45.0
+# keep = grasp_planner values; safe window 0..55 enforced in the driver
+GRIPPER_OPEN, GRIPPER_CLOSE = 0.0, 50.0
 STEP_DEG, STEP_DELAY = 2.0, 0.15      
 
 
@@ -147,6 +146,18 @@ class Arm:
         print("[arm] force-home: stepping all channels to home.")
         self.goto(HOME_ARM, "home")
         self.set_gripper(GRIPPER_OPEN)
+
+    def release(self):
+        """Cut PWM to all 6 channels (angle=None, same as servo_jog 'r'):
+        servos go limp, nothing holds a pose against gravity after the tool
+        exits. NOTE the arm will sag — expect a droop; any jog/home
+        re-engages, ramping from the tracked (possibly now-stale) pose."""
+        try:
+            for i in range(6):
+                self.act.kit.servo[i].angle = None
+            print("[arm] RELEASED — no PWM, arm is limp (any move re-engages).")
+        except Exception as exc:
+            print(f"[arm] release failed ({exc})")
 
     def brake_wheels(self):
         if self.wheels is not None:
@@ -250,7 +261,7 @@ class Camera:
             # Same resolution AND confidence as the runtime CameraSensor so
             # calibration and runtime literally share pixels + detections.
             self.detector = AluminiumCanDetector(model_path=model_path,
-                                                 conf_threshold=0.5,
+                                                 conf_threshold=0.8,
                                                  frame_width=1280, frame_height=720)
             self.detector.start()
             # The Brio returns None for the first few reads after opening —
@@ -453,7 +464,7 @@ def main():
         solver.reload()
         print(f"[cfg] saved. {solver.status()}")
 
-    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h b pose st ls del | cam y a g | brake coast | q")
+    print("\nCommands: c2 145 | c1 +2 | 5 angles | p o c h b pose st ls del | cam y a g | brake coast | r=release arm | q")
     print("Domains:  lie = calibrate LYING grid, stand = back to UPRIGHT grid.")
     print("          (place the tin in that pose, jog until the grab works, then y/a)")
     print("Wheels:   brake = hold the base (test by pushing it), coast = release.")
@@ -491,6 +502,8 @@ def main():
                   "BASE (bottom-center, where it meets the floor).")
         elif line == "h":
             arm.force_home()          # force: always re-homes, even if tracking thinks it's home
+        elif line == "r":
+            arm.release()             # cut PWM — arm goes limp (servo_jog-style)
         elif line == "o":
             arm.set_gripper(GRIPPER_OPEN)
         elif line == "c":
@@ -636,9 +649,10 @@ def main():
         elif handle_servo_command(arm, line):
             pass
         else:
-            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | lie stand | brake coast | q")
+            print("unknown. commands: c2 145 | c1 +2 | 5 angles | p o c h pose st | cam y a g | lie stand | brake coast | r | q")
 
     arm.release_wheels()          # never leave the base braked after exit
+    arm.release()                 # and never leave servos holding a pose
     if camera:
         camera.stop()
     print("bye")

@@ -195,7 +195,7 @@ def main():
                 cv2.putText(annotated, pose_txt, (20, fh - 60), font, 0.6, (0, 255, 0), 1)
 
             try:
-                cv2.imshow("arc grasp live  (g=grab  h=home  q=quit)", annotated)
+                cv2.imshow("arc grasp live  (g=grab  h=home  r=release  q=quit)", annotated)
                 key = cv2.waitKey(1) & 0xFF
             except cv2.error:
                 print("[!] no display — continuing text-only")
@@ -220,12 +220,19 @@ def main():
                     arm.dump_to_bin()
             if key == ord("h") and arm is not None:
                 arm.force_home()
+            if key == ord("r") and arm is not None:
+                arm.release()   # cut PWM — arm goes limp (servo_jog-style)
 
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
         try:
             detector.stop()
+        except Exception:
+            pass
+        try:
+            if arm is not None:
+                arm.release()   # never leave servos holding a pose after exit
         except Exception:
             pass
         try:

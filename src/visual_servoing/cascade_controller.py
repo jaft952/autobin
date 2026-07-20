@@ -16,6 +16,19 @@ from dataclasses import dataclass
 from typing import Tuple, Optional, List
 import math
 
+# Motor output is zeroed (and the base BRAKED) when the newest DETECTED
+# vision state is older than this. Long enough to bridge 1-2 dropped YOLO
+# frames without stutter-braking; short enough that a lost tin or a dead
+# camera stops the base almost immediately.
+DETECT_GRACE_S = 0.6
+
+# A motor command may only act on vision data at most this old — beyond it,
+# BRAKE and wait for the next detection instead of extrapolating. Without
+# this cap the interpolator holds the last spline indefinitely, so the base
+# kept executing a stale decision for the whole (slow) inference gap:
+# observed as "lunge N steps forward, N steps back" hunting at the target.
+CMD_MAX_AGE_S = 0.30
+
 
 @dataclass
 class VisionState:
@@ -23,11 +36,12 @@ class VisionState:
     timestamp: float
     error_x: float                # Normalized error [-1, 1]
     error_y: float                # Normalized error [-1, 1]
-    mask_area: Optional[int]      # Segmented pixel count (NEW: confidence metric)
+    mask_area: Optional[int]      # Segmented pixel count (confidence metric)
     detected: bool
     aligned: bool
     stable: bool
     confidence: float             # Detection confidence [0, 1]
+    result: Optional[object] = None  # DetectionResult, untyped to avoid importing torch here
 
     def quality(self) -> float:
         """Combined confidence: detection + segmentation area."""
@@ -249,6 +263,11 @@ class VelocityLimiter:
         self.last_velocity += delta_v
         return self.last_velocity
 
+    def reset(self):
+        """Forget slew state. Call whenever output is force-zeroed, or the
+        next limit() slews FROM the stale value — a wrong-direction lurch."""
+        self.last_velocity = 0.0
+
 
 class CascadeController:
     """
@@ -256,31 +275,73 @@ class CascadeController:
     Non-blocking architecture for real-time performance.
     """
 
-    def __init__(self, detector, ibvs_centering, chassis_controller=None):
+    def __init__(self, detector, ibvs_centering, chassis_controller=None, speed_scale: float = 1.0,
+                 driving: bool = True, steer_scale: Optional[float] = None,
+                 mode: str = "step", speed_min: float = 0.0, steer_min: float = 0.0):
         """
         Args:
             detector: AluminiumCanDetector instance
             ibvs_centering: IBVSCentering controller instance
             chassis_controller: Optional ChassisController for actual motor control
+            speed_scale: multiplier (0..1) on the forward component — the MAX
+                forward output when speed_min is also given
+            speed_min: > 0 maps the forward output into [speed_min,
+                speed_scale] by error magnitude — far = max, close = min, so
+                the approach slows down but never below a speed that moves
+                (--speed 0.6-0.3 on the test CLI)
+            steer_scale: multiplier (0..1) on the steer component — turning has
+                no rolling friction so it runs away at the forward scale; None
+                = same as speed_scale
+            driving: whether motor commands actually reach the chassis — the real
+                gate; see set_driving()
+            mode: "step" = pivot until the tin is central, then drive straight,
+                re-aim when it drifts out of the central 70%;
+                "chase" = car-like continuous pursuit (drive + steer together),
+                pivoting only if the tin nears the frame edge;
+                "cruise" = chase without the stale-data brake-stops: fast
+                320px detection, dead-reckoning between frames, speed tapers
+                with distance for a smooth continuous approach.
+                All stop+brake once inside the arc-grasp zone.
         """
         self.detector = detector
         self.ibvs_centering = ibvs_centering
         self.chassis = chassis_controller
+        self.speed_scale = speed_scale
+        self.speed_min = min(speed_min, speed_scale)
+        self.steer_scale = speed_scale if steer_scale is None else steer_scale
+        self.steer_min = min(steer_min, self.steer_scale)
+        self.mode = mode
+        self.driving = driving
 
         self.buffer = TrackingBuffer(max_size=5)
         self.vision_thread = None
         self.motor_thread = None
         self.running = False
 
+    def set_driving(self, driving: bool):
+        """Enable/disable actual motor output. Safe to call from any thread."""
+        self.driving = driving
+        if self.motor_thread is not None:
+            self.motor_thread.driving = driving
+
+    def set_mode(self, mode: str):
+        """Switch pursuit mode live: "step" or "chase"."""
+        self.mode = mode
+        if self.motor_thread is not None:
+            self.motor_thread.mode = mode
+
     def start(self):
         """Launch vision and motor threads."""
         self.running = True
 
         self.vision_thread = _VisionWorker(
-            self.detector, self.ibvs_centering, self.buffer
+            self.detector, self.ibvs_centering, self.buffer,
+            get_mode=lambda: self.mode
         )
         self.motor_thread = _MotorWorker(
-            self.buffer, self.chassis
+            self.buffer, self.chassis, speed_scale=self.speed_scale,
+            steer_scale=self.steer_scale, driving=self.driving, mode=self.mode,
+            speed_min=self.speed_min, steer_min=self.steer_min
         )
 
         self.vision_thread.daemon = True
@@ -308,15 +369,22 @@ class CascadeController:
         """Get last motor command sent (for display/logging)."""
         return self.motor_thread.last_cmd if self.motor_thread else None
 
+    def get_last_sent(self) -> Tuple[float, float]:
+        """Actual (forward, steer) values last sent to the chassis, after
+        speed_min/speed_scale/steer_scale mapping — for on-screen display."""
+        return self.motor_thread.last_sent if self.motor_thread else (0.0, 0.0)
+
 
 class _VisionWorker(threading.Thread):
     """Vision capture thread (~30 Hz)."""
 
-    def __init__(self, detector, ibvs_centering, buffer: TrackingBuffer):
+    def __init__(self, detector, ibvs_centering, buffer: TrackingBuffer,
+                 get_mode=None):
         super().__init__()
         self.detector = detector
         self.ibvs = ibvs_centering
         self.buffer = buffer
+        self.get_mode = get_mode or (lambda: "step")
         self.running = False
 
     def run(self):
@@ -334,7 +402,13 @@ class _VisionWorker(threading.Thread):
                     time.sleep(0.001)
                     continue
 
-                result = self.detector.infer(frame)
+                # cruise trades accuracy for detection RATE: 320px inference
+                # (auto-falls back if the model backend rejects it) and no
+                # orientation estimation. step/chase keep the full pipeline.
+                if self.get_mode() == "cruise":
+                    result = self.detector.infer(frame, imgsz=320, fast=True)
+                else:
+                    result = self.detector.infer(frame)
                 status = self.ibvs.update(result)
 
                 # Extract mask_area from best detection
@@ -351,7 +425,8 @@ class _VisionWorker(threading.Thread):
                     detected=result.found,
                     aligned=status.aligned,
                     stable=status.stable,
-                    confidence=result.best.confidence if result.best else 0.0
+                    confidence=result.best.confidence if result.best else 0.0,
+                    result=result,
                 )
 
                 # Push to shared buffer (non-blocking)
@@ -371,10 +446,23 @@ class _VisionWorker(threading.Thread):
 class _MotorWorker(threading.Thread):
     """Motor control thread (~1000 Hz)."""
 
-    def __init__(self, buffer: TrackingBuffer, chassis_controller=None):
+    def __init__(self, buffer: TrackingBuffer, chassis_controller=None, speed_scale: float = 1.0,
+                 driving: bool = True, steer_scale: Optional[float] = None,
+                 mode: str = "step", speed_min: float = 0.0, steer_min: float = 0.0):
         super().__init__()
         self.buffer = buffer
         self.chassis = chassis_controller
+        self.speed_scale = speed_scale
+        self.speed_min = min(speed_min, speed_scale)
+        self.steer_scale = speed_scale if steer_scale is None else steer_scale
+        self.steer_min = min(steer_min, self.steer_scale)
+        self.last_sent: Tuple[float, float] = (0.0, 0.0)
+        self.driving = driving  # actual gate on motor output
+        self._was_driving = driving
+        self.mode = mode        # "step" | "chase" | "cruise" (see CascadeController)
+        self._aiming = False    # pivot-in-place state (both modes use it)
+        self._last_good: Optional[VisionState] = None  # newest DETECTED state
+        self._moving = False    # last command was nonzero -> brake on stop
         self.running = False
 
         # Filters for X and Y axes
@@ -385,9 +473,10 @@ class _MotorWorker(threading.Thread):
         self.interp_x = TrajectoryInterpolator()
         self.interp_y = TrajectoryInterpolator()
 
-        # Velocity limiters
-        self.limiter_x = VelocityLimiter(max_accel=0.5, dt=0.001)
-        self.limiter_y = VelocityLimiter(max_accel=0.5, dt=0.001)
+        # Slew limiters on the motor command (2.0/s: full output in ~0.4 s —
+        # smooths spikes/flips without making the P-control feel laggy)
+        self.limiter_x = VelocityLimiter(max_accel=2.0, dt=0.001)
+        self.limiter_y = VelocityLimiter(max_accel=2.0, dt=0.001)
 
         self.last_vision_time = 0.0
         self.last_cmd: Optional[MotorCommand] = None
@@ -401,14 +490,35 @@ class _MotorWorker(threading.Thread):
             t_start = time.time()
             t_now = t_start
 
-            # Check for new vision data
+            # Check for new vision data. Only DETECTED states feed the
+            # filters — undetected frames carry error 0,0 and would drag the
+            # splines toward "target centered" during a dropout.
             latest = self.buffer.get_latest()
-            if latest and latest.timestamp > self.last_vision_time:
+            if (latest and latest.detected
+                    and latest.timestamp > self.last_vision_time):
                 self._handle_vision_update(latest)
                 self.last_vision_time = latest.timestamp
+                self._last_good = latest
 
-            # Interpolate current setpoint
-            cmd = self._interpolate_command(t_now)
+            # Gate. DETECT_GRACE_S bridges 1-2 dropped detections so the base
+            # doesn't stutter-brake through YOLO flicker; anything older (tin
+            # gone, camera dead) or already aligned -> zero, and
+            # _send_motor_command turns that into an active BRAKE, not a coast
+            # (coasting at speed is what kept overshooting the grasp zone).
+            # cruise keeps rolling between detections (dead-reckons on the
+            # spline + tapers speed with distance) instead of brake-waiting.
+            cmd_aged = ((t_now - self.last_vision_time) > CMD_MAX_AGE_S
+                        and self.mode != "cruise")
+            good = self._last_good
+            if (good is None or (t_now - good.timestamp) > DETECT_GRACE_S
+                    or good.aligned or cmd_aged):
+                # Lost/aligned -> stop; data merely AGED -> brake and wait for
+                # the next detection rather than acting on a stale decision.
+                cmd = MotorCommand(0.0, 0.0, t_now)
+                self.limiter_x.reset()   # else the next command slews from a
+                self.limiter_y.reset()   # stale value = random-direction lurch
+            else:
+                cmd = self._interpolate_command(t_now)
 
             # Apply to motor
             self._send_motor_command(cmd)
@@ -434,59 +544,144 @@ class _MotorWorker(threading.Thread):
         px_filt, vx_filt = self.filter_x.update(state.error_x, t)
         py_filt, vy_filt = self.filter_y.update(state.error_y, t)
 
-        # Set trajectory splines for next update (33ms at 30Hz)
-        t_next = t + 0.033
+        # Spline horizon: cruise dead-reckons the error trend across the real
+        # inference gap so the base can keep rolling between detections;
+        # step/chase only bridge one nominal frame.
+        horizon = 0.30 if self.mode == "cruise" else 0.033
+        t_next = t + horizon
 
         self.interp_x.set_waypoints(
-            px_filt, px_filt + vx_filt * 0.033,
+            px_filt, px_filt + vx_filt * horizon,
             vx_filt, vx_filt, t, t_next
         )
         self.interp_y.set_waypoints(
-            py_filt, py_filt + vy_filt * 0.033,
+            py_filt, py_filt + vy_filt * horizon,
             vy_filt, vy_filt, t, t_next
         )
 
     def _interpolate_command(self, t: float) -> MotorCommand:
-        """Interpolate setpoint at current time."""
-        px, vx = self.interp_x.evaluate(t)
-        py, vy = self.interp_y.evaluate(t)
+        """P-control on the filtered position error.
 
-        # Velocity limiting (prevent jerky acceleration)
-        vx_lim = self.limiter_x.limit(vx)
-        vy_lim = self.limiter_y.limit(vy)
+        Signs follow the hardware-verified set_motor_pwm convention from
+        test_differential_drive CASC mode: positive forward = robot forward,
+        positive steer = turn left. error_y + = too close -> back up;
+        error_x + = tin right of center -> turn right. Hence both negated.
+        (The old version drove on the error's VELOCITY estimate, so with a
+        static tin the command was mostly filter noise boosted to MIN_SPEED —
+        random-looking spins.)"""
+        px, _vx = self.interp_x.evaluate(t)
+        py, _vy = self.interp_y.evaluate(t)
 
-        # Convert error → motor command with gain
-        # Scale factor of 0.8 ensures reasonable motor speeds
-        forward = vy_lim * 0.8   # Flip for camera-backward config
-        steer = vx_lim * 0.8     # error_x → steer
+        FWD_GAIN = 1.5
+        STEER_GAIN = 1.0   # yaw overshoots hard at vision rate — keep gentler than forward
 
-        # Apply minimum speed to overcome floor friction
-        # Boost all weak commands to ensure motor movement
+        # Pivot-in-place ("aiming") applies in BOTH modes, with different entry:
+        #   step  : tin outside the central 70% of the frame -> re-aim
+        #   chase : only when the tin nears the frame EDGE (about to be lost)
+        # Hysteresis so the state doesn't chatter at the boundary. Entering
+        # aim returns a ZERO command for this tick — _send_motor_command turns
+        # that into a BRAKE, so the base stops its lunge BEFORE pivoting.
+        AIM_ENTER = 0.35 if self.mode == "step" else 0.42
+        AIM_EXIT = 0.25
+        if self._aiming:
+            if abs(px) <= AIM_EXIT:
+                self._aiming = False
+        elif abs(px) >= AIM_ENTER:
+            self._aiming = True
+            self.limiter_x.reset()
+            self.limiter_y.reset()
+            return MotorCommand(0.0, 0.0, t)   # brake first, pivot next tick
+
+        if self._aiming:
+            forward = self.limiter_y.limit(0.0)
+            steer = self.limiter_x.limit(-px * STEER_GAIN)
+        elif self.mode == "step":
+            # step: drive straight; lateral drift is handled by re-aiming.
+            forward = self.limiter_y.limit(-py * FWD_GAIN)
+            steer = self.limiter_x.limit(0.0)
+        else:
+            # chase/cruise: car-like — keep rolling, steer while moving.
+            # (P on distance already tapers cruise speed as the tin nears.)
+            forward = self.limiter_y.limit(-py * FWD_GAIN)
+            steer = self.limiter_x.limit(-px * STEER_GAIN)
+
+        # MIN duty floor (stall avoidance) with a true deadband under it.
+        # 0.50 boosted every small correction to a half-speed lunge -> ±0.4
+        # error_x limit cycle around the target; 0.35 still beats stall.
+        # cruise floors LOWER so the taper can actually slow the approach —
+        # raise it if the base stalls while creeping in.
         mag = math.sqrt(forward**2 + steer**2)
-        MIN_SPEED = 0.50  # Minimum motor command magnitude
+        if self.mode == "cruise":
+            # With an explicit speed_min the [min,max] output mapping is the
+            # floor — keep only a tiny one here so the taper can reach min.
+            MIN_SPEED = 0.05 if self.speed_min > 0 else 0.22
+        else:
+            MIN_SPEED = 0.35
         if 0.01 < mag < MIN_SPEED:
             scale = MIN_SPEED / mag
             forward *= scale
             steer *= scale
         elif mag < 0.01:
-            # Very small command, apply minimum
-            forward = MIN_SPEED if forward < 0 else -MIN_SPEED if forward > 0 else 0
-            steer = MIN_SPEED if steer < 0 else -MIN_SPEED if steer > 0 else 0
+            forward = 0.0
+            steer = 0.0
 
-        # Clamp to [-1, 1] range
         forward = max(-1.0, min(1.0, forward))
         steer = max(-1.0, min(1.0, steer))
 
         return MotorCommand(forward, steer, t)
 
+    def _brake(self):
+        """Active hold (shorted windings) — a coast at approach speed rolls
+        right past the grasp zone; that overshoot was observed on the robot."""
+        actuator = getattr(self.chassis, "actuator", None)
+        brake = getattr(actuator, "brake", None)
+        if brake is not None:
+            brake()
+        else:
+            self.chassis.stop()
+
     def _send_motor_command(self, cmd: MotorCommand):
-        """Send command to chassis motor driver."""
+        """Send command to chassis motor driver — gated by self.driving.
+        A zero command BRAKES once on the moving->stopped transition, then
+        goes quiet (no 1 kHz zero-PWM spam)."""
         self.last_cmd = cmd  # Track for display/logging
-        if self.chassis:
-            try:
-                self.chassis.set_motor_pwm(cmd.forward, cmd.steer)
-            except Exception as e:
-                print(f"[Motor] Error sending command: {e}")
+        if not self.chassis:
+            return
+        try:
+            if self.driving:
+                if abs(cmd.forward) < 0.01 and abs(cmd.steer) < 0.01:
+                    if self._moving:
+                        self._brake()
+                        self._moving = False
+                    self.last_sent = (0.0, 0.0)
+                else:
+                    # Forward output: plain scale, or — when speed_min is set —
+                    # mapped into [speed_min, speed_scale] by command magnitude
+                    # so the approach tapers but never crawls below speed_min.
+                    if self.speed_min > 0 and abs(cmd.forward) >= 0.01:
+                        fwd_out = math.copysign(
+                            self.speed_min + (self.speed_scale - self.speed_min)
+                            * min(1.0, abs(cmd.forward)),
+                            cmd.forward)
+                    else:
+                        fwd_out = cmd.forward * self.speed_scale
+                    if self.steer_min > 0 and abs(cmd.steer) >= 0.01:
+                        steer_out = math.copysign(
+                            self.steer_min + (self.steer_scale - self.steer_min)
+                            * min(1.0, abs(cmd.steer)),
+                            cmd.steer)
+                    else:
+                        steer_out = cmd.steer * self.steer_scale
+                    self.chassis.set_motor_pwm(fwd_out, steer_out)
+                    self.last_sent = (fwd_out, steer_out)
+                    self._moving = True
+            elif self._was_driving:
+                self.chassis.stop()  # actively cut power once, not just stop sending
+                self._moving = False
+                self.last_sent = (0.0, 0.0)
+            self._was_driving = self.driving
+        except Exception as e:
+            print(f"[Motor] Error sending command: {e}")
 
     def stop(self):
         self.running = False

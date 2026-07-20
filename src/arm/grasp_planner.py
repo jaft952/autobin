@@ -9,58 +9,33 @@ from src.hardware.actuators.pca9685_driver import (
 
 
 
-HOME_ANGLES     = [96.7, 96.7, 150.0, 20.0, 90.0]
+HOME_ANGLES     = [100.0, 30.0, 0.0, 150.0, 90.0]   # user-set 2026-07-20
 BIN_DROP_ANGLES = [96.7, 96.7, 100.0, 20.0, 90.0]
 GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]
 
-# Gripper commands for the MG996R gear gripper, SAFE WINDOW 0..60 deg
-# (user-measured 2026-07-12; enforced by pca9685_driver.CHANNEL_ANGLE_LIMITS).
-# OPEN parks a few degrees OFF the end-stop — parking ON a stop is the silent
-# stall that cooked two servos. CLOSE is PROVISIONAL: assumes the 0-side is
-# "open" like the old meshing; tune on a real can (step until 1-3 deg past
-# contact, no more) and keep in sync with tests/test_arc_grasp.py.
-GRIPPER_OPEN = 5.0
-GRIPPER_CLOSED = 40.0
+# MG996R gear gripper, safe window 0..55 enforced by CHANNEL_ANGLE_LIMITS.
+# Keep in sync with tests/test_arc_grasp.py.
+GRIPPER_OPEN = 0.0
+GRIPPER_CLOSED = 50.0
 
-# ── Arc-grasp execution sequence (ported from tests/test_arc_grasp.py) ───────
-# The arc calibration poses were tuned WITH this exact sequence, so execution
-# must match it: swing CH1 to the azimuth while lifted, then descend ONE
-# channel at a time in this order, close, lift. Changing the order or the
-# step pacing invalidates the calibrated poses' behaviour (links sag
-# differently mid-path and the gripper ploughs the floor).
+# Arc-grasp sequence: calibrated poses assume this exact order and pacing.
 ARC_LIFT_ARM      = [96.7, 96.7, 100.0, 100.0, 90.0]
-# Safe grab orders (channel indices), PER TIN POSE (user-tuned 2026-07-11).
-# Common to both: CH1 base first, CH5 roll EARLY while the arm is still
-# lifted (a stale roll from a previous grab must be corrected before
-# anything nears the floor), and the final channel is the one that lowers
-# onto the tin. That final channel differs by pose:
-#   upright: ... -> CH3 -> CH4 -> CH2 shoulder LAST (descends onto the rim)
-#   lying:   ... -> CH4 -> CH2 -> CH3 elbow LAST (descends onto the body)
-# Pre-lift (CH2/CH3/CH4 -> LIFT) happens before either sequence.
+# Grab order per tin pose: CH1 first, CH5 roll early, last channel descends
+# onto the tin (upright: CH2 shoulder; lying: CH3 elbow).
 ARC_GRAB_ORDER = {
-    "upright": [0, 4, 2, 3, 1],   # CH1 -> CH5 -> CH3 -> CH4 -> CH2
-    "lying":   [0, 4, 3, 1, 2],   # CH1 -> CH5 -> CH4 -> CH2 -> CH3
+    "upright": [0, 4, 2, 3, 1],
+    "lying":   [0, 4, 3, 1, 2],
 }
 ARC_STEP_DEG      = 2.0
 ARC_STEP_DELAY    = 0.15
 
-# ── Real-world tip correction ────────────────────────────────────────────────
-# Ruler-measured 2026-07-04 (FREE mode, cm, z from the chassis deck):
-#   cmd (20,20,20) -> real (18,22,13)    z err -7.0 at horizontal reach 28.3
-#   cmd (10,20,20) -> real (7,22,14.5)   z err -5.5 at horizontal reach 22.4
-# x/y errors are ~constant, but the z droop GROWS with horizontal reach:
-#   -7.0/28.3 = -0.247 and -5.5/22.4 = -0.246  =>  droop = -0.25 * reach.
-# (Confirmed by the constant +6.25cm attempt: the same 20cm z target landed at
-# 18cm far out but 19cm closer in — the far pose sags more.)
-# move_to() aims at target-minus-error: shift x/y by the constants below and
-# raise z by SAG_PER_M_REACH * horizontal reach. Re-measure on the Pi and tweak.
-TIP_ERROR_X_M   = -0.025   # real tip lands 2.5cm left of target  -> aim right
-TIP_ERROR_Y_M   = 0.020    # real tip lands 2.0cm beyond target   -> aim closer
-SAG_PER_M_REACH = 0.25     # tip droops 25% of horizontal reach   -> aim higher
+# Tip correction, ruler-measured 2026-07-04: constant x/y offset, z droop
+# proportional to horizontal reach. move_to() aims at target minus these.
+TIP_ERROR_X_M   = -0.025
+TIP_ERROR_Y_M   = 0.020
+SAG_PER_M_REACH = 0.25
 
-# Wheels + chassis put the FLOOR 11.3cm below the deck (z=0), user-measured
-# 2026-07-04. Negative z targets are legal down to the floor; anything lower
-# is clamped so the gripper can't be commanded into the ground.
+# Floor is 11.3cm below the deck (z=0); lower z targets are clamped.
 DECK_ABOVE_FLOOR_M = 0.113
 
 # Registry so the test tooling can jog to a full pose (arm + gripper) by name.
@@ -95,11 +70,8 @@ class GraspPlanner:
             self._gripper = GRIPPER_OPEN
 
     def _move_stepped(self, target_arm, target_gripper):
-        """Gently drive CH1-5 (stepped together) + CH6 gripper (instant) to a pose
-        via the shared stepped_move, tracking the new pose for the next call.
-        Ends with a WRITE-THROUGH of every channel: this is a FULL commanded
-        pose, so all six channels are asserted even if the tracked pose says
-        they're already there (tracking can be wrong — no joint feedback)."""
+        """Stepped move to a full pose, ending with a write-through of every
+        channel (no joint feedback — tracking can be wrong)."""
         start = list(self._arm) + [self._gripper]
         target = list(target_arm) + [target_gripper]
         stepped_move(self.actuator, start, target)
@@ -109,15 +81,10 @@ class GraspPlanner:
         save_last_pose(self._arm + [self._gripper])
 
     def _move_one(self, ch: int, value: float):
-        """Move a SINGLE channel gently (arc-grasp pacing), holding the rest.
-        ch 0-4 = CH1-5, ch 5 = gripper. Mirrors the tuned Arm._one from
-        tests/test_arc_grasp.py. Ends with a WRITE-THROUGH of the commanded
-        channel so the command is never silently dropped when the tracked
-        pose already matches the target."""
+        """Move one channel gently (ch 0-4 = CH1-5, ch 5 = gripper), ending
+        with a write-through so the command is never silently dropped."""
         start = list(self._arm) + [self._gripper]
         target = list(start)
-        # clamp through the per-channel limits so the TRACKED pose can never
-        # drift above what the hardware actually accepted (e.g. gripper 60)
         target[ch] = clamp_channel_angle(ch, float(value))
         stepped_move(self.actuator, start, target, ARC_STEP_DEG, ARC_STEP_DELAY)
         self.actuator.set_channel_angle(ch, target[ch])
@@ -156,13 +123,8 @@ class GraspPlanner:
         return True
 
     def force_home(self) -> bool:
-        """Drive to HOME gently and ASSERT it. The stepped ramp starts from
-        the tracked pose (almost always right — e.g. homing after a grab);
-        _move_stepped then ends with an absolute WRITE-THROUGH of all six
-        channels, so home is guaranteed even when tracking was stale. This
-        replaced an instant full-speed jump of every servo (user: 'rushes
-        too fast') — the write-through is what asserts the known pose now,
-        violence is not needed for correctness."""
+        """Drive to HOME gently; the ending write-through asserts the pose
+        even when tracking was stale."""
         print("[GraspPlanner] Force-homing (stepped + write-through)...")
         self._move_stepped(HOME_ANGLES, GRIPPER_OPEN)
         self.kinematics.reset_warm_start()
@@ -210,7 +172,7 @@ class GraspPlanner:
 
         # None means no reachable solution — do NOT move the arm and report honestly.
         if servo_angles is None:
-            print(f"[GraspPlanner] ⚠️ No reachable IK solution for {target_xyz}; arm NOT moved.")
+            print(f"[GraspPlanner] no reachable IK solution for {target_xyz}; arm NOT moved.")
             return False
 
         print("[GraspPlanner] Kinematics Solved! Target Degrees (CH1-5):", servo_angles)

@@ -271,3 +271,5 @@ src/visual_servoing/config/servo_config.yaml
 # End of https://www.toptal.com/developers/gitignore/api/python,images
 # Arm runtime state (last commanded pose) - machine-specific, never commit
 src/arm/config/last_pose.json
+
+CLAUDE.md

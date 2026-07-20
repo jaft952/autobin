@@ -1,15 +1,27 @@
 """
 Real-time Visual Servoing with Cascade Control (multi-rate, smooth motion).
 
-Architecture:
-  - Vision thread: ~30 Hz (YOLO11n-seg detection + IBVS error computation)
-  - Motor thread: ~1000 Hz (smooth interpolation + velocity limiting)
-  - Non-blocking synchronization via TrackingBuffer
-  - Dynamic filter tuning based on mask_area confidence
-
-Usage:
-    python test_ibvs_centering.py           -> cascade control (default)
-    python test_ibvs_centering.py --drive   -> cascade control + chassis motion ON
+Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x]
+                                     [--mode step|chase] [--pt]
+  --drive : enable chassis motion (default off)
+  --arm   : enable arc-grasp grabbing when centered+stable (default off)
+  --speed : forward speed multiplier, 0..1 (default 1.0, too fast? lower it).
+            MAX-MIN form e.g. --speed 0.6-0.3: far from the tin runs at 0.6,
+            tapers down as it approaches but never below 0.3 (no stall crawl)
+  --turn  : steer speed multiplier, 0..1 (default: same as --speed; turning has
+            no rolling friction, so it usually wants a LOWER value, e.g.
+            --speed 0.6 --turn 0.3)
+  --mode  : step   = aim, drive straight, re-aim when tin leaves central 70% (default)
+            chase  = car-like continuous pursuit: drive + steer at the same time,
+                     pivoting only if the tin nears the frame edge
+            cruise = chase, but never stops to wait for detections: fast 320px
+                     inference (auto-fallback if the model rejects it),
+                     dead-reckons between frames, slows as it nears the tin
+            (all brake inside the arc-grasp zone / on lost detection)
+  --pt    : force the .pt weights, skip NCNN (A/B comparison)
+Keys: m = toggle drive, g = toggle arm, n = cycle step/chase/cruise, q = quit.
+A grab brakes the base, runs the blocking arc-grasp sequence (grab -> dump ->
+home, 4 s cooldown via ArmExecutor), then releases the brake.
 """
 
 import os
@@ -24,55 +36,35 @@ from src.visual_servoing.cascade_controller import CascadeController
 
 
 def _interpret_motion_command(cmd):
-    """Convert motor command to human-readable motion description."""
+    """Human-readable motion from a MotorCommand.
+
+    Sign convention (hardware-verified via test_differential_drive CASC):
+    positive forward = robot forward, positive steer = turn LEFT."""
     if cmd is None:
         return "IDLE", 0, 0
 
     forward = cmd.forward
     steer = cmd.steer
-
-    # Determine motion type
     mag = math.sqrt(forward**2 + steer**2)
 
     if mag < 0.05:
-        motion = "HOLD"
-        angle = 0
-        intensity = 0
-    elif abs(steer) < 0.1:
-        # Mostly forward/backward
-        if forward < -0.2:
-            motion = "FORWARD"
-            angle = 0
-            intensity = abs(forward)
-        elif forward > 0.2:
-            motion = "BACKWARD"
-            angle = 0
-            intensity = abs(forward)
-        else:
-            motion = "HOLD"
-            angle = 0
-            intensity = 0
+        return "HOLD", 0, 0
+
+    side = "LEFT" if steer > 0 else "RIGHT"
+    if abs(steer) < 0.1:
+        motion = "FORWARD" if forward > 0 else "BACKWARD"
+        intensity = abs(forward)
+    elif abs(forward) < 0.1:
+        motion = f"TURN {side}"
+        intensity = abs(steer)
     else:
-        # Arc motion with turn
-        angle_deg = math.atan2(steer, -forward) * 180 / math.pi  # Convert to angle
+        motion = f"ARC {'FWD' if forward > 0 else 'BACK'}-{side}"
+        intensity = mag
 
-        if forward < -0.1:
-            motion = f"ARC_FWD ({angle_deg:+.0f}°)"
-            angle = angle_deg
-            intensity = abs(forward)
-        elif forward > 0.1:
-            motion = f"ARC_BACK ({angle_deg:+.0f}°)"
-            angle = angle_deg
-            intensity = abs(forward)
-        else:
-            motion = f"TURN ({angle_deg:+.0f}°)"
-            angle = angle_deg
-            intensity = abs(steer)
-
-    return motion, angle, intensity
+    return motion, steer, intensity
 
 
-def _draw_status_overlay(frame, status, cmd, driving=None):
+def _draw_status_overlay(frame, status, cmd, driving=None, sent=(0.0, 0.0)):
     """Draw cascade status and motion command on frame."""
     import cv2
     if frame is None:
@@ -80,24 +72,93 @@ def _draw_status_overlay(frame, status, cmd, driving=None):
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Show alignment and stability
+    banner_top = fh - 110  # dark banner so text stays legible over a busy background
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, banner_top), (fw, fh), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
+
+    # Big direction indicator (bottom-left): which way it is about to move.
+    motion, steer, intensity = _interpret_motion_command(cmd)
+    if intensity > 0:
+        arrow = "<<< " if steer > 0.05 else (" >>>" if steer < -0.05 else "")
+        big = f"{arrow}{motion}{arrow}" if arrow else motion
+        cv2.putText(frame, big, (20, fh - 72), font, 1.1, (0, 255, 255), 3)
+    else:
+        cv2.putText(frame, motion, (20, fh - 72), font, 1.1, (170, 170, 170), 3)
+
+    motion_color = (0, 255, 0) if intensity > 0 else (170, 170, 170)
+    motion_text = (f"Motion: {motion}  |  speed fwd={abs(sent[0]):.2f} "
+                   f"turn={abs(sent[1]):.2f}")
+    cv2.putText(frame, motion_text, (20, fh - 42), font, 0.7, motion_color, 2)
+
+    # Alignment / stability (lower line)
     color = (0, 255, 0) if status.stable else (0, 165, 255)
     text = f"aligned={status.aligned}  stable={status.stable}  quality={status.quality():.2f}"
-    cv2.putText(frame, text, (20, fh - 25), font, 0.8, (0, 0, 0), 4)
-    cv2.putText(frame, text, (20, fh - 25), font, 0.8, color, 2)
-
-    # Show motion command
-    motion, angle, intensity = _interpret_motion_command(cmd)
-    motion_color = (0, 255, 0) if intensity > 0 else (100, 100, 100)
-    motion_text = f"Motion: {motion}  |  intensity={intensity:.2f}"
-    cv2.putText(frame, motion_text, (20, fh - 50), font, 0.7, (0, 0, 0), 3)
-    cv2.putText(frame, motion_text, (20, fh - 50), font, 0.7, motion_color, 1)
+    cv2.putText(frame, text, (20, fh - 14), font, 0.7, color, 2)
 
     if driving is not None:
         dmode = "DRIVE ON" if driving else "DRIVE OFF"
         dcol = (0, 255, 0) if driving else (255, 0, 0)
         cv2.putText(frame, dmode, (fw - 250, 32), font, 0.7, (0, 0, 0), 3)
         cv2.putText(frame, dmode, (fw - 250, 32), font, 0.7, dcol, 1)
+
+
+def _make_arm():
+    """Init arc-grasp solver + executor (optional)."""
+    try:
+        from src.arm.arc_grasp import ArcGraspSolver
+        from src.subsumption.arm_executor import ArmExecutor
+        solver = ArcGraspSolver()
+        if not solver.ready():
+            print(f"[arm] arc_grasp calibration not ready ({solver.status()}) — arm mode unavailable.")
+            return None, None
+        executor = ArmExecutor()
+        print("[arm] arc-grasp ready — press 'g' to toggle grabbing.")
+        return executor, solver
+    except Exception as exc:
+        print(f"[arm] not available ({exc}); arm mode disabled.")
+        return None, None
+
+
+def _attempt_grab(controller, chassis, solver, arm_exec, result):
+    """Solve an arc pose from the current detection and run the blocking grab.
+    Brakes the base during the arm sequence, then restores the drive state."""
+    from src.subsumption.arbitrator import ActionCommand
+
+    best = result.best
+    if best is None:
+        return
+    o = best.orientation
+    klass = o.klass if o is not None else "upright"
+    if klass in ("lying", "axial"):
+        pos = result.normalized_center()  # same reference point as layer3
+        tin_pose = klass
+        solved = solver.solve(pos[0], pos[1], pose="lying",
+                              angle_deg=None if klass == "axial" else o.angle) if pos else None
+    else:
+        pos = result.normalized_base_center()  # ground contact
+        tin_pose = "upright"
+        solved = solver.solve(pos[0], pos[1], pose="upright") if pos else None
+    if solved is None:
+        print(f"[arm] tin ({klass}) at {pos} outside calibrated grid — no grab.")
+        return
+
+    print(f"[arm] GRAB ({tin_pose}) @ nx={pos[0]:.2f} ny={pos[1]:.2f} — braking base...")
+    was_driving = controller.driving
+    controller.set_driving(False)
+    try:
+        if chassis is not None:
+            chassis.actuator.brake()  # hold base against arm shake
+        arm_exec.execute(ActionCommand(
+            layer_id=3, active=True, motion_vector=(0, 0, 0),
+            arm_action='grab_arc',
+            arm_params={'pose': solved, 'tin_pose': tin_pose},
+            message='ibvs test grab'))
+    finally:
+        if chassis is not None:
+            chassis.stop()  # release brake -> coast
+        controller.set_driving(was_driving)
+    print("[arm] grab sequence done, drive restored.")
 
 
 def _make_chassis():
@@ -112,30 +173,43 @@ def _make_chassis():
         return None
 
 
-def main(drive=False):
+def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step",
+         speed_min=0.0):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
-    from src.perception.detector import AluminiumCanDetector
+    from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
 
     IMGSZ = 640
 
-    detector = AluminiumCanDetector(device="cpu", imgsz=IMGSZ, model_path="src/models/yolov11n-seg.pt")  # type: ignore
+    # 720p (matches CameraSensor runtime): the 1080p default overflowed the
+    # VNC screen, hiding the bottom status banner entirely.
+    detector = AluminiumCanDetector(  # type: ignore
+        device="cpu", imgsz=IMGSZ, model_path=RUNTIME_MODEL_PATH, use_ncnn=use_ncnn,
+        frame_width=1280, frame_height=720,
+    )
     detector.start()
     centering = IBVSCentering()
     chassis = _make_chassis()
     driving = drive and chassis is not None
+
+    arm_exec, solver = _make_arm() if arm else (None, None)
+    armed = arm and arm_exec is not None
 
     print(f"\n{'='*70}")
     print(f"Visual Servoing + Cascade Control")
     print(f"{'='*70}")
     print(f"Vision: ~30 Hz (YOLO11n-seg + IBVS)")
     print(f"Motor: ~1000 Hz (smooth interpolation)")
-    print(f"Drive: {'ON' if driving else 'OFF'}")
-    print(f"Keys: m = toggle drive, q = quit")
+    print(f"Drive: {'ON' if driving else 'OFF'}   Arm: {'ARMED' if armed else 'OFF'}   Mode: {mode.upper()}")
+    spd_txt = f"{speed:.2f}" if speed_min <= 0 else f"max={speed:.2f} min={speed_min:.2f}"
+    print(f"Speed scale: fwd={spd_txt} turn={(turn if turn is not None else speed):.2f}  "
+          f"(--speed / --turn 0.x to slow down)")
+    print(f"Keys: m = toggle drive, g = toggle arm, q = quit")
     print(f"{'='*70}\n")
 
-    # Create cascade controller (non-blocking threads)
-    controller = CascadeController(detector, centering, chassis)
+    controller = CascadeController(detector, centering, chassis, speed_scale=speed,
+                                   steer_scale=turn, driving=driving, mode=mode,
+                                   speed_min=speed_min)
     controller.start()
 
     show = True
@@ -147,36 +221,53 @@ def main(drive=False):
             status = controller.get_status()
             cmd = controller.get_last_command()
 
-            # Always try to show camera feed
+            # Draw from the vision thread's cached result — avoids a second read_frame() race.
             if show:
                 try:
-                    frame = detector.read_frame()
+                    frame = None
+                    if status is not None and status.result is not None:
+                        frame = detector.get_annotated_frame(status.result)
+
                     if frame is not None:
-                        # Draw status overlay with motion command
-                        if status:
-                            _draw_status_overlay(frame, status, cmd, driving if chassis is not None else None)
-                        else:
-                            # Show waiting message on frame
-                            import cv2
-                            fh = frame.shape[0]
-                            font = cv2.FONT_HERSHEY_SIMPLEX
-                            cv2.putText(frame, "[Waiting for detection...]", (20, fh - 25),
-                                       font, 0.8, (0, 165, 255), 2)
+                        _draw_status_overlay(frame, status, cmd,
+                                             driving if chassis is not None else None,
+                                             sent=controller.get_last_sent())
+                    else:
+                        import numpy as np
+                        frame = np.zeros((540, 960, 3), dtype=np.uint8)
+                        cv2.putText(frame, "[Waiting for first camera frame + detection...]",
+                                    (20, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
 
-                        cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
-                        key = cv2.waitKey(1) & 0xFF
-
-                        if key == ord("q"):
-                            break
-                        if key == ord("m") and chassis is not None:
-                            driving = not driving
-                            print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
+                    cv2.imshow("Visual Servoing + Cascade  (m=drive, q=quit)", frame)  # type: ignore
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
+                    if key == ord("m") and chassis is not None:
+                        driving = not driving
+                        controller.set_driving(driving)  # actually gate the wheels
+                        print(f"\n[mode] drive toggled: {'ON' if driving else 'OFF'}\n")
+                    if key == ord("g"):
+                        if arm_exec is None:
+                            arm_exec, solver = _make_arm()
+                        if arm_exec is not None:
+                            armed = not armed
+                            print(f"\n[mode] arm {'ARMED — grabs when centered+stable' if armed else 'off'}\n")
+                    if key == ord("n"):
+                        mode = {"step": "chase", "chase": "cruise", "cruise": "step"}[mode]
+                        controller.set_mode(mode)
+                        print(f"\n[mode] pursuit mode -> {mode.upper()}\n")
 
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False
                 except Exception as e:
                     print(f"[display] error: {e}")
+
+            # Grab when armed and IBVS reports centered + stable (ArmExecutor's
+            # own 4 s cooldown stops the same tin re-triggering every loop).
+            if (armed and arm_exec is not None and status is not None
+                    and status.stable and status.result is not None):
+                _attempt_grab(controller, chassis, solver, arm_exec, status.result)
 
             # Print status to console with motion details
             if status and cmd:
@@ -227,4 +318,24 @@ def main(drive=False):
 
 if __name__ == "__main__":
     drive = "--drive" in sys.argv
-    main(drive=drive)
+    arm = "--arm" in sys.argv
+    speed, speed_min = 1.0, 0.0
+    if "--speed" in sys.argv:
+        raw = sys.argv[sys.argv.index("--speed") + 1]
+        parts = raw.split("-")
+        speed = float(parts[0])
+        if len(parts) > 1:
+            speed_min = float(parts[1])
+            if speed_min > speed:
+                sys.exit(f"--speed MAX-MIN: max ({speed}) must be >= min ({speed_min})")
+    turn = None
+    if "--turn" in sys.argv:
+        turn = float(sys.argv[sys.argv.index("--turn") + 1])
+    mode = "step"
+    if "--mode" in sys.argv:
+        mode = sys.argv[sys.argv.index("--mode") + 1]
+        if mode not in ("step", "chase", "cruise"):
+            sys.exit(f"--mode must be 'step', 'chase' or 'cruise', got '{mode}'")
+    use_ncnn = "--pt" not in sys.argv
+    main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn, mode=mode,
+         speed_min=speed_min)

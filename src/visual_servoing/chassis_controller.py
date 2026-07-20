@@ -252,42 +252,32 @@ class ChassisController:
         """Direct motor control for cascade controller and other continuous-motion systems.
 
         Args:
-            forward: Forward/backward speed [-1, 1]. Negative = forward, positive = backward.
-            steer: Turn rate [-1, 1]. Negative = turn left, positive = turn right.
+            forward: Forward/backward speed [-1, 1]. Positive = forward
+                (hardware-verified via test_differential_drive CASC mode).
+            steer: Turn rate [-1, 1]. Positive = turn left.
 
-        Converts to differential wheel speeds (camera-backward configuration):
-            left_speed = forward + steer   (reversed from standard)
-            right_speed = forward - steer  (reversed from standard)
+        Trims are NOT applied here: the WheelCommand goes out with
+        apply_trim=True so PWMActuator.apply() — the same driver branch the
+        kinematics (KIN) path uses — does them. This path used to keep its own
+        trim copy, which twice drifted from the driver's (sign convention
+        inverted); one implementation only.
         """
-        # Clamp to [-1, 1] range
         forward = max(-1.0, min(1.0, forward))
         steer = max(-1.0, min(1.0, steer))
 
-        # Convert to normalized wheel speeds (REVERSED for camera-backward config)
-        left_fraction = forward + steer   # Swapped
-        right_fraction = forward - steer  # Swapped
+        left_fraction = max(-1.0, min(1.0, forward + steer))
+        right_fraction = max(-1.0, min(1.0, forward - steer))
 
-        # Apply per-motor trims here (the kinematics trim branches in
-        # PWMActuator.apply() assume positive=forward and never match this
-        # path's sign convention, so trim the fractions directly).
-        if forward < 0:  # driving forward
-            left_fraction *= self.cal.motor_a_forward_trim
-            right_fraction *= self.cal.motor_b_forward_trim
-        elif forward > 0:  # driving backward
-            left_fraction *= self.cal.motor_a_backward_trim
-            right_fraction *= self.cal.motor_b_backward_trim
-
-        # Clamp each wheel to [-1, 1]
-        left_fraction = max(-1.0, min(1.0, left_fraction))
-        right_fraction = max(-1.0, min(1.0, right_fraction))
-
-        # Scale by calibration and apply
         left_speed = self.cal.forward_speed * left_fraction
         right_speed = self.cal.forward_speed * right_fraction
 
-        # Trims already applied above — apply_trim=False prevents double-trimming.
-        cmd = WheelCommand(left_speed, right_speed, False, "cascade")
-        self.actuator.apply(cmd)
+        if forward > 0:
+            trim_set = "forward"
+        elif forward < 0:
+            trim_set = "backward"
+        else:
+            trim_set = "turn"   # pivot in place
+        self.actuator.apply(WheelCommand(left_speed, right_speed, True, trim_set))
 
     def stop(self) -> None:
         """Cut motor power and hold position (does not release GPIO)."""

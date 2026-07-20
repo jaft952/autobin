@@ -107,9 +107,24 @@ def open_camera_capture(camera_index: int = 0,
     """Open Logitech Brio 4K with platform-specific backend."""
     import cv2
     backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
-    cap = cv2.VideoCapture(camera_index, backend)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera {camera_index}. Try index 1.")
+    # After a mid-run USB drop the camera often re-enumerates at a new index,
+    # so fall back through a few before giving up.
+    tried = []
+    cap = None
+    for idx in dict.fromkeys([camera_index, 0, 1, 2]):
+        cap = cv2.VideoCapture(idx, backend)
+        if cap.isOpened():
+            if idx != camera_index:
+                print(f"[camera] index {camera_index} unavailable — using index {idx}")
+            break
+        cap.release()
+        cap = None
+        tried.append(idx)
+    if cap is None:
+        raise RuntimeError(
+            f"Cannot open camera (tried indices {tried}). If it worked before, the "
+            f"camera likely dropped off USB (power sag) — replug it or run: "
+            f"sudo modprobe -r uvcvideo && sudo modprobe uvcvideo")
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
@@ -147,21 +162,21 @@ class AluminiumCanDetector:
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.5,       # keep = runtime CameraSensor
+        conf_threshold: float = 0.65,       # keep = runtime CameraSensor
         frame_width: int = 1920,
         frame_height: int = 1080,
         device=None,
         imgsz: int = 640,
+        use_ncnn: bool = True,
     ):
         self._model_path = Path(model_path)
         self._camera_index = camera_index
         self._conf_threshold = conf_threshold
         self._frame_width = frame_width
         self._frame_height = frame_height
-        # None = auto: CUDA if available, else CPU. (The old default of 0
-        # crashed on the Pi whenever a caller forgot to pass device="cpu".)
-        self._device = device
+        self._device = device  # None = auto (CUDA if available, else CPU)
         self._imgsz = imgsz
+        self._use_ncnn = use_ncnn  # False forces .pt even if an NCNN export exists
 
         self._model: Optional[YOLO] = None
         self._cap: Optional[cv2.VideoCapture] = None
@@ -188,16 +203,38 @@ class AluminiumCanDetector:
             self._last_frame = frame
         return frame if ret else None
 
-    def infer(self, frame) -> DetectionResult:
-        """Run YOLO11n-seg and return DetectionResult with segmentation masks."""
+    def infer(self, frame, imgsz: Optional[int] = None,
+              fast: bool = False) -> DetectionResult:
+        """Run YOLO11n-seg and return DetectionResult with segmentation masks.
+
+        imgsz: per-call inference size override (e.g. 320 for a faster, less
+            accurate pass). NCNN exports may reject a size other than the one
+            they were exported at — on failure this falls back to the default
+            size permanently (logged once).
+        fast: skip per-detection orientation estimation (upright/lying) —
+            saves time when the caller only tracks position (cruise approach).
+        """
         result = DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
-        yolo_results = self._model.predict( # type: ignore
-            source=frame,
-            conf=self._conf_threshold,
-            device=self._resolve_device(),
-            imgsz=self._imgsz,
-            verbose=False,
-        )
+        size = imgsz or self._imgsz
+        if imgsz and getattr(self, "_imgsz_override_broken", False):
+            size = self._imgsz
+        try:
+            yolo_results = self._model.predict( # type: ignore
+                source=frame,
+                conf=self._conf_threshold,
+                device=self._resolve_device(),
+                imgsz=size,
+                verbose=False,
+            )
+        except Exception as exc:
+            if size == self._imgsz:
+                raise           # the normal size failed — a real error
+            # The override size was rejected (NCNN exports are fixed-shape):
+            # remember and permanently fall back to the export size.
+            self._imgsz_override_broken = True
+            print(f"[detector] imgsz={size} rejected by this model backend "
+                  f"({exc}); staying at {self._imgsz}.")
+            return self.infer(frame, imgsz=None, fast=fast)
         for r in yolo_results:
             polys = r.masks.xy if r.masks is not None else None
             for i, box in enumerate(r.boxes): # type: ignore
@@ -208,8 +245,9 @@ class AluminiumCanDetector:
                     BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=conf, mask_poly=poly)
                 )
         result.detections = _filter_contained_boxes(result.detections)
-        for d in result.detections:
-            d.orientation = estimate_orientation(frame, d)
+        if not fast:
+            for d in result.detections:
+                d.orientation = estimate_orientation(frame, d)
         return result
 
     def detect(self) -> DetectionResult:
@@ -275,14 +313,14 @@ class AluminiumCanDetector:
         return self._device
 
     def _pick_model_path(self) -> Path:
-        """Prefer an NCNN export sitting next to the .pt — on the Pi's ARM
-        CPU it runs the SAME weights 2-4x faster (fp32, no accuracy change).
-        Create it once on the Pi with tests/export_ncnn.py."""
-        if self._model_path.suffix == ".pt":
+        """Prefer an NCNN export next to the .pt (2-4x faster on the Pi's ARM CPU)."""
+        if self._use_ncnn and self._model_path.suffix == ".pt":
             ncnn = self._model_path.with_name(self._model_path.stem + "_ncnn_model")
             if ncnn.is_dir():
                 print(f"✓ Using NCNN export: {ncnn}")
                 return ncnn
+        if not self._use_ncnn:
+            print(f"✓ NCNN disabled (use_ncnn=False) — using {self._model_path}")
         return self._model_path
 
     def _load_model(self):
@@ -292,7 +330,9 @@ class AluminiumCanDetector:
         if not self._model_path.exists():
             raise FileNotFoundError(f"Model not found: {self._model_path}")
         path = self._pick_model_path()
-        self._model = YOLO(str(path))
+        # task="segment": the NCNN export has no embedded task metadata and
+        # defaults to "detect", which misparses this model's seg output.
+        self._model = YOLO(str(path), task="segment")
         print(f"✓ Model loaded: {path}")
         # Warmup: the first predict pays one-off graph/init cost (hundreds of
         # ms); do it here on a dummy frame so the first real tick is fast.
