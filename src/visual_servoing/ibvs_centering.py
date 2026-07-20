@@ -104,9 +104,11 @@ class IBVSCentering:
         self._aligned_streak = 0
         # Anywhere the arc-grasp grid can solve counts as aligned — the arm
         # covers that whole area, so the base needn't chase the exact point.
+        self._row_ny_at = None
         try:
-            from src.arm.arc_grasp import ArcGraspSolver
+            from src.arm.arc_grasp import ArcGraspSolver, row_ny_at
             self._arc: Optional[object] = ArcGraspSolver()
+            self._row_ny_at = row_ny_at
         except Exception:
             self._arc = None
 
@@ -175,6 +177,14 @@ class IBVSCentering:
         # point and (correctly) refuses to grab. Only fall back to the raw
         # pixel tolerance when there's no calibrated grid for this pose to
         # ask (uncalibrated rig, or arm-free vision-only testing).
+        #
+        # Uses the RAW (cx, cy) detection, not the smoothed (sx, sy): this is
+        # the SAME check _attempt_grab/test_arc_live.py run on the raw point,
+        # so "aligned" here can never disagree with the arm's own decision —
+        # smoothing is for the continuous drive signal, not this discrete
+        # yes/no gate.
+        raw_nx = cx / detection.frame_width
+        raw_ny = cy / detection.frame_height
         pose = "lying" if is_lying else "upright"
         arc_ready = False
         if self._arc is not None:
@@ -183,13 +193,35 @@ class IBVSCentering:
             except Exception:
                 arc_ready = False
         if arc_ready:
-            nx, ny = sx / detection.frame_width, sy / detection.frame_height
             try:
-                aligned = self._arc.solve(nx, ny, pose=pose) is not None # type: ignore
+                aligned = self._arc.solve(raw_nx, raw_ny, pose=pose) is not None # type: ignore
             except Exception:
                 aligned = math.hypot(error_x, error_y) <= cfg.tolerance
         else:
             aligned = math.hypot(error_x, error_y) <= cfg.tolerance
+
+        # Dynamic goal-y for the metric planner (cruise mode): the arc is a
+        # CURVE, not a flat line — it dips at the image edges (verified: the
+        # required ny swings from ~0.90 at the sample calibrated near-center
+        # to ~0.97 at the edges, ~10 cm of real range). A FIXED target_y only
+        # matches the curve's requirement at the one column it was measured
+        # at; wherever the tin's column actually ends up, the planner's own
+        # fixed-radius "arrived" tolerance can disagree with the arc by far
+        # more than that radius — which is exactly "cruise says arrived, arm
+        # says still too far". Track the curve height AT THE TIN'S CURRENT
+        # COLUMN instead, so the metric goal and the arc's real requirement
+        # are the same check by construction, not two independently-tuned
+        # approximations of it.
+        goal_y = target_y
+        if arc_ready and self._row_ny_at is not None:
+            try:
+                rows = self._arc.rows_for(pose) # type: ignore
+                heights = [self._row_ny_at(r, raw_nx) for r in rows]
+                if heights:
+                    goal_y = (heights[0] if len(heights) == 1
+                              else min(heights, key=lambda h: abs(h - raw_ny)))
+            except Exception:
+                goal_y = target_y
         self._aligned_streak = self._aligned_streak + 1 if aligned else 0
         stable = self._aligned_streak >= cfg.stable_frames
 
@@ -218,7 +250,7 @@ class IBVSCentering:
             motion_vector=motion, target_px=(int(sx), int(sy)),
             mask_area=best.mask_area, message=msg,
             goal_px=(int(target_x * detection.frame_width),
-                     int(target_y * detection.frame_height)),
+                     int(goal_y * detection.frame_height)),
         )
 
     # ── helpers ──────────────────────────────────────────────────────────

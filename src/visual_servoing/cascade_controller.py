@@ -781,7 +781,7 @@ class _MotorWorker(threading.Thread):
         if brake is not None:
             brake()
         else:
-            self.chassis.stop()
+            self.chassis.stop() # type: ignore
 
     def _send_motor_command(self, cmd: MotorCommand):
         """Send command to chassis motor driver — gated by self.driving.
