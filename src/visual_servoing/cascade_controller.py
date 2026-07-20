@@ -448,12 +448,29 @@ class _VisionWorker(threading.Thread):
         """Metres the base must travel so the tracked point lands on the
         calibrated sweet spot. Both ends of the pixel error are projected onto
         the floor, so the answer is a real displacement rather than a gain
-        applied to a pixel count."""
-        if (self.ground is None or not self.ground.ready
-                or not status.target_px or not status.goal_px):
+        applied to a pixel count.
+
+        Uses the RAW (unsmoothed) detection point — best.base_center/center
+        directly off `result` — NOT status.target_px (IBVS's EMA-smoothed
+        position). ApproachPlanner already does its own robust position
+        estimate (dead-reckon + vision fusion via observe()); feeding it a
+        second, independently-smoothed/lagged estimate on top just gives the
+        planner and the arm's raw-detection grab check (tests/test_arc_grasp
+        via test_ibvs_centering's _attempt_grab/_grab_readout) two different
+        answers to "where is the tin right now" — this was showing up as
+        "cruise thinks it arrived, the arm still says too far": the planner
+        stopping on IBVS's smoothed estimate while the arc-grid check (on the
+        true raw position) still disagreed."""
+        if self.ground is None or not self.ground.ready or not status.goal_px:
             return None
+        best = result.best
+        if best is None:
+            return None
+        ori = getattr(best, "orientation", None)
+        is_lying = ori is not None and ori.klass in ("lying", "axial")
+        u, v = best.center if is_lying else best.base_center
         w = result.frame_width
-        tin = self.ground.project(status.target_px[0], status.target_px[1], w)
+        tin = self.ground.project(u, v, w)
         goal = self.ground.project(status.goal_px[0], status.goal_px[1], w)
         if tin is None or goal is None:
             return None
