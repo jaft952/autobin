@@ -36,10 +36,7 @@ from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
-from src.visual_servoing.approach_drive import (
-    compute_drive_command, is_final_approach, MIN_SPEED, MAX_SPEED,
-    PULSE_DURATION_S, PULSE_PAUSE_S,
-)
+from src.visual_servoing.approach_drive import compute_drive_command, MAX_SPEED, BACKUP_SPEED
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
@@ -97,62 +94,31 @@ def test_close_right_of_center():
 
 
 def test_reached_when_centered_and_close():
-    """Centered and within STOP_DISTANCE_CM -> reached, ready for arm handoff."""
-    result = _make_detection(norm_x=0.5, bbox_height_px=400)
+    """Centered and within STOP_DISTANCE_CM -> reached, ready for arm handoff.
+    bbox_height_px chosen to stay clear of CLOSE_BBOX_FRACTION (300/480=0.625
+    < 0.75) so this exercises "reached" in isolation from "too_close"."""
+    result = _make_detection(norm_x=0.5, bbox_height_px=300)
     error = compute_target_error(result)
     assert error.found
     assert abs(error.lateral_error) < 1e-9, error
     assert error.distance_cm is not None and error.distance_cm <= 15, error
     assert error.reached
+    assert not error.too_close, error
     print("PASS reached: centered + close")
 
 
-def test_final_approach_when_close_but_not_reached():
-    """Inside PULSE_DISTANCE_CM but outside STOP_DISTANCE_CM -> switch to
-    pulse-then-look (centered so the distance zone is isolated from
-    centering as the reason)."""
-    result = _make_detection(norm_x=0.5, bbox_height_px=160)   # 4000/160 = 25cm
-    error = compute_target_error(result)
-    assert error.found and not error.reached
-    assert is_final_approach(error), error
-    print("PASS final approach: close but not yet at the stop distance")
-
-
-def test_cruise_when_far():
-    """Far away -> still cruising, not yet pulsing."""
-    result = _make_detection(norm_x=0.3, bbox_height_px=40)   # 100cm
-    error = compute_target_error(result)
-    assert not is_final_approach(error), error
-    print("PASS cruise (not final approach) when far")
-
-
-def test_not_final_approach_once_reached():
-    """Already reached -> nothing left to pulse toward."""
-    result = _make_detection(norm_x=0.5, bbox_height_px=400)
-    error = compute_target_error(result)
-    assert error.reached
-    assert not is_final_approach(error), error
-    print("PASS not final-approach once already reached")
-
-
-def test_not_final_approach_when_not_found():
-    error = compute_target_error(DetectionResult())
-    assert not is_final_approach(error)
-    print("PASS not final-approach when nothing is found")
-
-
-def test_too_close_stops_even_when_off_center():
-    """Bbox fills most of the frame -> too_close True regardless of the
-    (possibly uncalibrated) distance_cm math, and regardless of centering.
-    This is the failsafe: a wrong CALIBRATION_CONSTANT_PX_CM must not be able
-    to make the robot drive straight through the can."""
-    result = _make_detection(norm_x=0.3, bbox_height_px=350)
+def test_too_close_backs_away_even_when_off_center():
+    """Bbox fills most of the frame (360/480=0.75, at CLOSE_BBOX_FRACTION) ->
+    too_close True regardless of the (possibly uncalibrated) distance_cm
+    math, and regardless of centering. This is the failsafe: a wrong
+    CALIBRATION_CONSTANT_PX_CM must not be able to wedge the robot against
+    the can — it should back off instead."""
+    result = _make_detection(norm_x=0.3, bbox_height_px=360)
     error = compute_target_error(result)
     assert error.found
     assert error.too_close, error
     assert not error.reached, error   # off-center, so not "grasp-ready"
-    assert compute_drive_command(error, _kin()) is None
-    print("PASS too_close stops the drive even when off-center")
+    print("PASS too_close (checked further in the drive-command tests below)")
 
 
 # ── approach_drive.compute_drive_command ─────────────────────────────────
@@ -164,32 +130,65 @@ def test_drive_command_none_when_not_found():
 
 
 def test_drive_command_none_when_reached():
-    error = compute_target_error(_make_detection(norm_x=0.5, bbox_height_px=400))
+    error = compute_target_error(_make_detection(norm_x=0.5, bbox_height_px=300))
     assert error.reached
+    assert not error.too_close, error
     assert compute_drive_command(error, _kin()) is None
     print("PASS drive command is None when reached (arm handoff)")
 
 
-def test_drive_left_when_can_is_left_of_center():
-    """Far + left of center -> steers toward arc_forward_left (left wheel
-    slower than right), speed ramped up near MAX_SPEED since it's far."""
+def test_drive_backs_away_when_too_close():
+    """too_close -> an active BACKWARD command (both wheels negative), not
+    just a stop — recovers from an overshoot instead of sitting wedged
+    against the can, even when off-center."""
+    error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=360))
+    assert error.too_close
+    cmd = compute_drive_command(error, _kin())
+    assert cmd is not None
+    assert cmd.left_speed < 0 and cmd.right_speed < 0, cmd
+    assert abs(cmd.left_speed) <= BACKUP_SPEED + 1e-6, cmd
+    print("PASS backs away (both wheels reverse) when too_close")
+
+
+def test_drive_when_can_is_left_of_center():
+    """Far + left of center -> steers toward arc_forward_right (right wheel
+    slower than left) — hardware-verified mapping, see the sign-convention
+    note in approach_drive.py. Far away -> speed at MAX_SPEED (the ramp only
+    starts falling off inside FAR_DISTANCE_CM)."""
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=40))
     cmd = compute_drive_command(error, _kin())
     assert cmd is not None
-    assert cmd.left_speed < cmd.right_speed, cmd
-    assert cmd.left_speed > MIN_SPEED * 0.5, cmd   # brisk, not crawling
-    print("PASS steers left + brisk speed when can is far left of center")
+    assert cmd.right_speed < cmd.left_speed, cmd
+    assert cmd.left_speed >= 0.9 * MAX_SPEED, cmd   # brisk, not crawling
+    print("PASS steers toward the can + full speed when far + left of center")
 
 
-def test_drive_right_when_can_is_right_of_center():
-    """Close + right of center -> steers toward arc_forward_right (right
-    wheel slower than left), speed near MIN_SPEED since it's close."""
+def test_drive_when_can_is_right_of_center():
+    """Close + right of center -> steers toward arc_forward_left (left wheel
+    slower than right) — hardware-verified mapping, see approach_drive.py.
+    Close to STOP_DISTANCE_CM -> speed ramped down near zero, not a fixed
+    floor (no more pulsing: slow continuous creep IS the final-approach
+    behavior now)."""
     error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=200))
     cmd = compute_drive_command(error, _kin())
     assert cmd is not None
-    assert cmd.right_speed < cmd.left_speed, cmd
-    assert cmd.left_speed <= MAX_SPEED, cmd
-    print("PASS steers right + gentler speed when can is close and right of center")
+    assert cmd.left_speed < cmd.right_speed, cmd
+    assert 0 <= cmd.right_speed < 0.3 * MAX_SPEED, cmd   # ramped down close to zero
+    print("PASS steers toward the can + slow creep when close + right of center")
+
+
+def test_speed_ramps_down_as_distance_shrinks():
+    """Same lateral offset, three distances -> speed strictly decreases as
+    the can gets closer, confirming the continuous ramp (not a floor/step)."""
+    far = compute_drive_command(
+        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40)), _kin())    # ~100cm
+    mid = compute_drive_command(
+        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=100)), _kin())   # 40cm
+    near = compute_drive_command(
+        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=200)), _kin())   # 20cm
+    assert far is not None and mid is not None and near is not None
+    assert far.left_speed > mid.left_speed > near.left_speed, (far, mid, near)
+    print("PASS speed ramps down continuously as distance shrinks (no pulsing)")
 
 
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
@@ -199,15 +198,13 @@ ALL_TESTS = [
     test_far_left_of_center,
     test_close_right_of_center,
     test_reached_when_centered_and_close,
-    test_final_approach_when_close_but_not_reached,
-    test_cruise_when_far,
-    test_not_final_approach_once_reached,
-    test_not_final_approach_when_not_found,
-    test_too_close_stops_even_when_off_center,
+    test_too_close_backs_away_even_when_off_center,
     test_drive_command_none_when_not_found,
     test_drive_command_none_when_reached,
-    test_drive_left_when_can_is_left_of_center,
-    test_drive_right_when_can_is_right_of_center,
+    test_drive_backs_away_when_too_close,
+    test_drive_when_can_is_left_of_center,
+    test_drive_when_can_is_right_of_center,
+    test_speed_ramps_down_as_distance_shrinks,
 ]
 
 
@@ -244,7 +241,7 @@ def _pose_and_angle(box):
 
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
-                         bbox_height_px=None, final_approach: bool = False) -> None:
+                         bbox_height_px=None) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -270,25 +267,30 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         target_line = (f"TARGET: lateral={error.lateral_error:+.2f} "
                         f"dist_cm={dist_txt} bbox_h={bbox_txt} "
                         f"reached={error.reached} too_close={error.too_close}")
-        target_color = (0, 255, 0) if (error.reached or error.too_close) else (0, 255, 255)
+        target_color = (0, 255, 0) if error.reached else \
+            ((0, 140, 255) if error.too_close else (0, 255, 255))
     cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.55, target_color, 2)
 
     if cmd is None:
-        reason = ("reached" if error.reached else
-                  "too close" if error.too_close else
-                  "no target" if not error.found else "stopped")
+        reason = "reached" if error.reached else ("no target" if not error.found else "stopped")
         drive_line, drive_color = f"DRIVE: STOPPED ({reason})", (170, 170, 170)
+    elif cmd.left_speed < 0 and cmd.right_speed < 0:
+        drive_line = f"DRIVE: BACKING UP (too close) L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}"
+        drive_color = (0, 140, 255)
     else:
-        if cmd.left_speed < cmd.right_speed - 1e-6:
-            steer = "LEFT"
-        elif cmd.right_speed < cmd.left_speed - 1e-6:
+        # Derived from lateral_error's sign (which way the CAN is, and so
+        # which way we're correcting), not from comparing wheel speeds —
+        # that comparison depends on which kin method approach_drive.py
+        # happens to call for a given sign, which is hardware-specific and
+        # has already flipped once (see the note in approach_drive.py).
+        if error.lateral_error > 0.02:
             steer = "RIGHT"
+        elif error.lateral_error < -0.02:
+            steer = "LEFT"
         else:
             steer = "STRAIGHT"
-        mode = "PULSE" if final_approach else "CRUISE"
-        drive_line = (f"DRIVE [{mode}]: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} "
-                      f"(steer={steer})")
-        drive_color = (0, 200, 255) if final_approach else (0, 255, 0)
+        drive_line = f"DRIVE: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} (steer={steer})"
+        drive_color = (0, 255, 0)
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
     mode_line = f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   [q] quit"
@@ -348,17 +350,18 @@ def run_live_demo():
         python tests/test_ibvs_centering.py --live --drive      # also drives the wheels
         python tests/test_ibvs_centering.py --live --drive --arm  # + grabs when reached
 
-    Driving style switches automatically with distance (see approach_drive.py):
-    far away it cruises continuously at the IK-computed speed; once inside
-    PULSE_DISTANCE_CM (is_final_approach()) it switches to short pulses
-    (PULSE_DURATION_S of motion, then PULSE_PAUSE_S stopped for a fresh,
-    unblurred look) so the final positioning for a grab doesn't overshoot on
-    a stale/blurred frame. The overlay's DRIVE line shows [CRUISE] or [PULSE].
+    No separate pulse/cruise mode: approach_drive.py ramps the commanded
+    speed continuously from MAX_SPEED down to 0 as the can's estimated
+    distance closes in on STOP_DISTANCE_CM, so it's just applied every frame
+    like any other command — fast far away, a crawl right at the grab spot.
+    If the can ends up too_close (bbox fills the frame), the command is an
+    active BACKWARD nudge instead of a stop, so a bad distance calibration
+    can't wedge the robot against the can; once backing off clears
+    too_close, the same ramp re-approaches and re-centers on its own.
 
     Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
     Ctrl+C also stops.
     """
-    import time
     import cv2
     import numpy as np
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -366,7 +369,6 @@ def run_live_demo():
 
     driving = "--drive" in sys.argv
     want_arm = "--arm" in sys.argv
-    pulse_state = {"next_pulse_at": 0.0}
 
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
@@ -404,27 +406,9 @@ def run_live_demo():
             error = compute_target_error(result)
             cmd = compute_drive_command(error, kin)
             bbox_height_px = result.best.height if result.best is not None else None
-            final_approach = is_final_approach(error)
 
             if driving:
-                if cmd is None:
-                    actuator.stop()
-                elif final_approach:
-                    # Close range: a continuous command is already stale by
-                    # the time it reaches the wheels, and stale matters more
-                    # here. Nudge forward for one short pulse, then sit still
-                    # long enough for the next frame to be a fresh, unblurred
-                    # look before deciding the next nudge.
-                    now = time.monotonic()
-                    if now >= pulse_state["next_pulse_at"]:
-                        actuator.apply(cmd)
-                        time.sleep(PULSE_DURATION_S)
-                        actuator.stop()
-                        pulse_state["next_pulse_at"] = time.monotonic() + PULSE_PAUSE_S
-                    else:
-                        actuator.stop()
-                else:
-                    actuator.apply(cmd)   # cruise: continuous, full-rate driving
+                actuator.apply(cmd) if cmd is not None else actuator.stop()
 
             if armed and error.reached:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
@@ -437,8 +421,7 @@ def run_live_demo():
                         cv2.putText(frame, "[waiting for first frame...]", (20, 360),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
                     _draw_status_overlay(frame, error, cmd, driving, armed,
-                                        bbox_height_px=bbox_height_px,
-                                        final_approach=final_approach)
+                                        bbox_height_px=bbox_height_px)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -458,7 +441,6 @@ def run_live_demo():
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
                   f"dist_cm={error.distance_cm} bbox_h_px={bbox_height_px} "
                   f"reached={error.reached} too_close={error.too_close} "
-                  f"phase={'PULSE' if final_approach else 'CRUISE'} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'}")
     except KeyboardInterrupt:
         pass

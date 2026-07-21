@@ -11,57 +11,71 @@ from typing import Optional
 from src.visual_servoing.distance_error import TargetError, STOP_DISTANCE_CM
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
-MIN_SPEED = 45.0            # TODO tune: below this the motors tend to stall
 MAX_SPEED = 90.0             # TODO tune: matches MotionCalibration's default arc_speed
+FALLBACK_SPEED = 45.0        # TODO tune: used only when distance can't be estimated at all
+BACKUP_SPEED = 40.0          # TODO tune: gentle reverse to recover from an overshoot
 MAX_STEER_ANGLE_DEG = 75.0   # keep below 90 so it never fully spins in place
-FAR_DISTANCE_CM = 80.0       # distance at/beyond which speed ramps to MAX_SPEED
-
-# Below this distance, continuous driving risks overshoot: by the time a
-# command reaches the wheels the frame it was computed from is already
-# stale, and the can is close enough that a stale frame's worth of travel
-# matters. is_final_approach() flags this zone; the caller (the live loop)
-# is responsible for actually pulsing instead of driving continuously — see
-# PULSE_* below, used there, not here (this module stays hardware/time-free).
-PULSE_DISTANCE_CM = 35.0   # TODO tune: switch from cruise to pulse-then-look
-PULSE_DURATION_S = 0.25    # TODO tune: length of one forward nudge
-PULSE_PAUSE_S = 0.6        # TODO tune: stopped time for a fresh, unblurred look
+FAR_DISTANCE_CM = 80.0       # distance at/beyond which speed is MAX_SPEED
 
 
 def compute_drive_command(error: TargetError,
                            kin: DifferentialKinematics) -> Optional[WheelCommand]:
     """
-    Returns None when there's nothing to drive toward: no target found, the
-    target has been reached (arm handoff point), or it's flagged too_close
-    (calibration-independent failsafe) — caller should stop in all cases.
+    Speed is the whole mechanism — no separate pulse/cruise mode. Between
+    FAR_DISTANCE_CM and STOP_DISTANCE_CM the commanded speed ramps linearly
+    from MAX_SPEED down to 0, so the approach is brisk far away and slows to
+    a crawl exactly as it reaches the grab position, instead of stopping and
+    restarting in bursts.
+
+    Known limitation: because forward speed and steering both scale off the
+    SAME ramped value (see DifferentialKinematics.arc_forward_*), a target
+    that reaches STOP_DISTANCE_CM while still off-center enough that
+    error.reached is False will get a zero-speed command and stop steering
+    too — nothing pulls it the rest of the way to centered. Untested how
+    often this actually happens in practice; if it does, the fix is a
+    small in-place turn_left/turn_right correction for that specific case
+    rather than an arc, but that's speculative until it's observed on
+    hardware.
+
+    Returns:
+        None              — no target found, or reached (arm handoff point;
+                            caller should stop).
+        backward command  — too_close (bbox fills the frame): back off a
+                            little regardless of the (possibly miscalibrated)
+                            distance_cm math, so a bad calibration can't wedge
+                            the robot against the can. Once backing off clears
+                            too_close, the ramp below re-approaches and
+                            re-centers on its own — no separate "recovery
+                            state" needed.
+        forward/arc command — otherwise, steered and speed-ramped toward the can.
     """
-    if not error.found or error.reached or error.too_close:
+    if not error.found:
+        return None
+
+    if error.too_close:
+        return kin.backward(speed=BACKUP_SPEED)
+
+    if error.reached:
         return None
 
     steer_angle = min(MAX_STEER_ANGLE_DEG,
                        abs(error.lateral_error) * 2 * MAX_STEER_ANGLE_DEG)
 
     if error.distance_cm is None:
-        dynamic_speed = MIN_SPEED
+        dynamic_speed = FALLBACK_SPEED
     else:
         span = max(FAR_DISTANCE_CM - STOP_DISTANCE_CM, 1e-6)
         frac = (error.distance_cm - STOP_DISTANCE_CM) / span
         frac = max(0.0, min(1.0, frac))
-        dynamic_speed = MIN_SPEED + frac * (MAX_SPEED - MIN_SPEED)
+        dynamic_speed = MAX_SPEED * frac   # -> 0 right at STOP_DISTANCE_CM
 
-    # Sign convention matches src/subsumption/layers/layer2_approach.py:
-    # lateral_error > 0 means the can is right of frame center -> steer right.
+    # lateral_error > 0 means the can is right of frame center -> steer right
+    # toward it. Hardware-verified 2026-07-22 on this robot: that maps to
+    # arc_forward_LEFT, not arc_forward_right — swapped from the naive
+    # reading of layer2_approach.py's sign convention (that module never
+    # actually calls these two kin methods; it builds its own WheelCommand
+    # via MotionExecutor's v_x/v_theta mix, which is a different code path).
     if error.lateral_error > 0:
-        return kin.arc_forward_right(angle_deg=steer_angle, speed=dynamic_speed)
-    else:
         return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
-
-
-def is_final_approach(error: TargetError) -> bool:
-    """True once close enough that continuous driving should give way to
-    short pulse-then-look bursts instead (see PULSE_* above and the live
-    loop that actually times them). False once already reached (nothing
-    left to approach) or still far enough out that continuous cruising is
-    fine and faster."""
-    return (error.found and not error.reached and not error.too_close
-            and error.distance_cm is not None
-            and error.distance_cm <= PULSE_DISTANCE_CM)
+    else:
+        return kin.arc_forward_right(angle_deg=steer_angle, speed=dynamic_speed)

@@ -38,7 +38,14 @@ CENTER_TOLERANCE = 0.06   # normalized lateral error considered "centered"
 # constant makes distance_cm look far even when the can is right in front of
 # the camera, and the robot never stops closing in — this is a pure geometry
 # check (no calibration needed) that stops it anyway.
-CLOSE_BBOX_FRACTION = 0.55  # TODO tune: fraction of frame_height
+#
+# Keep this comfortably ABOVE the bbox fraction implied by STOP_DISTANCE_CM
+# (with the current placeholders, ~0.56 in a typical frame) — it's meant to
+# catch an OVERSHOOT past the calibrated stop point, not to double-trigger
+# right at it. If they collide, "reached" and "too_close" both being true
+# lets too_close win (see approach_drive.py), which would mean backing away
+# instead of ever reporting reached.
+CLOSE_BBOX_FRACTION = 0.75  # TODO tune: fraction of frame_height
 
 
 @dataclass
