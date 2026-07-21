@@ -107,18 +107,35 @@ KEY_MAP = {
 MODE_NAMES = {1: "RAW ", 2: "KIN ", 3: "CASC"}
 
 
+def _set_motor_pwm(actuator, cal, forward: float, steer: float) -> None:
+    """Ported from the old ChassisController.set_motor_pwm (chassis_controller.py,
+    removed when visual_servoing was rebuilt) — same wheel math, trims applied
+    via PWMActuator (apply_trim=True), so behavior is unchanged."""
+    forward = max(-1.0, min(1.0, forward))
+    steer = max(-1.0, min(1.0, steer))
+    left = cal.forward_speed * max(-1.0, min(1.0, forward + steer))
+    right = cal.forward_speed * max(-1.0, min(1.0, forward - steer))
+    if forward > 0:
+        trim_set = "forward"
+    elif forward < 0:
+        trim_set = "backward"
+    else:
+        trim_set = "turn"
+    actuator.apply(WheelCommand(left, right, True, trim_set))
+
+
 def main():
-    from src.visual_servoing.chassis_controller import ChassisController
+    from src.motion.calibration import MotionCalibration
+    from src.motion.differential_kinematics import DifferentialKinematics
+    from src.hardware.actuators.pwm_driver import PWMActuator
 
     try:
-        chassis = ChassisController()
+        cal = MotionCalibration()
+        kin = DifferentialKinematics(cal)
+        actuator = PWMActuator(calibration=cal)
     except Exception as exc:
         print(f"[!] chassis not available: {exc}")
         return
-
-    actuator = chassis.actuator
-    kin = chassis.kin
-    cal = chassis.cal
 
     mode = 1            # start at the lowest layer
     speed = 0.50        # command magnitude (0..1)
@@ -299,7 +316,7 @@ def main():
                       f"trim={cmd.apply_trim}/{cmd.trim_set} (speed={speed:.2f})")
 
             elif mode == 3:
-                # CASCADE: exact call the cascade controller makes.
+                # CASCADE: exact call the old ChassisController.set_motor_pwm made.
                 forward = fwd_sign * f_intent * speed
                 steer = steer_sign * s_intent * speed
                 # mirror set_motor_pwm's wheel math for flip detection / printout
@@ -308,9 +325,9 @@ def main():
                 if protect:
                     flip = (left * last_wheels[0] < 0) or (right * last_wheels[1] < 0)
                     if flip:
-                        chassis.stop()
+                        actuator.stop()
                         time.sleep(0.08)
-                chassis.set_motor_pwm(forward, steer)
+                _set_motor_pwm(actuator, cal, forward, steer)
                 remember(left, right)
                 print(f"[CASC] {name:14} fwd={forward:+.2f} steer={steer:+.2f} "
                       f"-> L={left:+6.1f} R={right:+6.1f} (speed={speed:.2f})")
@@ -321,11 +338,11 @@ def main():
         pass
     finally:
         try:
-            chassis.stop()
+            actuator.stop()
         except Exception:
             pass
         try:
-            chassis.close()
+            actuator.close()
         except Exception:
             pass
         print("\n[stopped, GPIO released]")

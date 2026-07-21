@@ -1,31 +1,10 @@
-"""Visual servoing layer: IBVS centering, cascade control, chassis motion."""
+"""Visual servoing layer: perception -> target error -> drive command."""
 
-from src.visual_servoing.ibvs_centering import (
-    IBVSCentering,
-    ChassisMove,
-    CenteringConfig,
-    CenteringStatus,
-)
-from src.visual_servoing.cascade_controller import (
-    CascadeController,
-    TrackingBuffer,
-    VisionState,
-    MotorCommand,
-    AlphaBetaFilter,
-    TrajectoryInterpolator,
-    VelocityLimiter,
-)
+from src.visual_servoing.distance_error import TargetError, compute_target_error
+from src.visual_servoing.approach_drive import compute_drive_command
 
 __all__ = [
-    "IBVSCentering",
-    "ChassisMove",
-    "CenteringConfig",
-    "CenteringStatus",
-    "CascadeController",
-    "TrackingBuffer",
-    "VisionState",
-    "MotorCommand",
-    "AlphaBetaFilter",
-    "TrajectoryInterpolator",
-    "VelocityLimiter",
+    "TargetError",
+    "compute_target_error",
+    "compute_drive_command",
 ]
