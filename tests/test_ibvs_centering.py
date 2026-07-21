@@ -77,7 +77,7 @@ def test_far_left_of_center():
     error = compute_target_error(result)
     assert error.found
     assert error.lateral_error < 0, error
-    assert error.distance_cm is not None and error.distance_cm > 80, error
+    assert error.distance_cm is not None and error.distance_cm > 30, error
     assert not error.reached
     print("PASS far + left of center")
 

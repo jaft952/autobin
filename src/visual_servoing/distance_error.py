@@ -17,7 +17,7 @@ from typing import Optional
 from src.perception.detector import DetectionResult
 
 # ── Calibration (measure on hardware) ───────────────────────────────────
-CAN_HEIGHT_CM = 12.2  # TODO verify against the actual target tin can
+CAN_HEIGHT_CM = 14.5  # TODO verify against the actual target tin can
 
 # Monocular pinhole distance estimate: distance_cm = CONSTANT / bbox_height_px.
 # Measure bbox_height_px for the can placed at a known distance_cm, then set:
@@ -53,8 +53,8 @@ class TargetError:
     found: bool
     lateral_error: float          # -0.5..0.5, +ve = can right of frame center
     distance_cm: Optional[float]  # None if not found / not estimable
-    reached: bool                  # within STOP_DISTANCE_CM and centered
-    too_close: bool = False        # bbox fills the frame -> stop regardless of calibration
+    reached: bool                 # within STOP_DISTANCE_CM and centered
+    too_close: bool = False       # bbox fills the frame -> stop regardless of calibration
 
 
 def compute_target_error(detection: DetectionResult,
@@ -73,7 +73,7 @@ def compute_target_error(detection: DetectionResult,
     x, _y = base
     lateral_error = x - 0.5
 
-    bbox_height_px = detection.best.height
+    bbox_height_px = detection.best.height # type: ignore
     distance_cm = (CALIBRATION_CONSTANT_PX_CM / bbox_height_px
                     if bbox_height_px > 0 else None)
 
