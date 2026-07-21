@@ -8,18 +8,29 @@ hand, same spirit as tests/test_scan_logic.py:
     python tests/test_ibvs_centering.py      # plain runner with PASS/FAIL summary
     pytest tests/test_ibvs_centering.py      # also works
 
-For a live run on the robot (real camera + motors) use:
+For a live run on the robot (real camera, optionally real motors/arm) use:
 
-    python tests/test_ibvs_centering.py --live
+    python tests/test_ibvs_centering.py --live            # camera + overlay only, nothing moves
+    python tests/test_ibvs_centering.py --live --drive    # also sends commands to the wheels
+    python tests/test_ibvs_centering.py --live --drive --arm   # + grabs when "reached"
 
-which is NOT executed by the test suite or by pytest — see run_live_demo()
-at the bottom.
+--drive and --arm are ONLY read together with --live; they do nothing to the
+pure-logic test suite. Without --drive the wheels never move — distance_error
+and approach_drive still run every frame and their output is shown on the
+video overlay and console, so you can check the planned steer/speed before
+ever letting it touch the motors. Keys while the window is focused: m =
+toggle drive, g = toggle arm, q = quit.
+
+This whole function is NOT executed by the test suite or by pytest — see
+run_live_demo() at the bottom.
 """
+import os
 import sys
 from pathlib import Path
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))   # for test_arc_grasp (--arm)
 
 from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
@@ -161,39 +172,204 @@ def _run_all_tests():
 
 # ── Live hardware demo (NOT run by the test suite / pytest / an agent) ───
 
+_GRAB_COOLDOWN_S = 4.0   # after a grab attempt (success or refusal), don't re-solve every frame
+
+
+def _pose_and_angle(box):
+    """(pose, angle_deg_or_None) for arc_grasp, from the detection's
+    segmentation-based orientation — same convention as src/arm/arc_grasp.py
+    and the old ibvs_centering pipeline. No usable mask -> assume upright."""
+    o = box.orientation
+    if o is None or o.klass == "upright":
+        return "upright", None
+    if o.klass == "axial":
+        return "lying", None
+    return "lying", o.angle
+
+
+def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool) -> None:
+    """Burn the distance_error / drive-command readout onto the frame so the
+    planned IK output (steer + dynamic speed) is visible without reading the
+    console, and so a bad estimate is obvious immediately."""
+    import cv2
+    fh, fw = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    banner_h = 92
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, fh - banner_h), (fw, fh), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
+
+    if not error.found:
+        target_line, target_color = "TARGET: none", (0, 0, 255)
+    else:
+        dist_txt = f"{error.distance_cm:.1f}" if error.distance_cm is not None else "?"
+        target_line = (f"TARGET: lateral={error.lateral_error:+.2f} "
+                        f"dist_cm={dist_txt} reached={error.reached}")
+        target_color = (0, 255, 0) if error.reached else (0, 255, 255)
+    cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.6, target_color, 2)
+
+    if cmd is None:
+        reason = "reached" if error.reached else ("no target" if not error.found else "stopped")
+        drive_line, drive_color = f"DRIVE: STOPPED ({reason})", (170, 170, 170)
+    else:
+        if cmd.left_speed < cmd.right_speed - 1e-6:
+            steer = "LEFT"
+        elif cmd.right_speed < cmd.left_speed - 1e-6:
+            steer = "RIGHT"
+        else:
+            steer = "STRAIGHT"
+        drive_line = f"DRIVE: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} (steer={steer})"
+        drive_color = (0, 255, 0)
+    cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
+
+    mode_line = f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   [q] quit"
+    cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
+
+    dcol = (0, 255, 0) if driving else (0, 0, 255)
+    cv2.putText(frame, "DRIVE ON" if driving else "DRIVE OFF", (fw - 190, 30), font, 0.65, (0, 0, 0), 3)
+    cv2.putText(frame, "DRIVE ON" if driving else "DRIVE OFF", (fw - 190, 30), font, 0.65, dcol, 1)
+    if armed:
+        cv2.putText(frame, "ARM ARMED", (fw - 190, 58), font, 0.65, (0, 0, 0), 3)
+        cv2.putText(frame, "ARM ARMED", (fw - 190, 58), font, 0.65, (0, 255, 0), 1)
+
+
+def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -> None:
+    """Solve an arc-grasp pose from the current detection and, if grabbable,
+    run the SAME grab -> dump -> home sequence tests/test_arc_grasp.py uses
+    (via the shared Arm class), so this is byte-for-byte the grab you tune
+    there. Cooldown-gated so a tin sitting in the band doesn't re-trigger
+    every single frame."""
+    import time as _time
+    if _time.monotonic() < state["cooldown_until"]:
+        return
+    best = result.best
+    if best is None:
+        return
+    pose, angle = _pose_and_angle(best)
+    point = result.normalized_center() if pose == "lying" else result.normalized_base_center()
+    if point is None:
+        return
+
+    solved = solver.solve(point[0], point[1], pose=pose, angle_deg=angle)
+    state["cooldown_until"] = _time.monotonic() + _GRAB_COOLDOWN_S
+    if solved is None:
+        print(f"[arm] {pose} tin at nx={point[0]:.2f} ny={point[1]:.2f} "
+              f"— not in the calibrated grab band ({solver.status()})")
+        return
+
+    print(f"[arm] GRAB ({pose}) @ nx={point[0]:.2f} ny={point[1]:.2f}")
+    if not state["homed"]:
+        arm.force_home()   # tracked pose may be from a stale prior session
+        state["homed"] = True
+    arm.grab(solved, tin_pose=pose)   # brakes the wheels internally
+    arm.dump_to_bin()
+    arm.rest()
+    actuator.stop()
+    print("[arm] grab sequence done.")
+
+
 def run_live_demo():
-    """Poll the real camera, drive the real motors. Run by hand on the Pi:
-        python tests/test_ibvs_centering.py --live
-    Ctrl+C to stop."""
-    import time
-    from src.hardware.sensors.camera_sensor import CameraSensor
+    """Live camera view (segmentation + bbox + base-contact point, same as
+    the perception module's own annotator) with the distance_error /
+    approach_drive readout burned onto the frame, so the planned IK output
+    can be checked visually before it ever touches the motors.
+
+    Run by hand on the Pi:
+        python tests/test_ibvs_centering.py --live              # look only, nothing moves
+        python tests/test_ibvs_centering.py --live --drive      # also drives the wheels
+        python tests/test_ibvs_centering.py --live --drive --arm  # + grabs when reached
+
+    Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
+    Ctrl+C also stops.
+    """
+    import cv2
+    import numpy as np
+    from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
     from src.hardware.actuators.pwm_driver import PWMActuator
+
+    driving = "--drive" in sys.argv
+    want_arm = "--arm" in sys.argv
 
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
-    camera = CameraSensor()
-    camera.start()
+
+    detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
+                                     frame_width=1280, frame_height=720)
+    detector.start()
+
+    arm, solver, armed = None, None, False
+    grab_state = {"cooldown_until": 0.0, "homed": False}
+    if want_arm:
+        try:
+            from src.arm.arc_grasp import ArcGraspSolver
+            from test_arc_grasp import Arm   # tests/ is on sys.path (see top of file)
+            solver = ArcGraspSolver()
+            if not solver.ready_for("upright") and not solver.ready_for("lying"):
+                print(f"[arm] arc_grasp not calibrated ({solver.status()}) — arm disabled.")
+            else:
+                # Share OUR actuator: Arm() building its own would GPIO.cleanup
+                # the shared motor pins and kill this loop's wheel control.
+                arm = Arm(wheels=actuator)
+                armed = True
+                print("[arm] ready — press 'g' to toggle grabbing on/off.")
+        except Exception as exc:
+            print(f"[arm] not available ({exc}); continuing without it.")
+
+    print(f"[live] drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
+          f"— m=toggle drive, g=toggle arm, q=quit")
+
+    show = True
     try:
         while True:
-            result = camera.get_latest_result()
+            result = detector.detect()
             error = compute_target_error(result)
             cmd = compute_drive_command(error, kin)
-            if cmd is None:
-                actuator.stop()
-                if error.reached:
-                    print("[live] reached — ready for arm handoff")
-            else:
-                actuator.apply(cmd)
+
+            if driving:
+                actuator.apply(cmd) if cmd is not None else actuator.stop()
+
+            if armed and error.reached:
+                _attempt_grab(result, solver, arm, actuator, grab_state)
+
+            if show:
+                try:
+                    frame = detector.get_annotated_frame(result)
+                    if frame is None:
+                        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                        cv2.putText(frame, "[waiting for first frame...]", (20, 360),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+                    _draw_status_overlay(frame, error, cmd, driving, armed)
+                    cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
+                    if key == ord("m"):
+                        driving = not driving
+                        print(f"\n[mode] drive {'ON' if driving else 'OFF'}\n")
+                        if not driving:
+                            actuator.stop()
+                    if key == ord("g") and arm is not None:
+                        armed = not armed
+                        print(f"\n[mode] arm {'ARMED' if armed else 'OFF'}\n")
+                except cv2.error:
+                    print("[!] no display available — continuing text-only")
+                    show = False
+
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
-                  f"dist_cm={error.distance_cm} reached={error.reached}")
-            time.sleep(0.1)
+                  f"dist_cm={error.distance_cm} reached={error.reached} "
+                  f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'}")
     except KeyboardInterrupt:
         pass
     finally:
         actuator.stop()
         actuator.close()
-        camera.stop()
+        detector.stop()
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
