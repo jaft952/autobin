@@ -126,7 +126,7 @@ def main():
     steer_sign = -1.0   # a = left (flip live with 'k')
     protect = False     # reverse-protection off by default (to reproduce bug)
 
-    style = "jog"      # "held": drive while key repeats, stop on release. "jog": tap = short burst then stop.
+    style = "held"      # "held": drive while key repeats, stop on release. "jog": tap = short burst then stop.
     jog_s = 0.30                 # jog burst seconds (tune with [ / ])
     release_timeout = 0.40       # held: stop this long after the key stops
 
