@@ -1,0 +1,32 @@
+CH1 (CH1 - Base Rotation (should turn LEFT or RIGHT?)):
+  90°  → 
+  180° → 
+
+CH1 (CH1 - Base Rotation (should turn LEFT or RIGHT?)):
+  90°  → 
+  180° → 
+
+CH1 (CH1 - Base Rotation (should turn LEFT or RIGHT?)):
+  90°  → 
+  180° → 
+
+CH2 (CH2 - Shoulder      (should bend FORWARD or BACKWARD?)):
+  90°  → 
+  180° → 
+
+CH3 (CH3 - Elbow         (should bend FORWARD or BACKWARD?)):
+  90°  → 
+  180° → 
+
+CH2 (CH2 - Shoulder      (should bend FORWARD or BACKWARD?)):
+  90°  → 
+  180° → 
+
+CH4 (CH4 - Wrist Pitch   (should bend UP or DOWN?)):
+  90°  → 
+  180° → 
+
+CH5 (CH5 - Wrist Rotate  (should rotate CW or CCW?)):
+  90°  → 
+  180° → 
+

@@ -200,7 +200,7 @@ class GroundRange:
         if not self.ready:
             return "ground range: NOT calibrated (no ruler samples) — pixel mode only"
         return (f"ground range: fitted from {self.n_samples} samples, "
-                f"rms {self.fit_rms_m * 100:.1f} cm, horizon row "
+                f"rms {self.fit_rms_m * 100:.1f} cm, horizon row " # type: ignore
                 f"{self.horizon_v:.0f}, trusted to {MAX_TRUSTED_RANGE_M:.2f} m")
 
     # ── runtime ──────────────────────────────────────────────────────────
@@ -210,7 +210,7 @@ class GroundRange:
             return None
         if v <= self.horizon_v + HORIZON_MARGIN_PX:
             return None                      # at/above the horizon: meaningless
-        y = (self.a * v + self.b) / (self.c * v + 1.0)
+        y = (self.a * v + self.b) / (self.c * v + 1.0) # type: ignore
         if y <= 0.02 or y > MAX_TRUSTED_RANGE_M:
             return None
         return y
