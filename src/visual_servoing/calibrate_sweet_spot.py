@@ -45,7 +45,7 @@ def _read_yaml() -> dict:
     return {}
 
 
-def _save(kx: str, ky: str, x: float, y: float, extra: dict = None):
+def _save(kx: str, ky: str, x: float, y: float, extra: dict = None): # type: ignore
     """Write the two sweet-spot keys (plus any `extra` keys) into
     centering_config.yaml, preserving everything else already there (so upright and
     lying targets coexist)."""
@@ -148,7 +148,7 @@ def main():
                     continue
                 nx, ny = click[0] / fw, click[1] / fh
                 extra = {"lying_mode": mode} if (lying and mode) else None
-                _save(kx, ky, nx, ny, extra)
+                _save(kx, ky, nx, ny, extra) # type: ignore
                 saved_px = (click[0], click[1])
                 modesave = f"  lying_mode={mode}" if (lying and mode) else ""
                 print(f"✓ saved {'LYING' if lying else 'UPRIGHT'} sweet spot  "
