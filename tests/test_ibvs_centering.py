@@ -36,7 +36,10 @@ from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
-from src.visual_servoing.approach_drive import compute_drive_command, MIN_SPEED, MAX_SPEED
+from src.visual_servoing.approach_drive import (
+    compute_drive_command, is_final_approach, MIN_SPEED, MAX_SPEED,
+    PULSE_DURATION_S, PULSE_PAUSE_S,
+)
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
@@ -104,6 +107,54 @@ def test_reached_when_centered_and_close():
     print("PASS reached: centered + close")
 
 
+def test_final_approach_when_close_but_not_reached():
+    """Inside PULSE_DISTANCE_CM but outside STOP_DISTANCE_CM -> switch to
+    pulse-then-look (centered so the distance zone is isolated from
+    centering as the reason)."""
+    result = _make_detection(norm_x=0.5, bbox_height_px=160)   # 4000/160 = 25cm
+    error = compute_target_error(result)
+    assert error.found and not error.reached
+    assert is_final_approach(error), error
+    print("PASS final approach: close but not yet at the stop distance")
+
+
+def test_cruise_when_far():
+    """Far away -> still cruising, not yet pulsing."""
+    result = _make_detection(norm_x=0.3, bbox_height_px=40)   # 100cm
+    error = compute_target_error(result)
+    assert not is_final_approach(error), error
+    print("PASS cruise (not final approach) when far")
+
+
+def test_not_final_approach_once_reached():
+    """Already reached -> nothing left to pulse toward."""
+    result = _make_detection(norm_x=0.5, bbox_height_px=400)
+    error = compute_target_error(result)
+    assert error.reached
+    assert not is_final_approach(error), error
+    print("PASS not final-approach once already reached")
+
+
+def test_not_final_approach_when_not_found():
+    error = compute_target_error(DetectionResult())
+    assert not is_final_approach(error)
+    print("PASS not final-approach when nothing is found")
+
+
+def test_too_close_stops_even_when_off_center():
+    """Bbox fills most of the frame -> too_close True regardless of the
+    (possibly uncalibrated) distance_cm math, and regardless of centering.
+    This is the failsafe: a wrong CALIBRATION_CONSTANT_PX_CM must not be able
+    to make the robot drive straight through the can."""
+    result = _make_detection(norm_x=0.3, bbox_height_px=350)
+    error = compute_target_error(result)
+    assert error.found
+    assert error.too_close, error
+    assert not error.reached, error   # off-center, so not "grasp-ready"
+    assert compute_drive_command(error, _kin()) is None
+    print("PASS too_close stops the drive even when off-center")
+
+
 # ── approach_drive.compute_drive_command ─────────────────────────────────
 
 def test_drive_command_none_when_not_found():
@@ -148,6 +199,11 @@ ALL_TESTS = [
     test_far_left_of_center,
     test_close_right_of_center,
     test_reached_when_centered_and_close,
+    test_final_approach_when_close_but_not_reached,
+    test_cruise_when_far,
+    test_not_final_approach_once_reached,
+    test_not_final_approach_when_not_found,
+    test_too_close_stops_even_when_off_center,
     test_drive_command_none_when_not_found,
     test_drive_command_none_when_reached,
     test_drive_left_when_can_is_left_of_center,
@@ -187,15 +243,21 @@ def _pose_and_angle(box):
     return "lying", o.angle
 
 
-def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool) -> None:
+def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
+                         bbox_height_px=None, final_approach: bool = False) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
-    console, and so a bad estimate is obvious immediately."""
+    console, and so a bad estimate is obvious immediately.
+
+    bbox_height_px is shown raw (not just the derived distance_cm) because
+    CALIBRATION_CONSTANT_PX_CM starts as an unmeasured placeholder — this is
+    the number you read off the screen with the can at a known distance to
+    calibrate it (see distance_error.py)."""
     import cv2
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    banner_h = 92
+    banner_h = 110
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, fh - banner_h), (fw, fh), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
@@ -204,13 +266,17 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool) -> None:
         target_line, target_color = "TARGET: none", (0, 0, 255)
     else:
         dist_txt = f"{error.distance_cm:.1f}" if error.distance_cm is not None else "?"
+        bbox_txt = f"{bbox_height_px}px" if bbox_height_px is not None else "?"
         target_line = (f"TARGET: lateral={error.lateral_error:+.2f} "
-                        f"dist_cm={dist_txt} reached={error.reached}")
-        target_color = (0, 255, 0) if error.reached else (0, 255, 255)
-    cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.6, target_color, 2)
+                        f"dist_cm={dist_txt} bbox_h={bbox_txt} "
+                        f"reached={error.reached} too_close={error.too_close}")
+        target_color = (0, 255, 0) if (error.reached or error.too_close) else (0, 255, 255)
+    cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.55, target_color, 2)
 
     if cmd is None:
-        reason = "reached" if error.reached else ("no target" if not error.found else "stopped")
+        reason = ("reached" if error.reached else
+                  "too close" if error.too_close else
+                  "no target" if not error.found else "stopped")
         drive_line, drive_color = f"DRIVE: STOPPED ({reason})", (170, 170, 170)
     else:
         if cmd.left_speed < cmd.right_speed - 1e-6:
@@ -219,8 +285,10 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool) -> None:
             steer = "RIGHT"
         else:
             steer = "STRAIGHT"
-        drive_line = f"DRIVE: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} (steer={steer})"
-        drive_color = (0, 255, 0)
+        mode = "PULSE" if final_approach else "CRUISE"
+        drive_line = (f"DRIVE [{mode}]: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} "
+                      f"(steer={steer})")
+        drive_color = (0, 200, 255) if final_approach else (0, 255, 0)
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
     mode_line = f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   [q] quit"
@@ -280,9 +348,17 @@ def run_live_demo():
         python tests/test_ibvs_centering.py --live --drive      # also drives the wheels
         python tests/test_ibvs_centering.py --live --drive --arm  # + grabs when reached
 
+    Driving style switches automatically with distance (see approach_drive.py):
+    far away it cruises continuously at the IK-computed speed; once inside
+    PULSE_DISTANCE_CM (is_final_approach()) it switches to short pulses
+    (PULSE_DURATION_S of motion, then PULSE_PAUSE_S stopped for a fresh,
+    unblurred look) so the final positioning for a grab doesn't overshoot on
+    a stale/blurred frame. The overlay's DRIVE line shows [CRUISE] or [PULSE].
+
     Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
     Ctrl+C also stops.
     """
+    import time
     import cv2
     import numpy as np
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -290,6 +366,7 @@ def run_live_demo():
 
     driving = "--drive" in sys.argv
     want_arm = "--arm" in sys.argv
+    pulse_state = {"next_pulse_at": 0.0}
 
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
@@ -326,9 +403,28 @@ def run_live_demo():
             result = detector.detect()
             error = compute_target_error(result)
             cmd = compute_drive_command(error, kin)
+            bbox_height_px = result.best.height if result.best is not None else None
+            final_approach = is_final_approach(error)
 
             if driving:
-                actuator.apply(cmd) if cmd is not None else actuator.stop()
+                if cmd is None:
+                    actuator.stop()
+                elif final_approach:
+                    # Close range: a continuous command is already stale by
+                    # the time it reaches the wheels, and stale matters more
+                    # here. Nudge forward for one short pulse, then sit still
+                    # long enough for the next frame to be a fresh, unblurred
+                    # look before deciding the next nudge.
+                    now = time.monotonic()
+                    if now >= pulse_state["next_pulse_at"]:
+                        actuator.apply(cmd)
+                        time.sleep(PULSE_DURATION_S)
+                        actuator.stop()
+                        pulse_state["next_pulse_at"] = time.monotonic() + PULSE_PAUSE_S
+                    else:
+                        actuator.stop()
+                else:
+                    actuator.apply(cmd)   # cruise: continuous, full-rate driving
 
             if armed and error.reached:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
@@ -340,7 +436,9 @@ def run_live_demo():
                         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
                         cv2.putText(frame, "[waiting for first frame...]", (20, 360),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
-                    _draw_status_overlay(frame, error, cmd, driving, armed)
+                    _draw_status_overlay(frame, error, cmd, driving, armed,
+                                        bbox_height_px=bbox_height_px,
+                                        final_approach=final_approach)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -358,7 +456,9 @@ def run_live_demo():
                     show = False
 
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
-                  f"dist_cm={error.distance_cm} reached={error.reached} "
+                  f"dist_cm={error.distance_cm} bbox_h_px={bbox_height_px} "
+                  f"reached={error.reached} too_close={error.too_close} "
+                  f"phase={'PULSE' if final_approach else 'CRUISE'} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'}")
     except KeyboardInterrupt:
         pass
