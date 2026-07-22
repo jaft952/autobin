@@ -13,7 +13,7 @@ from src.motion.differential_kinematics import DifferentialKinematics, WheelComm
 
 MAX_SPEED = 50.0             # TODO tune: matches MotionCalibration's default arc_speed
 FALLBACK_SPEED = 30.0        # TODO tune: used only when distance can't be estimated at all
-BACKUP_SPEED = 50.0          # TODO tune: gentle reverse to recover from an overshoot
+BACKUP_SPEED = 30.0          # TODO tune: gentle reverse to recover from an overshoot
 MAX_STEER_ANGLE_DEG = 50.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/beyond which speed is MAX_SPEED
 
