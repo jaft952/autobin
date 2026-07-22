@@ -44,7 +44,7 @@ from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach,
     MAX_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
 )
-from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
+# predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety
 
 
@@ -447,14 +447,12 @@ def run_live_demo():
 
     driving = "--drive" in sys.argv
     want_arm = "--arm" in sys.argv
-    use_predictive = "--predictive" in sys.argv
-    controller_name = "predictive" if use_predictive else "reactive"
+    controller_name = "reactive"
 
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
-    controller_state = ControllerState()  # only consulted when --predictive is set
     step_state = {"next_step_at": 0.0}    # only consulted in reactive final-approach
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
@@ -490,12 +488,8 @@ def run_live_demo():
             error = compute_target_error(result)
             
 
-            if use_predictive:
-                cmd, controller_state = compute_predictive_command(error, kin, controller_state)
-                final_approach = False   # predictive plans its own approach; no step-and-look here
-            else:
-                cmd = compute_reactive_command(error, kin)
-                final_approach = is_final_approach(error)
+            cmd = compute_reactive_command(error, kin)
+            final_approach = is_final_approach(error)
 
             bbox_width_px = result.best.width if result.best is not None else None
             bbox_height_px = result.best.height if result.best is not None else None
