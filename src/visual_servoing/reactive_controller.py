@@ -15,14 +15,30 @@ from __future__ import annotations
 
 from typing import Optional
 
-from src.visual_servoing.distance_error import TargetError, STOP_DISTANCE_CM
+from src.visual_servoing.distance_error import TargetError
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
-MAX_SPEED = 24.0             # TODO tune: matches MotionCalibration's default arc_speed
+# Speed is looked up from these hand-tested distance breakpoints, not
+# computed from a continuous formula -- distance_cm is only as good as
+# distance_error.CALIBRATION_CONSTANT_PX_CM, which is still an unmeasured
+# placeholder (see that module), so a smooth ramp off it is no more
+# trustworthy than a few hardcoded checkpoints tuned by eye on hardware.
+CRUISE_DISTANCE_CM = 90.0    # distance at/beyond which speed is MAX_SPEED
+MAX_SPEED = 25.0             # TODO tune: hand-tested cruise speed at/beyond CRUISE_DISTANCE_CM
+APPROACH_SPEED = 20.0        # TODO tune: hand-tested speed between FAR_DISTANCE_CM and CRUISE_DISTANCE_CM
 FALLBACK_SPEED = 24.0        # TODO tune: used only when distance can't be estimated at all
-BACKUP_SPEED = 24.0          # TODO tune: gentle reverse to recover from an overshoot
+
+# Lowered from 24 (same as MAX_SPEED) -- on hardware that drove the
+# too_close backup at full speed for as long as too_close stayed True,
+# which overshot well past a safe recovery distance before the next
+# (stale-by-the-time-it-arrives) frame could clear the flag. Still just a
+# guess pending another hardware pass -- watch for either "still backs up
+# too far" (lower further) or "doesn't clear too_close fast enough" (raise
+# it back up a bit).
+BACKUP_SPEED = 12.0          # TODO tune: gentle reverse to recover from an overshoot
+
 MAX_STEER_ANGLE_DEG = 50.0   # keep below 90 so it never fully spins in place
-FAR_DISTANCE_CM = 30.0       # distance at/beyond which speed is MAX_SPEED
+FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
 
 # Below FAR_DISTANCE_CM, continuous driving risks overshoot: by the time a
 # command reaches the wheels the frame it was computed from is already
@@ -31,6 +47,7 @@ FAR_DISTANCE_CM = 30.0       # distance at/beyond which speed is MAX_SPEED
 # zone; the caller (the live loop) is responsible for actually stepping
 # instead of driving continuously -- see STEP_DURATION_S / LOOK_PAUSE_S
 # below, used there, not here (this module stays hardware/time-free).
+STEP_SPEED = 20.0            # TODO tune: hand-tested fixed nudge speed for step-and-look
 STEP_DURATION_S = 0.25       # TODO tune: length of one forward/steer nudge
 LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred look
 
@@ -38,21 +55,18 @@ LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred lo
 def compute_reactive_command(error: TargetError,
                            kin: DifferentialKinematics) -> Optional[WheelCommand]:
     """
-    Speed is the whole mechanism — no separate pulse/cruise mode. Between
-    FAR_DISTANCE_CM and STOP_DISTANCE_CM the commanded speed ramps linearly
-    from MAX_SPEED down to 0, so the approach is brisk far away and slows to
-    a crawl exactly as it reaches the grab position, instead of stopping and
-    restarting in bursts.
+    Speed is a lookup against hardcoded distance breakpoints, not a
+    continuous formula (see the constants block above for why):
+        distance_cm >= CRUISE_DISTANCE_CM  (~90cm) -> MAX_SPEED
+        FAR_DISTANCE_CM < distance_cm < CRUISE_DISTANCE_CM (~60cm) -> APPROACH_SPEED
+        distance_cm <= FAR_DISTANCE_CM     (~30cm) -> STEP_SPEED
 
-    Known limitation: because forward speed and steering both scale off the
-    SAME ramped value (see DifferentialKinematics.arc_forward_*), a target
-    that reaches STOP_DISTANCE_CM while still off-center enough that
-    error.reached is False will get a zero-speed command and stop steering
-    too — nothing pulls it the rest of the way to centered. Untested how
-    often this actually happens in practice; if it does, the fix is a
-    small in-place turn_left/turn_right correction for that specific case
-    rather than an arc, but that's speculative until it's observed on
-    hardware.
+    That last tier never reaches zero -- unlike the old zero-at-STOP_DISTANCE_CM
+    ramp this replaced, steering keeps working the whole way to the grab
+    point since dynamic_speed (which both forward speed AND steer angle scale
+    off, via DifferentialKinematics.arc_forward_*) never collapses to
+    nothing. The caller applies this tier as a short step-and-look nudge
+    rather than driving it continuously -- see is_final_approach().
 
     Returns:
         None              — no target found, or reached (arm handoff point;
@@ -61,10 +75,10 @@ def compute_reactive_command(error: TargetError,
                             little regardless of the (possibly miscalibrated)
                             distance_cm math, so a bad calibration can't wedge
                             the robot against the can. Once backing off clears
-                            too_close, the ramp below re-approaches and
-                            re-centers on its own — no separate "recovery
+                            too_close, the tiers above re-approach and
+                            re-center on their own — no separate "recovery
                             state" needed.
-        forward/arc command — otherwise, steered and speed-ramped toward the can.
+        forward/arc command — otherwise, steered and speed-tiered toward the can.
     """
     if not error.found:
         return None
@@ -80,11 +94,12 @@ def compute_reactive_command(error: TargetError,
 
     if error.distance_cm is None:
         dynamic_speed = FALLBACK_SPEED
+    elif error.distance_cm >= CRUISE_DISTANCE_CM:
+        dynamic_speed = MAX_SPEED
+    elif error.distance_cm > FAR_DISTANCE_CM:
+        dynamic_speed = APPROACH_SPEED
     else:
-        span = max(FAR_DISTANCE_CM - STOP_DISTANCE_CM, 1e-6)
-        frac = (error.distance_cm - STOP_DISTANCE_CM) / span
-        frac = max(0.0, min(1.0, frac))
-        dynamic_speed = MAX_SPEED * frac # -> 0 right at STOP_DISTANCE_CM
+        dynamic_speed = STEP_SPEED   # is_final_approach() zone
 
     if error.lateral_error > 0:
         return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
@@ -100,7 +115,7 @@ def is_final_approach(error: TargetError) -> bool:
     then re-evaluate -- rather than driving on a frame that's already stale
     by the time it reaches the wheels, which this close is enough to
     overshoot the grab point or drift off-center. The command itself doesn't
-    change (same speed-ramped/steered WheelCommand either way); only how
+    change (same speed-tiered/steered WheelCommand either way); only how
     often the caller applies it does, so the timing lives in the live loop,
     not here.
 

@@ -42,7 +42,7 @@ from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach,
-    MAX_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
 )
 # predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety
@@ -162,8 +162,8 @@ def test_reactive_command_backs_away_when_too_close():
 def test_reactive_command_when_can_is_left_of_center():
     """Far + left of center -> steers toward arc_forward_right (right wheel
     slower than left) — hardware-verified mapping, see the sign-convention
-    note in reactive_controller.py. Far away -> speed at MAX_SPEED (the ramp only
-    starts falling off inside FAR_DISTANCE_CM)."""
+    note in reactive_controller.py. Far away (>= CRUISE_DISTANCE_CM) ->
+    speed at MAX_SPEED, the top hardcoded tier."""
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=40))
     cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
@@ -173,31 +173,39 @@ def test_reactive_command_when_can_is_left_of_center():
 
 
 def test_reactive_command_when_can_is_right_of_center():
-    """Close + right of center -> steers toward arc_forward_left (left wheel
-    slower than right) — hardware-verified mapping, see reactive_controller.py.
-    Close to STOP_DISTANCE_CM -> speed ramped down near zero, not a fixed
-    floor (no more pulsing: slow continuous creep IS the final-approach
-    behavior now)."""
-    error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=200))
+    """Inside FAR_DISTANCE_CM (final approach / step-and-look) + right of
+    center -> steers toward arc_forward_left (left wheel slower than right)
+    — hardware-verified mapping, see reactive_controller.py — at the fixed
+    STEP_SPEED nudge, not a ramped-to-zero value (no more zero-speed
+    stalling: STEP_SPEED keeps steering alive all the way to the grab
+    point). frame_height oversized per the is_final_approach fixtures above
+    to stay clear of CLOSE_BBOX_FRACTION at this bbox size."""
+    error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000))
+    assert is_final_approach(error), error
     cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.left_speed < cmd.right_speed, cmd
-    assert 0 <= cmd.right_speed < 0.3 * MAX_SPEED, cmd   # ramped down close to zero
-    print("PASS steers toward the can + slow creep when close + right of center")
+    assert abs(cmd.right_speed - STEP_SPEED) < 0.2 * STEP_SPEED, cmd   # right (outer) wheel ~= STEP_SPEED * trim
+    print("PASS steers toward the can + step-and-look nudge speed when in final approach")
 
 
-def test_speed_ramps_down_as_distance_shrinks():
-    """Same lateral offset, three distances -> speed strictly decreases as
-    the can gets closer, confirming the continuous ramp (not a floor/step)."""
-    far = compute_reactive_command(
-        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40)), _kin())    # ~100cm
-    mid = compute_reactive_command(
-        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=100)), _kin())   # 40cm
-    near = compute_reactive_command(
-        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=200)), _kin())   # 20cm
-    assert far is not None and mid is not None and near is not None
-    assert far.left_speed > mid.left_speed > near.left_speed, (far, mid, near)
-    print("PASS speed ramps down continuously as distance shrinks (no pulsing)")
+def test_reactive_command_speed_tiers_are_hardcoded():
+    """Same lateral offset, three distances spanning the three breakpoints
+    -> speed is looked up from CRUISE_DISTANCE_CM / FAR_DISTANCE_CM, not
+    computed from a continuous formula: cruise (>=90cm) is brisker than
+    approach (~70cm), which lands on the SAME hardcoded value as the
+    step-and-look nudge (~27cm) since both are tuned to APPROACH_SPEED ==
+    STEP_SPEED today -- a floor/step lookup, not a ramp."""
+    cruise = compute_reactive_command(
+        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40)), _kin())      # ~142cm
+    approach = compute_reactive_command(
+        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=164)), _kin())     # ~70cm
+    step = compute_reactive_command(
+        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000)), _kin())  # ~27cm
+    assert cruise is not None and approach is not None and step is not None
+    assert cruise.left_speed > approach.left_speed > 0, (cruise, approach)
+    assert abs(approach.left_speed - step.left_speed) < 1e-6, (approach, step)
+    print("PASS speed is a hardcoded tier lookup, not a continuous ramp")
 
 
 # ── reactive_controller.is_final_approach ────────────────────────────────
@@ -264,7 +272,7 @@ ALL_TESTS = [
     test_reactive_command_backs_away_when_too_close,
     test_reactive_command_when_can_is_left_of_center,
     test_reactive_command_when_can_is_right_of_center,
-    test_speed_ramps_down_as_distance_shrinks,
+    test_reactive_command_speed_tiers_are_hardcoded,
     test_final_approach_when_close_but_not_reached,
     test_cruise_when_far,
     test_not_final_approach_once_reached,
@@ -419,22 +427,23 @@ def run_live_demo():
         python tests/test_ibvs_centering.py --live --drive      # also drives the wheels
         python tests/test_ibvs_centering.py --live --drive --arm  # + grabs when reached
 
-    reactive_controller.py ramps the commanded speed continuously from
-    MAX_SPEED down to 0 as the can's estimated distance closes in on
-    STOP_DISTANCE_CM — same command either way, but HOW it's applied
-    switches with distance (reactive mode only; --predictive drives its own
-    planned command continuously throughout): far out it's driven every
-    frame like any other command (cruise), while inside FAR_DISTANCE_CM
-    (is_final_approach()) it's applied as a short STEP_DURATION_S nudge
-    followed by a LOOK_PAUSE_S stop, so the camera gets a fresh, unblurred
-    frame to re-aim from before the next nudge, walking the robot into the
-    grab position instead of risking an overshoot on a stale frame. The
-    overlay's DRIVE line shows [CRUISE] or [STEP].
+    reactive_controller.py looks up the commanded speed from hardcoded
+    distance breakpoints (CRUISE_DISTANCE_CM / FAR_DISTANCE_CM -> MAX_SPEED /
+    APPROACH_SPEED / STEP_SPEED — see that module) rather than a continuous
+    formula — same command either way, but HOW it's applied switches with
+    distance: far out it's driven every frame like any other command
+    (cruise), while inside FAR_DISTANCE_CM (is_final_approach()) it's
+    applied as a short STEP_DURATION_S nudge followed by a LOOK_PAUSE_S
+    stop, so the camera gets a fresh, unblurred frame to re-aim from before
+    the next nudge, walking the robot into the grab position instead of
+    risking an overshoot on a stale frame. The overlay's DRIVE line shows
+    [CRUISE] or [STEP].
 
-    If the can ends up too_close (bbox fills the frame), the command is an
-    active BACKWARD nudge instead of a stop, so a bad distance calibration
-    can't wedge the robot against the can; once backing off clears
-    too_close, the same ramp re-approaches and re-centers on its own.
+    If the can ends up too_close (bbox fills the frame), the command is a
+    gentle BACKWARD nudge (BACKUP_SPEED) instead of a stop, so a bad
+    distance calibration can't wedge the robot against the can; once
+    backing off clears too_close, the tiers above re-approach and re-center
+    on their own.
 
     Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
     Ctrl+C also stops.
