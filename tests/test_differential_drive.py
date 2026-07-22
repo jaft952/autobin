@@ -350,17 +350,24 @@ def main():
 
 if __name__ == "__main__":
     if "--cam" in sys.argv:
+        import threading
         import cv2
         from src.hardware.sensors.camera_sensor import CameraSensor
-        cam = CameraSensor()
-        try:
-            while True:
-                frame = cam.read_camera_frame()
-                if frame is not None:
-                    cv2.imshow("Camera Output", frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-        finally:
-            cam.stop()
-            cv2.destroyAllWindows()
+
+        def run_camera():
+            cam = CameraSensor()
+            try:
+                while True:
+                    frame = cam.read_camera_frame()
+                    if frame is not None:
+                        cv2.imshow("Camera Output", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+            finally:
+                cam.stop()
+                cv2.destroyAllWindows()
+
+        cam_thread = threading.Thread(target=run_camera, daemon=True)
+        cam_thread.start()
+
     main()
