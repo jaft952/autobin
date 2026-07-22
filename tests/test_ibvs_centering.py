@@ -468,7 +468,7 @@ def run_live_demo():
                   f"bbox_width_px={bbox_width_px if result.best is not None else None} "
                   f"bbox_height_px={bbox_height_px if result.best is not None else None} "
                   f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
-                  f"ultra_dist={ultra.distance_cm}"
+                  f"ultra_dist={ultra.distance_cm} "
                   f"reached={error.reached} too_close={error.too_close} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")
@@ -478,6 +478,7 @@ def run_live_demo():
         actuator.stop()
         actuator.close()
         detector.stop()
+        ultrasonic.close()
         try:
             cv2.destroyAllWindows()
         except Exception:
