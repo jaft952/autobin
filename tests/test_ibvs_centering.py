@@ -13,13 +13,17 @@ For a live run on the robot (real camera, optionally real motors/arm) use:
     python tests/test_ibvs_centering.py --live            # camera + overlay only, nothing moves
     python tests/test_ibvs_centering.py --live --drive    # also sends commands to the wheels
     python tests/test_ibvs_centering.py --live --drive --arm   # + grabs when "reached"
+    python tests/test_ibvs_centering.py --live --drive --predictive  # use the receding-horizon
+                                                                       # planner instead of the
+                                                                       # reactive controller
 
---drive and --arm are ONLY read together with --live; they do nothing to the
-pure-logic test suite. Without --drive the wheels never move — distance_error
-and approach_drive still run every frame and their output is shown on the
-video overlay and console, so you can check the planned steer/speed before
-ever letting it touch the motors. Keys while the window is focused: m =
-toggle drive, g = toggle arm, q = quit.
+--drive, --arm and --predictive are ONLY read together with --live; they do
+nothing to the pure-logic test suite. Without --drive the wheels never move —
+distance_error and the active controller (approach_drive by default, or
+predictive_controller with --predictive) still run every frame and their
+output is shown on the video overlay and console, so you can check the
+planned steer/speed before ever letting it touch the motors. Keys while the
+window is focused: m = toggle drive, g = toggle arm, q = quit.
 
 This whole function is NOT executed by the test suite or by pytest — see
 run_live_demo() at the bottom.
@@ -37,6 +41,7 @@ from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
 from src.visual_servoing.approach_drive import compute_drive_command, MAX_SPEED, BACKUP_SPEED
+from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
@@ -241,7 +246,7 @@ def _pose_and_angle(box):
 
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
-                         bbox_height_px=None) -> None:
+                         bbox_height_px=None, controller_name: str = "reactive") -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -293,7 +298,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         drive_color = (0, 255, 0)
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
-    mode_line = f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   [q] quit"
+    mode_line = (f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   "
+                 f"ctrl={controller_name}   [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
 
     dcol = (0, 255, 0) if driving else (0, 0, 255)
@@ -369,10 +375,13 @@ def run_live_demo():
 
     driving = "--drive" in sys.argv
     want_arm = "--arm" in sys.argv
+    use_predictive = "--predictive" in sys.argv
+    controller_name = "predictive" if use_predictive else "reactive"
 
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
+    controller_state = ControllerState()  # only consulted when --predictive is set
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
                                      frame_width=1280, frame_height=720)
@@ -397,14 +406,17 @@ def run_live_demo():
             print(f"[arm] not available ({exc}); continuing without it.")
 
     print(f"[live] drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
-          f"— m=toggle drive, g=toggle arm, q=quit")
+          f"ctrl={controller_name} — m=toggle drive, g=toggle arm, q=quit")
 
     show = True
     try:
         while True:
             result = detector.detect()
             error = compute_target_error(result)
-            cmd = compute_drive_command(error, kin)
+            if use_predictive:
+                cmd, controller_state = compute_predictive_command(error, kin, controller_state)
+            else:
+                cmd = compute_drive_command(error, kin)
             bbox_height_px = result.best.height if result.best is not None else None
 
             if driving:
@@ -421,7 +433,8 @@ def run_live_demo():
                         cv2.putText(frame, "[waiting for first frame...]", (20, 360),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
                     _draw_status_overlay(frame, error, cmd, driving, armed,
-                                        bbox_height_px=bbox_height_px)
+                                        bbox_height_px=bbox_height_px,
+                                        controller_name=controller_name)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -441,7 +454,8 @@ def run_live_demo():
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
                   f"dist_cm={error.distance_cm} bbox_h_px={bbox_height_px} "
                   f"reached={error.reached} too_close={error.too_close} "
-                  f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'}")
+                  f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
+                  f"ctrl={controller_name}")
     except KeyboardInterrupt:
         pass
     finally:
