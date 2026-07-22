@@ -50,6 +50,7 @@ Tuning keys:
 import os
 import sys
 import time
+import cv2
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -353,5 +354,16 @@ if __name__ == "__main__":
         from src.hardware.sensors.camera_sensor import CameraSensor
         cam = CameraSensor()
         cam.start()
-        print("[camera started]")
+        try:
+            while True:
+                result = cam._fresh_result()
+                frame = result.frame # type: ignore
+                if frame is not None:
+                    print("[camera started]")
+                    cv2.imshow("Camera Output", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        finally:
+            cam.stop()
+            cv2.destroyAllWindows()
     main()
