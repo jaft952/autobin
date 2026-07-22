@@ -106,5 +106,22 @@ class UltrasonicSensor:
         return self._distance_cm
 
     def close(self) -> None:
-        if GPIO is not None:
+        if GPIO is None:
+            return
+
+        # Some host environments provide a GPIO module but never had
+        # `setmode()` called (or it was cleaned up elsewhere). Calling
+        # `GPIO.cleanup()` in that state raises a RuntimeError:
+        # "Please set pin numbering mode using GPIO.setmode(...)".
+        # Guard by checking the current mode first where available.
+        mode = None
+        try:
+            mode = GPIO.getmode()
+        except Exception:
+            # If getmode() is not available or errors, fall back to
+            # attempting cleanup but swallow mode-check errors to avoid
+            # masking the real intent — only call cleanup when mode set.
+            mode = None
+
+        if mode is not None:
             GPIO.cleanup([self._pins.trig, self._pins.echo])
