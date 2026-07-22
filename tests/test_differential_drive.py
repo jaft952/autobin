@@ -353,13 +353,10 @@ if __name__ == "__main__":
     if "--camera" in sys.argv:
         from src.hardware.sensors.camera_sensor import CameraSensor
         cam = CameraSensor()
-        cam.start()
         try:
             while True:
-                result = cam._fresh_result()
-                frame = result.frame # type: ignore
+                frame = cam.read_camera_frame()
                 if frame is not None:
-                    print("[camera started]")
                     cv2.imshow("Camera Output", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break

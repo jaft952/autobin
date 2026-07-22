@@ -177,3 +177,13 @@ class CameraSensor(SensorInterface):
         Use with cv2.imshow() or the web dashboard's MJPEG stream.
         """
         return self._detector.get_annotated_frame(self.get_latest_result())
+
+    def read_camera_frame(self):
+        """
+        Opens the camera (if not already open) and returns one raw frame —
+        no model load, no inference. For sanity-checking the camera feed by
+        itself, e.g. cv2.imshow() from a manual test script.
+        """
+        if not self._detector._cap or not self._detector._cap.isOpened():
+            self._detector._open_camera()
+        return self._detector.read_frame()
