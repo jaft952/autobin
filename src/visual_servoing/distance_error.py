@@ -66,7 +66,7 @@ def compute_target_error(detection: DetectionResult,
     When it's added later, blend/override the monocular estimate near the
     end of this function; the signature is already future-proofed for it.
     """
-    base = detection.normalized_base_center()   # ground-contact point
+    base = detection.normalized_base_center() # ground-contact point
     if base is None or not detection.found:
         return TargetError(found=False, lateral_error=0.0,
                             distance_cm=None, reached=False, too_close=False)
@@ -86,9 +86,8 @@ def compute_target_error(detection: DetectionResult,
     too_close = (detection.frame_height > 0
                  and bbox_height_px / detection.frame_height >= CLOSE_BBOX_FRACTION)
 
-    # Extension seam for future ultrasonic fusion — no-op today.
     if ultrasonic_cm is not None and distance_cm is not None:
-        pass  # TODO: fuse once an ultrasonic sensor is fitted
+        too_close = too_close or (ultrasonic_cm <= STOP_DISTANCE_CM)
 
     reached = (distance_cm is not None
                and distance_cm <= STOP_DISTANCE_CM

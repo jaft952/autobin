@@ -21,7 +21,7 @@ from src.hardware.sensors.ultrasonic_sensor import (
     UltrasonicPins,
 )
 
-EMERGENCY_STOP_CM = 30.0
+EMERGENCY_STOP_CM = 25.0
 GRAB_CONFIRM_CM = 25.0
 
 
