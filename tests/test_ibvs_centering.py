@@ -453,7 +453,7 @@ def run_live_demo():
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
-    step_state = {"next_step_at": 0.0}    # only consulted in reactive final-approach
+    step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
                                      frame_width=1280, frame_height=720)
@@ -517,7 +517,7 @@ def run_live_demo():
                         actuator.stop()
 
                 else:
-                    actuator.apply(cmd)   # cruise: continuous, full-rate driving
+                    actuator.apply(cmd) # cruise: continuous, full-rate driving
 
             if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
