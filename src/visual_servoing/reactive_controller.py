@@ -11,9 +11,9 @@ from typing import Optional
 from src.visual_servoing.distance_error import TargetError, STOP_DISTANCE_CM
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
-MAX_SPEED = 30.0             # TODO tune: matches MotionCalibration's default arc_speed
-FALLBACK_SPEED = 30.0        # TODO tune: used only when distance can't be estimated at all
-BACKUP_SPEED = 30.0          # TODO tune: gentle reverse to recover from an overshoot
+MAX_SPEED = 25.0             # TODO tune: matches MotionCalibration's default arc_speed
+FALLBACK_SPEED = 25.0        # TODO tune: used only when distance can't be estimated at all
+BACKUP_SPEED = 25.0          # TODO tune: gentle reverse to recover from an overshoot
 MAX_STEER_ANGLE_DEG = 50.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/beyond which speed is MAX_SPEED
 
@@ -67,7 +67,7 @@ def compute_reactive_command(error: TargetError,
         span = max(FAR_DISTANCE_CM - STOP_DISTANCE_CM, 1e-6)
         frac = (error.distance_cm - STOP_DISTANCE_CM) / span
         frac = max(0.0, min(1.0, frac))
-        dynamic_speed = MAX_SPEED * frac   # -> 0 right at STOP_DISTANCE_CM
+        dynamic_speed = MAX_SPEED * frac # -> 0 right at STOP_DISTANCE_CM
 
     # lateral_error > 0 means the can is right of frame center -> steer right
     # toward it. Hardware-verified 2026-07-22 on this robot: that maps to
