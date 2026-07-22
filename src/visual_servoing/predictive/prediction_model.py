@@ -154,8 +154,8 @@ def predicted_error(state: RobotState, target: TargetPoint,
     """-> (predicted_lateral_error, predicted_distance_cm): the static
     target's position reprojected into `state`, through the same pinhole
     geometry used to interpret the original vision measurement -- so the
-    output lands in exactly the units cost_function.py (and distance_error.py's
-    STOP_DISTANCE_CM/CENTER_TOLERANCE) already reason about.
+    output lands in exactly the units trajectory_planner.py (and
+    distance_error.py's STOP_DISTANCE_CM/CENTER_TOLERANCE) already reason about.
     """
     dx = target.x_cm - state.x_cm
     dy = target.y_cm - state.y_cm
