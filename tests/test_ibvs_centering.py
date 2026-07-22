@@ -40,7 +40,7 @@ from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
-from src.visual_servoing.approach_drive import compute_drive_command, MAX_SPEED, BACKUP_SPEED
+from visual_servoing.reactive_controller import compute_reactive_command, MAX_SPEED, BACKUP_SPEED
 from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
 
 
@@ -126,56 +126,56 @@ def test_too_close_backs_away_even_when_off_center():
     print("PASS too_close (checked further in the drive-command tests below)")
 
 
-# ── approach_drive.compute_drive_command ─────────────────────────────────
+# ── reactive_controller.compute_reactive_command ─────────────────────────────────
 
-def test_drive_command_none_when_not_found():
+def test_reactive_command_none_when_not_found():
     error = compute_target_error(DetectionResult())
-    assert compute_drive_command(error, _kin()) is None
+    assert compute_reactive_command(error, _kin()) is None
     print("PASS drive command is None when nothing is found")
 
 
-def test_drive_command_none_when_reached():
+def test_reactive_command_none_when_reached():
     error = compute_target_error(_make_detection(norm_x=0.5, bbox_height_px=300))
     assert error.reached
     assert not error.too_close, error
-    assert compute_drive_command(error, _kin()) is None
+    assert compute_reactive_command(error, _kin()) is None
     print("PASS drive command is None when reached (arm handoff)")
 
 
-def test_drive_backs_away_when_too_close():
+def test_reactive_command_backs_away_when_too_close():
     """too_close -> an active BACKWARD command (both wheels negative), not
     just a stop — recovers from an overshoot instead of sitting wedged
     against the can, even when off-center."""
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=360))
     assert error.too_close
-    cmd = compute_drive_command(error, _kin())
+    cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.left_speed < 0 and cmd.right_speed < 0, cmd
     assert abs(cmd.left_speed) <= BACKUP_SPEED + 1e-6, cmd
     print("PASS backs away (both wheels reverse) when too_close")
 
 
-def test_drive_when_can_is_left_of_center():
+def test_reactive_command_when_can_is_left_of_center():
     """Far + left of center -> steers toward arc_forward_right (right wheel
     slower than left) — hardware-verified mapping, see the sign-convention
-    note in approach_drive.py. Far away -> speed at MAX_SPEED (the ramp only
+    note in reactive_controller.py. Far away -> speed at MAX_SPEED (the ramp only
     starts falling off inside FAR_DISTANCE_CM)."""
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=40))
-    cmd = compute_drive_command(error, _kin())
+    cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.right_speed < cmd.left_speed, cmd
     assert cmd.left_speed >= 0.9 * MAX_SPEED, cmd   # brisk, not crawling
     print("PASS steers toward the can + full speed when far + left of center")
 
 
-def test_drive_when_can_is_right_of_center():
+def test_reactive_command_when_can_is_right_of_center():
     """Close + right of center -> steers toward arc_forward_left (left wheel
     slower than right) — hardware-verified mapping, see approach_drive.py.
     Close to STOP_DISTANCE_CM -> speed ramped down near zero, not a fixed
     floor (no more pulsing: slow continuous creep IS the final-approach
     behavior now)."""
     error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=200))
-    cmd = compute_drive_command(error, _kin())
+    cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.left_speed < cmd.right_speed, cmd
     assert 0 <= cmd.right_speed < 0.3 * MAX_SPEED, cmd   # ramped down close to zero
@@ -185,11 +185,11 @@ def test_drive_when_can_is_right_of_center():
 def test_speed_ramps_down_as_distance_shrinks():
     """Same lateral offset, three distances -> speed strictly decreases as
     the can gets closer, confirming the continuous ramp (not a floor/step)."""
-    far = compute_drive_command(
+    far = compute_reactive_command(
         compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40)), _kin())    # ~100cm
-    mid = compute_drive_command(
+    mid = compute_reactive_command(
         compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=100)), _kin())   # 40cm
-    near = compute_drive_command(
+    near = compute_reactive_command(
         compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=200)), _kin())   # 20cm
     assert far is not None and mid is not None and near is not None
     assert far.left_speed > mid.left_speed > near.left_speed, (far, mid, near)
@@ -204,11 +204,11 @@ ALL_TESTS = [
     test_close_right_of_center,
     test_reached_when_centered_and_close,
     test_too_close_backs_away_even_when_off_center,
-    test_drive_command_none_when_not_found,
-    test_drive_command_none_when_reached,
-    test_drive_backs_away_when_too_close,
-    test_drive_when_can_is_left_of_center,
-    test_drive_when_can_is_right_of_center,
+    test_reactive_command_none_when_not_found,
+    test_reactive_command_none_when_reached,
+    test_reactive_command_backs_away_when_too_close,
+    test_reactive_command_when_can_is_left_of_center,
+    test_reactive_command_when_can_is_right_of_center,
     test_speed_ramps_down_as_distance_shrinks,
 ]
 
@@ -246,12 +246,12 @@ def _pose_and_angle(box):
 
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
-                         bbox_height_px=None, controller_name: str = "reactive") -> None:
+                         bbox_area_px=None, controller_name: str = "reactive") -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
 
-    bbox_height_px is shown raw (not just the derived distance_cm) because
+    bbox_area_px is shown raw (not just the derived distance_cm) because
     CALIBRATION_CONSTANT_PX_CM starts as an unmeasured placeholder — this is
     the number you read off the screen with the can at a known distance to
     calibrate it (see distance_error.py)."""
@@ -268,9 +268,9 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         target_line, target_color = "TARGET: none", (0, 0, 255)
     else:
         dist_txt = f"{error.distance_cm:.1f}" if error.distance_cm is not None else "?"
-        bbox_txt = f"{bbox_height_px}px" if bbox_height_px is not None else "?"
+        bbox_txt = f"{bbox_area_px}px" if bbox_area_px is not None else "?"
         target_line = (f"TARGET: lateral={error.lateral_error:+.2f} "
-                        f"dist_cm={dist_txt} bbox_h={bbox_txt} "
+                        f"dist_cm={dist_txt} bbox_a={bbox_txt} "
                         f"reached={error.reached} too_close={error.too_close}")
         target_color = (0, 255, 0) if error.reached else \
             ((0, 140, 255) if error.too_close else (0, 255, 255))
@@ -409,21 +409,19 @@ def run_live_demo():
           f"ctrl={controller_name} — m=toggle drive, g=toggle arm, q=quit")
 
     show = True
-    tick = 0
     try:
         while True:
             result = detector.detect()
-            
-            tick += 1
-            print(f"----- tick {tick} -----")
-            
             error = compute_target_error(result)
 
             if use_predictive:
                 cmd, controller_state = compute_predictive_command(error, kin, controller_state)
             else:
-                cmd = compute_drive_command(error, kin)
+                cmd = compute_reactive_command(error, kin)
+                
+            bbox_width_px = result.best.width if result.best is not None else None
             bbox_height_px = result.best.height if result.best is not None else None
+            bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
             if driving:
                 actuator.apply(cmd) if cmd is not None else actuator.stop()
@@ -439,7 +437,7 @@ def run_live_demo():
                         cv2.putText(frame, "[waiting for first frame...]", (20, 360),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
                     _draw_status_overlay(frame, error, cmd, driving, armed,
-                                        bbox_height_px=bbox_height_px,
+                                        bbox_area_px=bbox_area_px,
                                         controller_name=controller_name)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
@@ -459,9 +457,9 @@ def run_live_demo():
 
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
                   f"dist_cm={error.distance_cm} "
-                  f"bbox_height_px={bbox_height_px} "
-                  f"bbox_width_px={result.best.width if result.best is not None else None} "
-                  f"bbox_area_px={result.best.width * result.best.height if result.best is not None else None} "
+                  f"bbox_width_px={bbox_width_px if result.best is not None else None} "
+                  f"bbox_height_px={bbox_height_px if result.best is not None else None} "
+                  f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
                   f"reached={error.reached} too_close={error.too_close} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")

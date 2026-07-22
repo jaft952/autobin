@@ -26,12 +26,12 @@ from dataclasses import dataclass
 from typing import List
 
 from src.visual_servoing.distance_error import TargetError
-from src.visual_servoing.approach_drive import MAX_SPEED, MAX_STEER_ANGLE_DEG
-from src.visual_servoing.prediction_model import (
+from visual_servoing.reactive_controller import MAX_SPEED, MAX_STEER_ANGLE_DEG
+from visual_servoing.predictive.prediction_model import (
     ActionStep, RobotState, TargetPoint, CONTROL_DT_S,
     estimate_initial_state, step as physics_step, predicted_error,
 )
-from src.visual_servoing.cost_function import evaluate
+from visual_servoing.predictive.cost_function import evaluate
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
 HORIZON_STEPS = 5   # TODO tune: ~1s of lookahead at CONTROL_DT_S=0.2s
@@ -72,7 +72,7 @@ class _Candidate:
 
 
 def action_to_command(action: ActionStep, kin: DifferentialKinematics) -> WheelCommand:
-    """Hardware-verified mapping copied from approach_drive.compute_drive_command:
+    """Hardware-verified mapping copied from approach_drive.compute_reactive_command:
     +ve steer (correcting toward a can right of center) -> arc_forward_LEFT,
     -ve -> arc_forward_RIGHT. Do not re-derive this from geometry -- it was
     flipped from the naive reading once already on real hardware."""

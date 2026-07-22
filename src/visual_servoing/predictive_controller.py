@@ -1,7 +1,7 @@
 """
 src/visual_servoing/predictive_controller.py
 
-Predictive (receding-horizon) replacement for approach_drive.compute_drive_command.
+Predictive (receding-horizon) replacement for approach_drive.compute_reactive_command.
 Every call: run trajectory_planner.plan() to search HORIZON_STEPS ahead, then
 execute ONLY the first action of the best sequence and throw the rest of the
 plan away -- the next call re-plans from scratch against that frame's fresh
@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 from src.visual_servoing.distance_error import TargetError
-from src.visual_servoing.approach_drive import BACKUP_SPEED
-from src.visual_servoing.prediction_model import ActionStep
-from src.visual_servoing.trajectory_planner import plan, action_to_command
+from visual_servoing.reactive_controller import BACKUP_SPEED
+from visual_servoing.predictive.prediction_model import ActionStep
+from visual_servoing.predictive.trajectory_planner import plan, action_to_command
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
 
@@ -38,7 +38,7 @@ class ControllerState:
 def compute_predictive_command(
     error: TargetError, kin: DifferentialKinematics, state: ControllerState,
 ) -> Tuple[Optional[WheelCommand], ControllerState]:
-    """Drop-in predictive counterpart to approach_drive.compute_drive_command,
+    """Drop-in predictive counterpart to approach_drive.compute_reactive_command,
     with one API difference: it needs the CALLER's previous ControllerState
     back each cycle (a bare TargetError isn't enough once oscillation is part
     of the cost). Callers hold one ControllerState for the lifetime of the

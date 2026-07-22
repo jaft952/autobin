@@ -39,8 +39,8 @@ from __future__ import annotations
 from typing import List
 
 from src.visual_servoing.distance_error import STOP_DISTANCE_CM, CENTER_TOLERANCE
-from src.visual_servoing.approach_drive import MAX_STEER_ANGLE_DEG, MAX_SPEED
-from src.visual_servoing.prediction_model import ActionStep
+from visual_servoing.reactive_controller import MAX_STEER_ANGLE_DEG, MAX_SPEED
+from visual_servoing.predictive.prediction_model import ActionStep
 
 # TODO tune. All O(1): each is "how many times as important as a
 # full-scale swing in that one quantity", now that every term is normalized.

@@ -73,9 +73,6 @@ def compute_target_error(detection: DetectionResult,
 
     x, _y = base
     lateral_error = x - 0.5
-    
-    print("x: ", x)
-    print("lateral_error: ", lateral_error)
 
     bbox_area_px = detection.best.width * detection.best.height # type: ignore
     bbox_height_px = detection.best.height # type: ignore

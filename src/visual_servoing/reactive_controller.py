@@ -18,7 +18,7 @@ MAX_STEER_ANGLE_DEG = 20.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/beyond which speed is MAX_SPEED
 
 
-def compute_drive_command(error: TargetError,
+def compute_reactive_command(error: TargetError,
                            kin: DifferentialKinematics) -> Optional[WheelCommand]:
     """
     Speed is the whole mechanism — no separate pulse/cruise mode. Between
