@@ -21,7 +21,7 @@ from src.hardware.sensors.ultrasonic_sensor import (
     UltrasonicPins,
 )
 
-EMERGENCY_STOP_CM = 15.0
+EMERGENCY_STOP_CM = 30.0
 GRAB_CONFIRM_CM = 25.0
 
 
@@ -75,9 +75,12 @@ class UltrasonicSafety:
     def can_grab(self) -> bool:
         """
         Convenience method.
+
+        Grabbing is only allowed when the sensor is within the grab-confirm
+        range and no emergency stop condition is active.
         """
         s = self.update()
-        return s.grab_confirmed
+        return s.grab_confirmed and not s.emergency_stop
 
     def close(self):
         self.sensor.close()

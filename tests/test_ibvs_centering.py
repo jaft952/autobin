@@ -434,7 +434,7 @@ def run_live_demo():
                 else:
                     actuator.apply(cmd) if cmd is not None else actuator.stop()
 
-            if armed and error.reached:
+            if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
 
             if show:
