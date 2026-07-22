@@ -46,7 +46,7 @@ CENTER_TOLERANCE = 0.06 # normalized lateral error considered "centered"
 # right at it. If they collide, "reached" and "too_close" both being true
 # lets too_close win (see reactive_controller.py), which would mean backing away
 # instead of ever reporting reached.
-CLOSE_BBOX_FRACTION = 0.5 # TODO tune: fraction of frame_height
+CLOSE_BBOX_FRACTION = 0.75 # TODO tune: fraction of frame_height
 
 
 @dataclass
