@@ -39,10 +39,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))   # for test_arc_gra
 from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
-from src.visual_servoing.distance_error import compute_target_error
+from src.visual_servoing.distance_error import compute_target_error, TargetError
 from src.visual_servoing.reactive_controller import (
-    compute_reactive_command, is_final_approach,
-    MAX_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    compute_reactive_command, is_final_approach, speed_tier,
+    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
 )
 # predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety
@@ -191,21 +191,51 @@ def test_reactive_command_when_can_is_right_of_center():
 
 def test_reactive_command_speed_tiers_are_hardcoded():
     """Same lateral offset, three distances spanning the three breakpoints
-    -> speed is looked up from CRUISE_DISTANCE_CM / FAR_DISTANCE_CM, not
-    computed from a continuous formula: cruise (>=90cm) is brisker than
-    approach (~70cm), which lands on the SAME hardcoded value as the
-    step-and-look nudge (~27cm) since both are tuned to APPROACH_SPEED ==
-    STEP_SPEED today -- a floor/step lookup, not a ramp."""
-    cruise = compute_reactive_command(
-        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40)), _kin())      # ~142cm
-    approach = compute_reactive_command(
-        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=164)), _kin())     # ~70cm
-    step = compute_reactive_command(
-        compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000)), _kin())  # ~27cm
+    -> each picks a distinct hardcoded tier (per speed_tier()'s label) with
+    the outer wheel's speed matching that tier's constant, confirming a
+    lookup against CRUISE_DISTANCE_CM / FAR_DISTANCE_CM rather than a
+    continuous formula. Tolerant of the tiers currently being hand-tuned to
+    the same numeric value -- the point is which constant got looked up,
+    not that the values must differ."""
+    cruise_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40))        # ~142cm
+    approach_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=164))      # ~70cm
+    step_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000))  # ~27cm
+
+    assert speed_tier(cruise_error) == "cruise", cruise_error
+    assert speed_tier(approach_error) == "approach", approach_error
+    assert speed_tier(step_error) == "step", step_error
+
+    cruise = compute_reactive_command(cruise_error, _kin())
+    approach = compute_reactive_command(approach_error, _kin())
+    step = compute_reactive_command(step_error, _kin())
     assert cruise is not None and approach is not None and step is not None
-    assert cruise.left_speed > approach.left_speed > 0, (cruise, approach)
-    assert abs(approach.left_speed - step.left_speed) < 1e-6, (approach, step)
-    print("PASS speed is a hardcoded tier lookup, not a continuous ramp")
+    assert abs(cruise.right_speed - MAX_SPEED) < 0.2 * MAX_SPEED, cruise
+    assert abs(approach.right_speed - APPROACH_SPEED) < 0.2 * APPROACH_SPEED, approach
+    assert abs(step.right_speed - STEP_SPEED) < 0.2 * STEP_SPEED, step
+    print("PASS speed is a hardcoded tier lookup keyed by distance breakpoints, not a continuous ramp")
+
+
+def test_speed_tier_labels_cover_every_branch():
+    """speed_tier() returns the exact branch label compute_reactive_command
+    would take for the same error -- the log/overlay's single source of
+    truth for which tier is active. distance_cm=None ('fallback') is
+    awkward to hit through compute_target_error, so that one TargetError is
+    built directly instead of through a synthetic detection."""
+    assert speed_tier(compute_target_error(DetectionResult())) == "none"
+    assert speed_tier(compute_target_error(
+        _make_detection(norm_x=0.3, bbox_height_px=360))) == "backup"     # too_close
+    assert speed_tier(compute_target_error(
+        _make_detection(norm_x=0.5, bbox_height_px=1662, frame_height=5000))) == "reached"
+    assert speed_tier(compute_target_error(
+        _make_detection(norm_x=0.3, bbox_height_px=40))) == "cruise"      # ~142cm
+    assert speed_tier(compute_target_error(
+        _make_detection(norm_x=0.3, bbox_height_px=164))) == "approach"   # ~70cm
+    assert speed_tier(compute_target_error(
+        _make_detection(norm_x=0.5, bbox_height_px=1064, frame_height=5000))) == "step"   # ~27cm
+    fallback_error = TargetError(found=True, lateral_error=0.0, distance_cm=None,
+                                  reached=False, too_close=False)
+    assert speed_tier(fallback_error) == "fallback"
+    print("PASS speed_tier labels match every compute_reactive_command branch")
 
 
 # ── reactive_controller.is_final_approach ────────────────────────────────
@@ -273,6 +303,7 @@ ALL_TESTS = [
     test_reactive_command_when_can_is_left_of_center,
     test_reactive_command_when_can_is_right_of_center,
     test_reactive_command_speed_tiers_are_hardcoded,
+    test_speed_tier_labels_cover_every_branch,
     test_final_approach_when_close_but_not_reached,
     test_cruise_when_far,
     test_not_final_approach_once_reached,
@@ -313,12 +344,39 @@ def _pose_and_angle(box):
     return "lying", o.angle
 
 
+# Display-only: color per speed_tier() label, used by both the overlay and
+# (as a quick reference) anyone reading this file. Keep the KEYS in sync
+# with reactive_controller.speed_tier()'s possible return values -- an
+# unrecognized tier just falls back to TIER_COLOR's default below rather
+# than raising, since this is a monitor, not a safety path.
+TIER_COLOR = {
+    "cruise": (0, 255, 0),      # green   -- brisk, MAX_SPEED
+    "approach": (0, 220, 170),  # teal    -- APPROACH_SPEED
+    "step": (0, 200, 255),      # orange  -- STEP_SPEED, step-and-look nudge
+    "backup": (0, 140, 255),    # red-orange -- BACKUP_SPEED, too_close
+    "reached": (0, 255, 0),     # green   -- arm handoff point
+    "fallback": (0, 165, 255),  # amber   -- FALLBACK_SPEED, distance unknown
+    "none": (0, 0, 255),        # red     -- nothing found
+}
+
+
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
-                         final_approach: bool = False) -> None:
+                         tier: str = "none", recovered_nudge: bool = False) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
+
+    tier: reactive_controller.speed_tier(error)'s label for this frame --
+    the single source of truth for which hardcoded speed constant is
+    active, so this overlay can't drift out of sync with
+    compute_reactive_command's actual thresholds as they get re-tuned.
+
+    recovered_nudge: True for the one frame where the live loop fired the
+    "can was pushed closer while reached" backward nudge (see
+    run_live_demo) -- cmd is still None that frame (compute_reactive_command
+    doesn't know about the nudge), so without this flag the overlay would
+    misleadingly show a plain STOPPED.
 
     bbox_area_px is shown raw (not just the derived distance_cm) because
     CALIBRATION_CONSTANT_PX_CM starts as an unmeasured placeholder — this is
@@ -346,11 +404,20 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.55, target_color, 2)
 
     if cmd is None:
-        reason = "reached" if error.reached else ("no target" if not error.found else "stopped")
-        drive_line, drive_color = f"DRIVE: STOPPED ({reason})", (170, 170, 170)
+        if recovered_nudge:
+            reason = "reached, backed off (can moved closer)"
+        elif tier == "reached":
+            reason = "reached"
+        elif tier == "none":
+            reason = "no target"
+        else:
+            reason = "stopped"
+        drive_line = f"DRIVE: STOPPED ({reason})"
+        drive_color = (0, 140, 255) if recovered_nudge else (170, 170, 170)
     elif cmd.left_speed < 0 and cmd.right_speed < 0:
-        drive_line = f"DRIVE: BACKING UP (too close) L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}"
-        drive_color = (0, 140, 255)
+        drive_line = (f"DRIVE [BACKUP]: BACKING UP (too_close) "
+                      f"L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}")
+        drive_color = TIER_COLOR["backup"]
     else:
         # Derived from lateral_error's sign (which way the CAN is, and so
         # which way we're correcting), not from comparing wheel speeds —
@@ -363,10 +430,9 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
             steer = "LEFT"
         else:
             steer = "STRAIGHT"
-        mode = "STEP" if final_approach else "CRUISE"
-        drive_line = (f"DRIVE [{mode}]: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} "
+        drive_line = (f"DRIVE [{tier.upper()}]: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} "
                       f"(steer={steer})")
-        drive_color = (0, 200, 255) if final_approach else (0, 255, 0)
+        drive_color = TIER_COLOR.get(tier, (0, 255, 0))
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
     mode_line = (f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   "
@@ -432,18 +498,24 @@ def run_live_demo():
     APPROACH_SPEED / STEP_SPEED — see that module) rather than a continuous
     formula — same command either way, but HOW it's applied switches with
     distance: far out it's driven every frame like any other command
-    (cruise), while inside FAR_DISTANCE_CM (is_final_approach()) it's
-    applied as a short STEP_DURATION_S nudge followed by a LOOK_PAUSE_S
-    stop, so the camera gets a fresh, unblurred frame to re-aim from before
-    the next nudge, walking the robot into the grab position instead of
-    risking an overshoot on a stale frame. The overlay's DRIVE line shows
-    [CRUISE] or [STEP].
+    (cruise/approach), while inside FAR_DISTANCE_CM (speed_tier() == "step")
+    it's applied as a short STEP_DURATION_S nudge followed by a
+    LOOK_PAUSE_S stop, so the camera gets a fresh, unblurred frame to re-aim
+    from before the next nudge, walking the robot into the grab position
+    instead of risking an overshoot on a stale frame. The overlay's DRIVE
+    line and the console log both show reactive_controller.speed_tier()'s
+    label (CRUISE / APPROACH / STEP / BACKUP / REACHED / FALLBACK / NONE)
+    directly, so what's on screen can't drift out of sync with which
+    constant is actually driving the wheels.
 
     If the can ends up too_close (bbox fills the frame), the command is a
     gentle BACKWARD nudge (BACKUP_SPEED) instead of a stop, so a bad
     distance calibration can't wedge the robot against the can; once
     backing off clears too_close, the tiers above re-approach and re-center
-    on their own.
+    on their own. Separately, if the can gets pushed closer while already
+    at the "reached" handoff point, a short one-off backward nudge fires
+    too (see last_distance_cm below) — the overlay flags that frame
+    specifically instead of just showing a plain STOPPED.
 
     Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
     Ctrl+C also stops.
@@ -499,14 +571,15 @@ def run_live_demo():
             result = detector.detect()
             ultra = ultrasonic.update()
             error = compute_target_error(result)
-            
+
             cmd = compute_reactive_command(error, kin)
-            final_approach = is_final_approach(error)
+            tier = speed_tier(error)   # single source of truth for driving AND display below
 
             bbox_width_px = result.best.width if result.best is not None else None
             bbox_height_px = result.best.height if result.best is not None else None
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
+            recovered_nudge = False
             if driving:
                 if ultra.emergency_stop:
                     actuator.stop()
@@ -521,12 +594,14 @@ def run_live_demo():
                             actuator.apply(kin.backward(speed=BACKUP_SPEED))
                             time.sleep(0.15)
                             actuator.stop()
-                            # treat this as a short recovery; continue loop
-                
+                            recovered_nudge = True
+                            print(f"[live] can moved closer (was {last_distance_cm:.1f}cm, "
+                                  f"now {error.distance_cm:.1f}cm) -- backed off")
+
                 elif error.too_close:
                     actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
-                elif final_approach:
+                elif tier == "step":
                     # Close range: a continuous command is already stale by
                     # the time it reaches the wheels, and stale matters more
                     # here. Nudge for one short step, then sit still long
@@ -542,7 +617,7 @@ def run_live_demo():
                         actuator.stop()
 
                 else:
-                    actuator.apply(cmd) # cruise: continuous, full-rate driving
+                    actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
 
             if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
@@ -557,7 +632,7 @@ def run_live_demo():
                     _draw_status_overlay(frame, error, cmd, driving, armed,
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
-                                        final_approach=final_approach)
+                                        tier=tier, recovered_nudge=recovered_nudge)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -575,15 +650,21 @@ def run_live_demo():
                     show = False
 
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
-                  f"dist_cm={error.distance_cm} "
+                  f"dist_cm={error.distance_cm} last_dist_cm={last_distance_cm} "
                   f"bbox_width_px={bbox_width_px if result.best is not None else None} "
                   f"bbox_height_px={bbox_height_px if result.best is not None else None} "
                   f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
                   f"ultra_dist={ultra.distance_cm} "
                   f"reached={error.reached} too_close={error.too_close} "
-                  f"phase={'STEP' if final_approach else 'CRUISE'} "
+                  f"tier={tier} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")
+
+            # Update AFTER this frame's decisions/log use the previous value
+            # -- see the "can moved closer" recovery above, which compares
+            # against what was last seen, not the current frame.
+            if error.distance_cm is not None:
+                last_distance_cm = error.distance_cm
     except KeyboardInterrupt:
         pass
     finally:

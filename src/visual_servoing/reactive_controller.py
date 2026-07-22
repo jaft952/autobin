@@ -107,6 +107,32 @@ def compute_reactive_command(error: TargetError,
         return kin.arc_forward_right(angle_deg=steer_angle, speed=dynamic_speed)
 
 
+def speed_tier(error: TargetError) -> str:
+    """Which branch of compute_reactive_command's logic this error would hit,
+    as a short label -- for logging/display only (e.g. the live loop's
+    console/overlay monitor). Mirrors that function's branching exactly, so
+    the readout can't silently drift out of sync with the actual thresholds
+    as they get re-tuned; keep the two in sync if the branches ever change.
+
+    One of: "none" (not found), "reached", "backup" (too_close), "fallback"
+    (distance_cm unknown), "cruise", "approach", "step" (the
+    is_final_approach() zone).
+    """
+    if not error.found:
+        return "none"
+    if error.too_close:
+        return "backup"
+    if error.reached:
+        return "reached"
+    if error.distance_cm is None:
+        return "fallback"
+    if error.distance_cm >= CRUISE_DISTANCE_CM:
+        return "cruise"
+    if error.distance_cm > FAR_DISTANCE_CM:
+        return "approach"
+    return "step"
+
+
 def is_final_approach(error: TargetError) -> bool:
     """True once close enough (inside FAR_DISTANCE_CM) that the caller should
     switch from driving compute_reactive_command's output continuously to
