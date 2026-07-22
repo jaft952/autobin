@@ -50,7 +50,6 @@ Tuning keys:
 import os
 import sys
 import time
-import cv2
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -350,7 +349,8 @@ def main():
 
 
 if __name__ == "__main__":
-    if "--camera" in sys.argv:
+    if "--cam" in sys.argv:
+        import cv2
         from src.hardware.sensors.camera_sensor import CameraSensor
         cam = CameraSensor()
         try:
