@@ -37,7 +37,7 @@ FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estim
 # it back up a bit).
 BACKUP_SPEED = 20.0          # TODO tune: gentle reverse to recover from an overshoot
 
-MAX_STEER_ANGLE_DEG = 50.0   # keep below 90 so it never fully spins in place
+MAX_STEER_ANGLE_DEG = 80.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
 
 # Below FAR_DISTANCE_CM, continuous driving risks overshoot: by the time a
