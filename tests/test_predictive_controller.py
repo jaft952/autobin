@@ -22,12 +22,12 @@ from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 from src.visual_servoing.distance_error import compute_target_error, TargetError, STOP_DISTANCE_CM
-from src.visual_servoing.prediction_model import (
+from src.visual_servoing.predictive.prediction_model import (
     ActionStep, RobotState, TargetPoint,
     bearing_from_lateral_error, lateral_error_from_bearing, step as physics_step,
 )
-from src.visual_servoing.cost_function import evaluate, MIN_SAFE_DISTANCE_CM
-from src.visual_servoing.trajectory_planner import plan, action_to_command
+from src.visual_servoing.predictive.cost_function import evaluate, MIN_SAFE_DISTANCE_CM
+from src.visual_servoing.predictive.trajectory_planner import plan, action_to_command
 from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
 
 

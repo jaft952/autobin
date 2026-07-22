@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 from src.visual_servoing.distance_error import TargetError
-from visual_servoing.reactive_controller import BACKUP_SPEED
-from visual_servoing.predictive.prediction_model import ActionStep
-from visual_servoing.predictive.trajectory_planner import plan, action_to_command
+from .reactive_controller import BACKUP_SPEED
+from .predictive.prediction_model import ActionStep
+from .predictive.trajectory_planner import plan, action_to_command
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
 

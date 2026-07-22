@@ -26,12 +26,12 @@ from dataclasses import dataclass
 from typing import List
 
 from src.visual_servoing.distance_error import TargetError
-from visual_servoing.reactive_controller import MAX_SPEED, MAX_STEER_ANGLE_DEG
-from visual_servoing.predictive.prediction_model import (
+from ..reactive_controller import MAX_SPEED, MAX_STEER_ANGLE_DEG
+from .prediction_model import (
     ActionStep, RobotState, TargetPoint, CONTROL_DT_S,
     estimate_initial_state, step as physics_step, predicted_error,
 )
-from visual_servoing.predictive.cost_function import evaluate
+from .cost_function import evaluate
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
 HORIZON_STEPS = 5   # TODO tune: ~1s of lookahead at CONTROL_DT_S=0.2s
