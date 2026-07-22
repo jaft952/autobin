@@ -487,7 +487,6 @@ def run_live_demo():
             ultra = ultrasonic.update()
             error = compute_target_error(result)
             
-
             cmd = compute_reactive_command(error, kin)
             final_approach = is_final_approach(error)
 
