@@ -3,6 +3,13 @@ src/visual_servoing/reactive_controller.py
 
 Target error -> WheelCommand, via DifferentialKinematics. Pure function: no
 hardware access here (Rule: hardware access only through src/hardware).
+
+Also exposes is_final_approach(), a pure predicate the live loop uses to
+decide WHEN to switch from driving compute_reactive_command's output
+continuously (cruising) to applying it in short step-then-look bursts
+instead (inside FAR_DISTANCE_CM) -- see that function's docstring. The
+timing itself (STEP_DURATION_S / LOOK_PAUSE_S) is the caller's job, same as
+the rest of hardware/timing.
 """
 from __future__ import annotations
 
@@ -16,6 +23,16 @@ FALLBACK_SPEED = 25.0        # TODO tune: used only when distance can't be estim
 BACKUP_SPEED = 25.0          # TODO tune: gentle reverse to recover from an overshoot
 MAX_STEER_ANGLE_DEG = 50.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/beyond which speed is MAX_SPEED
+
+# Below FAR_DISTANCE_CM, continuous driving risks overshoot: by the time a
+# command reaches the wheels the frame it was computed from is already
+# stale, and this close, a stale frame's worth of travel is enough to blow
+# past the grab point or drift off-center. is_final_approach() flags this
+# zone; the caller (the live loop) is responsible for actually stepping
+# instead of driving continuously -- see STEP_DURATION_S / LOOK_PAUSE_S
+# below, used there, not here (this module stays hardware/time-free).
+STEP_DURATION_S = 0.25       # TODO tune: length of one forward/steer nudge
+LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred look
 
 
 def compute_reactive_command(error: TargetError,
@@ -69,13 +86,28 @@ def compute_reactive_command(error: TargetError,
         frac = max(0.0, min(1.0, frac))
         dynamic_speed = MAX_SPEED * frac # -> 0 right at STOP_DISTANCE_CM
 
-    # lateral_error > 0 means the can is right of frame center -> steer right
-    # toward it. Hardware-verified 2026-07-22 on this robot: that maps to
-    # arc_forward_LEFT, not arc_forward_right — swapped from the naive
-    # reading of layer2_approach.py's sign convention (that module never
-    # actually calls these two kin methods; it builds its own WheelCommand
-    # via MotionExecutor's v_x/v_theta mix, which is a different code path).
     if error.lateral_error > 0:
         return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
     else:
         return kin.arc_forward_right(angle_deg=steer_angle, speed=dynamic_speed)
+
+
+def is_final_approach(error: TargetError) -> bool:
+    """True once close enough (inside FAR_DISTANCE_CM) that the caller should
+    switch from driving compute_reactive_command's output continuously to
+    short step-then-look bursts instead: apply the command for
+    STEP_DURATION_S, stop, wait LOOK_PAUSE_S for a fresh unblurred frame,
+    then re-evaluate -- rather than driving on a frame that's already stale
+    by the time it reaches the wheels, which this close is enough to
+    overshoot the grab point or drift off-center. The command itself doesn't
+    change (same speed-ramped/steered WheelCommand either way); only how
+    often the caller applies it does, so the timing lives in the live loop,
+    not here.
+
+    False once already reached (nothing left to approach), too_close
+    (backing off takes priority over fine positioning), or still far enough
+    out that continuous cruising is fine and faster.
+    """
+    return (error.found and not error.reached and not error.too_close
+            and error.distance_cm is not None
+            and error.distance_cm <= FAR_DISTANCE_CM)

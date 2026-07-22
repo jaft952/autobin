@@ -27,10 +27,10 @@ CAN_HEIGHT_CM = 14.5 # TODO verify against the actual target tin can
 # set correctly, distance_cm is meaningless: run
 # `python tests/test_ibvs_centering.py --live` and read the bbox_h_px value
 # printed each frame with the can at a known, tape-measured distance.
-CALIBRATION_CONSTANT_PX_CM = 48258720  # TODO calibrate on hardware
+CALIBRATION_CONSTANT_PX_CM = 48258720 # TODO calibrate on hardware
 
-STOP_DISTANCE_CM = 25.0   # TODO tune: distance at which the arm can grasp
-CENTER_TOLERANCE = 0.06   # normalized lateral error considered "centered"
+STOP_DISTANCE_CM = 25.0 # TODO tune: distance at which the arm can grasp
+CENTER_TOLERANCE = 0.06 # normalized lateral error considered "centered"
 
 # Failsafe independent of CALIBRATION_CONSTANT_PX_CM: a bbox this tall
 # relative to the frame means the can is filling most of the vertical view,
@@ -46,7 +46,7 @@ CENTER_TOLERANCE = 0.06   # normalized lateral error considered "centered"
 # right at it. If they collide, "reached" and "too_close" both being true
 # lets too_close win (see reactive_controller.py), which would mean backing away
 # instead of ever reporting reached.
-CLOSE_BBOX_FRACTION = 0.75  # TODO tune: fraction of frame_height
+CLOSE_BBOX_FRACTION = 0.5 # TODO tune: fraction of frame_height
 
 
 @dataclass

@@ -40,7 +40,10 @@ from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
-from src.visual_servoing.reactive_controller import compute_reactive_command, MAX_SPEED, BACKUP_SPEED
+from src.visual_servoing.reactive_controller import (
+    compute_reactive_command, is_final_approach,
+    MAX_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+)
 from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety
 
@@ -197,6 +200,57 @@ def test_speed_ramps_down_as_distance_shrinks():
     print("PASS speed ramps down continuously as distance shrinks (no pulsing)")
 
 
+# ── reactive_controller.is_final_approach ────────────────────────────────
+#
+# Fixtures below use an oversized frame_height (5000px) purely to keep
+# bbox_height_px/frame_height under CLOSE_BBOX_FRACTION while still hitting
+# the target distance_cm band under today's (uncalibrated, see
+# distance_error.py) CALIBRATION_CONSTANT_PX_CM placeholder -- these pixel
+# numbers aren't meant to look like a real camera frame.
+
+def test_final_approach_when_close_but_not_reached():
+    """Inside FAR_DISTANCE_CM but outside STOP_DISTANCE_CM -> switch to
+    step-then-look (centered so the distance zone is isolated from
+    centering as the reason)."""
+    result = _make_detection(norm_x=0.5, bbox_height_px=1064, frame_height=5000)
+    error = compute_target_error(result)
+    assert error.found and not error.reached and not error.too_close
+    assert is_final_approach(error), error
+    print("PASS final approach: close but not yet at the stop distance")
+
+
+def test_cruise_when_far():
+    """Far away -> still cruising, not yet stepping."""
+    result = _make_detection(norm_x=0.3, bbox_height_px=40)
+    error = compute_target_error(result)
+    assert not is_final_approach(error), error
+    print("PASS cruise (not final approach) when far")
+
+
+def test_not_final_approach_once_reached():
+    """Already reached -> nothing left to step toward."""
+    result = _make_detection(norm_x=0.5, bbox_height_px=1662, frame_height=5000)
+    error = compute_target_error(result)
+    assert error.reached
+    assert not is_final_approach(error), error
+    print("PASS not final-approach once already reached")
+
+
+def test_not_final_approach_when_not_found():
+    error = compute_target_error(DetectionResult())
+    assert not is_final_approach(error)
+    print("PASS not final-approach when nothing is found")
+
+
+def test_not_final_approach_when_too_close():
+    """too_close takes priority over step-and-look -- backing away wins."""
+    result = _make_detection(norm_x=0.3, bbox_height_px=360)
+    error = compute_target_error(result)
+    assert error.too_close
+    assert not is_final_approach(error), error
+    print("PASS not final-approach when too_close (backing away takes priority)")
+
+
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -211,6 +265,11 @@ ALL_TESTS = [
     test_reactive_command_when_can_is_left_of_center,
     test_reactive_command_when_can_is_right_of_center,
     test_speed_ramps_down_as_distance_shrinks,
+    test_final_approach_when_close_but_not_reached,
+    test_cruise_when_far,
+    test_not_final_approach_once_reached,
+    test_not_final_approach_when_not_found,
+    test_not_final_approach_when_too_close,
 ]
 
 
@@ -247,7 +306,8 @@ def _pose_and_angle(box):
 
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
-                         bbox_area_px=None, controller_name: str = "reactive") -> None:
+                         bbox_area_px=None, controller_name: str = "reactive",
+                         final_approach: bool = False) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -295,8 +355,10 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
             steer = "LEFT"
         else:
             steer = "STRAIGHT"
-        drive_line = f"DRIVE: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} (steer={steer})"
-        drive_color = (0, 255, 0)
+        mode = "STEP" if final_approach else "CRUISE"
+        drive_line = (f"DRIVE [{mode}]: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} "
+                      f"(steer={steer})")
+        drive_color = (0, 200, 255) if final_approach else (0, 255, 0)
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
     mode_line = (f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   "
@@ -357,10 +419,18 @@ def run_live_demo():
         python tests/test_ibvs_centering.py --live --drive      # also drives the wheels
         python tests/test_ibvs_centering.py --live --drive --arm  # + grabs when reached
 
-    No separate pulse/cruise mode: reactive_controller.py ramps the commanded
-    speed continuously from MAX_SPEED down to 0 as the can's estimated
-    distance closes in on STOP_DISTANCE_CM, so it's just applied every frame
-    like any other command — fast far away, a crawl right at the grab spot.
+    reactive_controller.py ramps the commanded speed continuously from
+    MAX_SPEED down to 0 as the can's estimated distance closes in on
+    STOP_DISTANCE_CM — same command either way, but HOW it's applied
+    switches with distance (reactive mode only; --predictive drives its own
+    planned command continuously throughout): far out it's driven every
+    frame like any other command (cruise), while inside FAR_DISTANCE_CM
+    (is_final_approach()) it's applied as a short STEP_DURATION_S nudge
+    followed by a LOOK_PAUSE_S stop, so the camera gets a fresh, unblurred
+    frame to re-aim from before the next nudge, walking the robot into the
+    grab position instead of risking an overshoot on a stale frame. The
+    overlay's DRIVE line shows [CRUISE] or [STEP].
+
     If the can ends up too_close (bbox fills the frame), the command is an
     active BACKWARD nudge instead of a stop, so a bad distance calibration
     can't wedge the robot against the can; once backing off clears
@@ -369,6 +439,7 @@ def run_live_demo():
     Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
     Ctrl+C also stops.
     """
+    import time
     import cv2
     import numpy as np
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -384,6 +455,7 @@ def run_live_demo():
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
     controller_state = ControllerState()  # only consulted when --predictive is set
+    step_state = {"next_step_at": 0.0}    # only consulted in reactive final-approach
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
                                      frame_width=1280, frame_height=720)
@@ -420,9 +492,11 @@ def run_live_demo():
 
             if use_predictive:
                 cmd, controller_state = compute_predictive_command(error, kin, controller_state)
+                final_approach = False   # predictive plans its own approach; no step-and-look here
             else:
                 cmd = compute_reactive_command(error, kin)
-                
+                final_approach = is_final_approach(error)
+
             bbox_width_px = result.best.width if result.best is not None else None
             bbox_height_px = result.best.height if result.best is not None else None
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
@@ -431,8 +505,26 @@ def run_live_demo():
                 if ultra.emergency_stop:
                     actuator.stop()
 
+                elif cmd is None:
+                    actuator.stop()
+
+                elif final_approach:
+                    # Close range: a continuous command is already stale by
+                    # the time it reaches the wheels, and stale matters more
+                    # here. Nudge for one short step, then sit still long
+                    # enough for the next frame to be a fresh, unblurred
+                    # look before deciding the next step.
+                    now = time.monotonic()
+                    if now >= step_state["next_step_at"]:
+                        actuator.apply(cmd)
+                        time.sleep(STEP_DURATION_S)
+                        actuator.stop()
+                        step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
+                    else:
+                        actuator.stop()
+
                 else:
-                    actuator.apply(cmd) if cmd is not None else actuator.stop()
+                    actuator.apply(cmd)   # cruise: continuous, full-rate driving
 
             if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
@@ -446,7 +538,8 @@ def run_live_demo():
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
                     _draw_status_overlay(frame, error, cmd, driving, armed,
                                         bbox_area_px=bbox_area_px,
-                                        controller_name=controller_name)
+                                        controller_name=controller_name,
+                                        final_approach=final_approach)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -470,6 +563,7 @@ def run_live_demo():
                   f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
                   f"ultra_dist={ultra.distance_cm} "
                   f"reached={error.reached} too_close={error.too_close} "
+                  f"phase={'STEP' if final_approach else 'CRUISE'} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")
     except KeyboardInterrupt:
