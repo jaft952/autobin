@@ -35,7 +35,7 @@ FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estim
 # guess pending another hardware pass -- watch for either "still backs up
 # too far" (lower further) or "doesn't clear too_close fast enough" (raise
 # it back up a bit).
-BACKUP_SPEED = 12.0          # TODO tune: gentle reverse to recover from an overshoot
+BACKUP_SPEED = 20.0          # TODO tune: gentle reverse to recover from an overshoot
 
 MAX_STEER_ANGLE_DEG = 50.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
@@ -82,6 +82,9 @@ def compute_reactive_command(error: TargetError,
     """
     if not error.found:
         return None
+
+    if error.too_close:
+        return kin.backward(speed=BACKUP_SPEED)
 
     if error.reached:
         return None

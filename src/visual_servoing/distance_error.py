@@ -47,6 +47,7 @@ CENTER_TOLERANCE = 0.06 # normalized lateral error considered "centered"
 # lets too_close win (see reactive_controller.py), which would mean backing away
 # instead of ever reporting reached.
 CLOSE_BBOX_FRACTION = 0.75 # TODO tune: fraction of frame_height
+TOO_CLOSE_DISTANCE_CM = 10.0  # additional pure-distance failsafe (cm)
 
 
 @dataclass
@@ -85,6 +86,15 @@ def compute_target_error(detection: DetectionResult,
 
     too_close = (detection.frame_height > 0
                  and bbox_height_px / detection.frame_height >= CLOSE_BBOX_FRACTION)
+
+    # Also consider the pure-distance estimate as a failsafe: if the
+    # monocular math (when available) predicts an extremely small range
+    # we should treat that as "too close" regardless of calibration-derived
+    # STOP_DISTANCE_CM. This helps in live runs when someone nudges the
+    # tin closer than the grasp point — back off rather than attempting
+    # another grab.
+    if distance_cm is not None:
+        too_close = too_close or (distance_cm <= TOO_CLOSE_DISTANCE_CM)
 
     if ultrasonic_cm is not None and distance_cm is not None:
         too_close = too_close or (ultrasonic_cm <= STOP_DISTANCE_CM)

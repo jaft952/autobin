@@ -463,6 +463,10 @@ def run_live_demo():
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
+    # Track the previous camera-based distance to detect someone pushing the
+    # tin closer while we're already at the "reached" handoff point; if the
+    # can moves noticeably closer, command a short backward nudge.
+    last_distance_cm = None
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
                                      frame_width=1280, frame_height=720)
@@ -509,7 +513,16 @@ def run_live_demo():
 
                 elif cmd is None:
                     actuator.stop()
-                    
+                    # If we were 'reached' (arm handoff) but the can has been
+                    # moved closer since the last frame, back off a bit even
+                    # though the controller would normally return None.
+                    if error.reached and error.distance_cm is not None and last_distance_cm is not None:
+                        if error.distance_cm + 1.0 < last_distance_cm:
+                            actuator.apply(kin.backward(speed=BACKUP_SPEED))
+                            time.sleep(0.15)
+                            actuator.stop()
+                            # treat this as a short recovery; continue loop
+                
                 elif error.too_close:
                     actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
