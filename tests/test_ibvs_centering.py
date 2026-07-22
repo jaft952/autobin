@@ -45,7 +45,7 @@ from src.visual_servoing.reactive_controller import (
     MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
 )
 # predictive approach removed — only reactive controller used
-from src.visual_servoing.ultrasonic_safety import UltrasonicSafety
+from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
@@ -493,6 +493,17 @@ def run_live_demo():
         python tests/test_ibvs_centering.py --live --drive      # also drives the wheels
         python tests/test_ibvs_centering.py --live --drive --arm  # + grabs when reached
 
+    The ultrasonic sensor is polled on its own background thread
+    (UltrasonicWatchdog, see ultrasonic_safety.py), not once per iteration
+    of this loop -- it's the top-priority safety check, and camera
+    inference plus the step-and-look time.sleep() below can each take
+    longer than a single ultrasonic poll, during which a same-thread check
+    would have gone blind. The watchdog calls actuator.stop() itself the
+    instant it detects emergency_stop; this loop still reads its latest
+    reading every iteration and checks emergency_stop first, before issuing
+    any new drive command, so it can't immediately re-drive over the
+    watchdog's stop.
+
     reactive_controller.py looks up the commanded speed from hardcoded
     distance breakpoints (CRUISE_DISTANCE_CM / FAR_DISTANCE_CM -> MAX_SPEED /
     APPROACH_SPEED / STEP_SPEED — see that module) rather than a continuous
@@ -534,6 +545,11 @@ def run_live_demo():
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
+    # Polls the sensor in its own thread instead of once per main-loop
+    # iteration, and calls actuator.stop() itself the instant it sees
+    # emergency_stop -- top priority, not delayed behind camera inference or
+    # a step-and-look time.sleep() below. See UltrasonicWatchdog's docstring.
+    ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=actuator.stop).start()
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
     # Track the previous camera-based distance to detect someone pushing the
     # tin closer while we're already at the "reached" handoff point; if the
@@ -569,7 +585,7 @@ def run_live_demo():
     try:
         while True:
             result = detector.detect()
-            ultra = ultrasonic.update()
+            ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
             error = compute_target_error(result)
 
             cmd = compute_reactive_command(error, kin)
@@ -668,6 +684,10 @@ def run_live_demo():
     except KeyboardInterrupt:
         pass
     finally:
+        # Join the watchdog thread BEFORE closing the sensor/actuator it
+        # touches -- otherwise a poll in flight could call actuator.stop()
+        # or GPIO-read the sensor after either has been torn down.
+        ultra_watchdog.stop()
         actuator.stop()
         actuator.close()
         detector.stop()
