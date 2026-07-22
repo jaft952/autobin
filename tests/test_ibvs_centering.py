@@ -1,7 +1,7 @@
 """
 tests/test_ibvs_centering.py
 
-Pure-logic tests for distance_error.py + approach_drive.py. NO hardware or
+Pure-logic tests for distance_error.py + reactive_controller.py. NO hardware or
 camera needed — builds synthetic DetectionResult/BoundingBox fixtures by
 hand, same spirit as tests/test_scan_logic.py:
 
@@ -19,7 +19,7 @@ For a live run on the robot (real camera, optionally real motors/arm) use:
 
 --drive, --arm and --predictive are ONLY read together with --live; they do
 nothing to the pure-logic test suite. Without --drive the wheels never move —
-distance_error and the active controller (approach_drive by default, or
+distance_error and the active controller (reactive_controller by default, or
 predictive_controller with --predictive) still run every frame and their
 output is shown on the video overlay and console, so you can check the
 planned steer/speed before ever letting it touch the motors. Keys while the
@@ -170,7 +170,7 @@ def test_reactive_command_when_can_is_left_of_center():
 
 def test_reactive_command_when_can_is_right_of_center():
     """Close + right of center -> steers toward arc_forward_left (left wheel
-    slower than right) — hardware-verified mapping, see approach_drive.py.
+    slower than right) — hardware-verified mapping, see reactive_controller.py.
     Close to STOP_DISTANCE_CM -> speed ramped down near zero, not a fixed
     floor (no more pulsing: slow continuous creep IS the final-approach
     behavior now)."""
@@ -285,9 +285,9 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     else:
         # Derived from lateral_error's sign (which way the CAN is, and so
         # which way we're correcting), not from comparing wheel speeds —
-        # that comparison depends on which kin method approach_drive.py
+        # that comparison depends on which kin method reactive_controller.py
         # happens to call for a given sign, which is hardware-specific and
-        # has already flipped once (see the note in approach_drive.py).
+        # has already flipped once (see the note in reactive_controller.py).
         if error.lateral_error > 0.02:
             steer = "RIGHT"
         elif error.lateral_error < -0.02:
@@ -348,7 +348,7 @@ def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -
 def run_live_demo():
     """Live camera view (segmentation + bbox + base-contact point, same as
     the perception module's own annotator) with the distance_error /
-    approach_drive readout burned onto the frame, so the planned IK output
+    reactive_controller readout burned onto the frame, so the planned IK output
     can be checked visually before it ever touches the motors.
 
     Run by hand on the Pi:
@@ -356,7 +356,7 @@ def run_live_demo():
         python tests/test_ibvs_centering.py --live --drive      # also drives the wheels
         python tests/test_ibvs_centering.py --live --drive --arm  # + grabs when reached
 
-    No separate pulse/cruise mode: approach_drive.py ramps the commanded
+    No separate pulse/cruise mode: reactive_controller.py ramps the commanded
     speed continuously from MAX_SPEED down to 0 as the can's estimated
     distance closes in on STOP_DISTANCE_CM, so it's just applied every frame
     like any other command — fast far away, a crawl right at the grab spot.

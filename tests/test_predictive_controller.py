@@ -86,7 +86,7 @@ def test_bearing_sign_matches_lateral_error_sign():
     docstring), not a claim about physical left/right, chosen so that
     arc_forward_left's own WheelCommand kinematics (positive omega) agree
     with the hardware-verified fact that arc_forward_left is the correct
-    real-world action for a positive lateral_error (see approach_drive.py)."""
+    real-world action for a positive lateral_error (see reactive_controller.py)."""
     assert bearing_from_lateral_error(0.3) > 0
     assert bearing_from_lateral_error(-0.3) < 0
     assert bearing_from_lateral_error(0.0) == 0.0
@@ -128,11 +128,11 @@ def test_step_turn_sign():
 # ── trajectory_planner: action_to_command hardware mapping ──────────────
 
 def test_action_to_command_matches_hardware_verified_mapping():
-    """Copied convention from approach_drive.py: a positive steer_deg (used
+    """Copied convention from reactive_controller.py: a positive steer_deg (used
     to correct a can right of center) must produce right_speed > left_speed
     (arc_forward_left), and negative steer_deg must produce
     left_speed > right_speed (arc_forward_right) -- matching
-    approach_drive.py's own test_drive_when_can_is_right_of_center /
+    reactive_controller.py's own test_drive_when_can_is_right_of_center /
     test_drive_when_can_is_left_of_center assertions exactly."""
     kin = _kin()
     cmd_pos = action_to_command(ActionStep(steer_deg=20.0, speed=30.0), kin)
@@ -140,7 +140,7 @@ def test_action_to_command_matches_hardware_verified_mapping():
 
     cmd_neg = action_to_command(ActionStep(steer_deg=-20.0, speed=30.0), kin)
     assert cmd_neg.right_speed < cmd_neg.left_speed, cmd_neg
-    print("PASS action_to_command steer sign matches approach_drive's hardware-verified mapping")
+    print("PASS action_to_command steer sign matches reactive_controller's hardware-verified mapping")
 
 
 # ── trajectory_planner: end-to-end planning ──────────────────────────────
@@ -201,7 +201,7 @@ def test_cost_penalizes_overshoot():
     print("PASS predicted distance inside MIN_SAFE_DISTANCE_CM costs more (overshoot hinge)")
 
 
-# ── predictive_controller: short-circuits (mirrors approach_drive tests) ─
+# ── predictive_controller: short-circuits (mirrors reactive_controller tests) ─
 
 def test_predictive_none_when_not_found():
     error = compute_target_error(DetectionResult())

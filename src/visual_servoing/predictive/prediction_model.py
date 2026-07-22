@@ -13,7 +13,7 @@ static within that one planning cycle -- it is not tracked across cycles,
 only re-measured from the next camera frame.
 
 Bearing sign is NOT derived from "which side is physically the robot's left"
--- approach_drive.py documents a hardware-verified quirk where a positive
+-- reactive_controller.py documents a hardware-verified quirk where a positive
 lateral_error (can right of frame center) is correctly corrected by calling
 arc_forward_LEFT, not arc_forward_right, which is the opposite of what a
 naive physical-left/right reading would suggest (see that module's docstring
@@ -23,7 +23,7 @@ result. Instead, +Y here is DEFINED as whichever side arc_forward_left's own
 WheelCommand kinematics (positive omega, see step() below) turns the heading
 toward, and bearing_from_lateral_error is defined to place a positive
 lateral_error's target on that same +Y side. That makes the two facts agree
-by construction: the action approach_drive.py already validated as correct
+by construction: the action reactive_controller.py already validated as correct
 on hardware is, in this simulator, also the one that reduces predicted error.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ class ActionStep:
     convention as TargetError.lateral_error: positive = correcting toward a
     can that is right of frame center. See trajectory_planner.action_to_command
     for how that maps onto DifferentialKinematics.arc_forward_left/right --
-    that mapping is hardware-verified (see approach_drive.py) and must not be
+    that mapping is hardware-verified (see reactive_controller.py) and must not be
     re-derived from first principles."""
     steer_deg: float
     speed: float
@@ -97,7 +97,7 @@ def estimate_initial_state(error: TargetError,
     """Build the local frame for one planning cycle: robot at the origin,
     target placed at the polar position implied by this frame's TargetError.
 
-    Precondition (caller's responsibility, same as approach_drive.py's use of
+    Precondition (caller's responsibility, same as reactive_controller.py's use of
     TargetError): error.found is True and error.distance_cm is not None --
     the not-found/too-close/reached cases are short-circuited before planning
     ever runs, so this never has to handle them.
@@ -127,7 +127,7 @@ def step(state: RobotState, cmd: WheelCommand, dt_s: float,
 
     Deliberately does NOT replicate PWMActuator's invert_left/invert_right/
     swap_left_right wiring correction -- that correction (plus whatever else
-    is behind the arc-steering quirk approach_drive.py found on hardware) is
+    is behind the arc-steering quirk reactive_controller.py found on hardware) is
     already absorbed on the OTHER end of this model, in
     bearing_from_lateral_error's sign convention (see the module docstring).
     Applying it here too would double-correct.

@@ -1,5 +1,5 @@
 """
-src/visual_servoing/approach_drive.py
+src/visual_servoing/reactive_controller.py
 
 Target error -> WheelCommand, via DifferentialKinematics. Pure function: no
 hardware access here (Rule: hardware access only through src/hardware).

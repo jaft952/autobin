@@ -29,7 +29,7 @@ CAN_HEIGHT_CM = 14.5 # TODO verify against the actual target tin can
 # printed each frame with the can at a known, tape-measured distance.
 CALIBRATION_CONSTANT_PX_CM = 48258720  # TODO calibrate on hardware
 
-STOP_DISTANCE_CM = 15.0   # TODO tune: distance at which the arm can grasp
+STOP_DISTANCE_CM = 25.0   # TODO tune: distance at which the arm can grasp
 CENTER_TOLERANCE = 0.06   # normalized lateral error considered "centered"
 
 # Failsafe independent of CALIBRATION_CONSTANT_PX_CM: a bbox this tall
@@ -44,7 +44,7 @@ CENTER_TOLERANCE = 0.06   # normalized lateral error considered "centered"
 # (with the current placeholders, ~0.56 in a typical frame) — it's meant to
 # catch an OVERSHOOT past the calibrated stop point, not to double-trigger
 # right at it. If they collide, "reached" and "too_close" both being true
-# lets too_close win (see approach_drive.py), which would mean backing away
+# lets too_close win (see reactive_controller.py), which would mean backing away
 # instead of ever reporting reached.
 CLOSE_BBOX_FRACTION = 0.75  # TODO tune: fraction of frame_height
 

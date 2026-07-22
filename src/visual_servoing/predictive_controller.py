@@ -1,7 +1,7 @@
 """
 src/visual_servoing/predictive_controller.py
 
-Predictive (receding-horizon) replacement for approach_drive.compute_reactive_command.
+Predictive (receding-horizon) replacement for reactive_controller.compute_reactive_command.
 Every call: run trajectory_planner.plan() to search HORIZON_STEPS ahead, then
 execute ONLY the first action of the best sequence and throw the rest of the
 plan away -- the next call re-plans from scratch against that frame's fresh
@@ -10,7 +10,7 @@ for the scoring; see prediction_model.py for the physics and the explanation
 of why the frame resets every cycle (no odometry/IMU on this robot).
 
 The not-found / too-close / reached short-circuits are copied byte-for-byte
-from approach_drive.py: those are safety failsafes, not planning decisions,
+from reactive_controller.py: those are safety failsafes, not planning decisions,
 so they bypass the search entirely, same as the reactive controller.
 
 Pure-function style like the rest of visual_servoing/: no hidden mutable
@@ -38,7 +38,7 @@ class ControllerState:
 def compute_predictive_command(
     error: TargetError, kin: DifferentialKinematics, state: ControllerState,
 ) -> Tuple[Optional[WheelCommand], ControllerState]:
-    """Drop-in predictive counterpart to approach_drive.compute_reactive_command,
+    """Drop-in predictive counterpart to reactive_controller.compute_reactive_command,
     with one API difference: it needs the CALLER's previous ControllerState
     back each cycle (a bare TargetError isn't enough once oscillation is part
     of the cost). Callers hold one ControllerState for the lifetime of the

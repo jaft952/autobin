@@ -4,7 +4,7 @@ src/visual_servoing/trajectory_planner.py
 Deterministic beam search over multi-step (steer, speed) action sequences.
 Deliberately NOT random-shooting MPC: this repo's visual_servoing tests
 assert exact behavior from synthetic fixtures (see the docstrings in
-distance_error.py and approach_drive.py), so the planner has to be
+distance_error.py and reactive_controller.py), so the planner has to be
 reproducible for a given TargetError -- same input, same plan, every time.
 
 Every candidate step is converted to a WheelCommand through the SAME
@@ -72,7 +72,7 @@ class _Candidate:
 
 
 def action_to_command(action: ActionStep, kin: DifferentialKinematics) -> WheelCommand:
-    """Hardware-verified mapping copied from approach_drive.compute_reactive_command:
+    """Hardware-verified mapping copied from reactive_controller.compute_reactive_command:
     +ve steer (correcting toward a can right of center) -> arc_forward_LEFT,
     -ve -> arc_forward_RIGHT. Do not re-derive this from geometry -- it was
     flipped from the naive reading once already on real hardware."""
