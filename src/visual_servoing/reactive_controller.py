@@ -83,9 +83,6 @@ def compute_reactive_command(error: TargetError,
     if not error.found:
         return None
 
-    if error.too_close:
-        return kin.backward(speed=BACKUP_SPEED)
-
     if error.reached:
         return None
 

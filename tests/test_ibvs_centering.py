@@ -42,7 +42,7 @@ from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach,
-    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    MAX_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
 )
 # predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety
@@ -509,6 +509,9 @@ def run_live_demo():
 
                 elif cmd is None:
                     actuator.stop()
+                    
+                elif error.too_close:
+                    actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
                 elif final_approach:
                     # Close range: a continuous command is already stale by
