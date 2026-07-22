@@ -409,10 +409,16 @@ def run_live_demo():
           f"ctrl={controller_name} — m=toggle drive, g=toggle arm, q=quit")
 
     show = True
+    tick = 0
     try:
         while True:
             result = detector.detect()
+            
+            tick += 1
+            print(f"----- tick {tick} -----")
+            
             error = compute_target_error(result)
+
             if use_predictive:
                 cmd, controller_state = compute_predictive_command(error, kin, controller_state)
             else:
@@ -452,7 +458,10 @@ def run_live_demo():
                     show = False
 
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
-                  f"dist_cm={error.distance_cm} bbox_h_px={bbox_height_px} "
+                  f"dist_cm={error.distance_cm} "
+                  f"bbox_height_px={bbox_height_px} "
+                  f"bbox_width_px={result.best.width if result.best is not None else None} "
+                  f"bbox_area_px={result.best.width * result.best.height if result.best is not None else None} "
                   f"reached={error.reached} too_close={error.too_close} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")

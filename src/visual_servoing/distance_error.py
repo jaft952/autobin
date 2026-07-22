@@ -26,7 +26,7 @@ CAN_HEIGHT_CM = 14.5  # TODO verify against the actual target tin can
 # set correctly, distance_cm is meaningless: run
 # `python tests/test_ibvs_centering.py --live` and read the bbox_h_px value
 # printed each frame with the can at a known, tape-measured distance.
-CALIBRATION_CONSTANT_PX_CM = 71600.0  # TODO calibrate on hardware
+CALIBRATION_CONSTANT_PX_CM = 10900  # TODO calibrate on hardware
 
 STOP_DISTANCE_CM = 15.0   # TODO tune: distance at which the arm can grasp
 CENTER_TOLERANCE = 0.06   # normalized lateral error considered "centered"
@@ -72,10 +72,16 @@ def compute_target_error(detection: DetectionResult,
 
     x, _y = base
     lateral_error = x - 0.5
+    
+    print("x: ", x)
+    print("lateral_error: ", lateral_error)
 
+    bbox_area_px = detection.best.width * detection.best.height # type: ignore
     bbox_height_px = detection.best.height # type: ignore
-    distance_cm = (CALIBRATION_CONSTANT_PX_CM / bbox_height_px
-                    if bbox_height_px > 0 else None)
+    
+    
+    distance_cm = (CALIBRATION_CONSTANT_PX_CM / bbox_area_px
+                    if bbox_area_px > 0 else None)
 
     too_close = (detection.frame_height > 0
                  and bbox_height_px / detection.frame_height >= CLOSE_BBOX_FRACTION)
