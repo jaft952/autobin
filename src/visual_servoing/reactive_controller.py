@@ -24,7 +24,7 @@ from src.motion.differential_kinematics import DifferentialKinematics, WheelComm
 # placeholder (see that module), so a smooth ramp off it is no more
 # trustworthy than a few hardcoded checkpoints tuned by eye on hardware.
 CRUISE_DISTANCE_CM = 90.0    # distance at/beyond which speed is MAX_SPEED
-MAX_SPEED = 30.0             # TODO tune: hand-tested cruise speed at/beyond CRUISE_DISTANCE_CM
+MAX_SPEED = 27.0             # TODO tune: hand-tested cruise speed at/beyond CRUISE_DISTANCE_CM
 APPROACH_SPEED = 25.0        # TODO tune: hand-tested speed between FAR_DISTANCE_CM and CRUISE_DISTANCE_CM
 FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estimated at all
 
