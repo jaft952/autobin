@@ -42,6 +42,7 @@ from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
 from src.visual_servoing.reactive_controller import compute_reactive_command, MAX_SPEED, BACKUP_SPEED
 from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
+from src.visual_servoing.ultrasonic_safety import UltrasonicSafety
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
@@ -381,6 +382,7 @@ def run_live_demo():
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
+    ultrasonic = UltrasonicSafety(trig=23, echo=24)
     controller_state = ControllerState()  # only consulted when --predictive is set
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
@@ -412,7 +414,9 @@ def run_live_demo():
     try:
         while True:
             result = detector.detect()
+            ultra = ultrasonic.update()
             error = compute_target_error(result)
+            
 
             if use_predictive:
                 cmd, controller_state = compute_predictive_command(error, kin, controller_state)
@@ -424,7 +428,11 @@ def run_live_demo():
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
             if driving:
-                actuator.apply(cmd) if cmd is not None else actuator.stop()
+                if ultra.emergency_stop:
+                    actuator.stop()
+
+                else:
+                    actuator.apply(cmd) if cmd is not None else actuator.stop()
 
             if armed and error.reached:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
@@ -460,6 +468,7 @@ def run_live_demo():
                   f"bbox_width_px={bbox_width_px if result.best is not None else None} "
                   f"bbox_height_px={bbox_height_px if result.best is not None else None} "
                   f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
+                  f"ultra_dist={ultra.distance_cm}"
                   f"reached={error.reached} too_close={error.too_close} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")
