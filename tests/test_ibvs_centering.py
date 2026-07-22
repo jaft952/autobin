@@ -40,7 +40,7 @@ from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error
-from visual_servoing.reactive_controller import compute_reactive_command, MAX_SPEED, BACKUP_SPEED
+from src.visual_servoing.reactive_controller import compute_reactive_command, MAX_SPEED, BACKUP_SPEED
 from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
 
 

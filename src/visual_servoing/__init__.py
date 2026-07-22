@@ -8,9 +8,9 @@ Two controllers are available:
 """
 
 from src.visual_servoing.distance_error import TargetError, compute_target_error
-from visual_servoing.reactive_controller import compute_reactive_command
-from visual_servoing.predictive.prediction_model import ActionStep, RobotState, TargetPoint
-from visual_servoing.predictive.trajectory_planner import Plan
+from src.visual_servoing.reactive_controller import compute_reactive_command
+from src.visual_servoing.predictive.prediction_model import ActionStep, RobotState, TargetPoint
+from src.visual_servoing.predictive.trajectory_planner import Plan
 from src.visual_servoing.predictive_controller import ControllerState, compute_predictive_command
 
 __all__ = [

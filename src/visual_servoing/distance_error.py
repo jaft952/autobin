@@ -18,7 +18,7 @@ from typing import Optional
 from src.perception.detector import DetectionResult
 
 # ── Calibration (measure on hardware) ───────────────────────────────────
-CAN_HEIGHT_CM = 14.5  # TODO verify against the actual target tin can
+CAN_HEIGHT_CM = 14.5 # TODO verify against the actual target tin can
 
 # Monocular pinhole distance estimate: distance_cm = CONSTANT / bbox_height_px.
 # Measure bbox_height_px for the can placed at a known distance_cm, then set:
