@@ -349,4 +349,9 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--camera" in sys.argv:
+        from src.hardware.sensors.camera_sensor import CameraSensor
+        cam = CameraSensor()
+        cam.start()
+        print("[camera started]")
     main()
