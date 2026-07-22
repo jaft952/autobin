@@ -12,6 +12,7 @@ arc-grasp and pixel-to-arm already use for the same can.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional
 
 from src.perception.detector import DetectionResult
@@ -80,8 +81,10 @@ def compute_target_error(detection: DetectionResult,
     bbox_height_px = detection.best.height # type: ignore
     
     
-    distance_cm = (CALIBRATION_CONSTANT_PX_CM / bbox_area_px
-                    if bbox_area_px > 0 else None)
+    distance_cm = (
+        math.sqrt(CALIBRATION_CONSTANT_PX_CM / bbox_area_px)
+        if bbox_area_px > 0 else None
+    )
 
     too_close = (detection.frame_height > 0
                  and bbox_height_px / detection.frame_height >= CLOSE_BBOX_FRACTION)
