@@ -596,12 +596,17 @@ def run_live_demo():
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
             recovered_nudge = False
-            print(f"[live] driving: {driving}")
+            print(f"[LOG] driving={driving}")
+            print(f"[LOG] tiers={tier}")
+            print(f"[LOG] cmd={cmd}")
+            print(f"[LOG] emergency={ultra.emergency_stop}")
             if driving:
                 if ultra.emergency_stop:
+                    print("[STOP] EMERGENCY STOP")
                     actuator.stop()
 
                 elif cmd is None:
+                    print("[STOP] STOPPED (no command)")
                     actuator.stop()
                     # If we were 'reached' (arm handoff) but the can has been
                     # moved closer since the last frame, back off a bit even
@@ -619,6 +624,7 @@ def run_live_demo():
                     actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
                 elif tier == "step":
+                    print("[STEP] STEP-AND-LOOK")
                     # Close range: a continuous command is already stale by
                     # the time it reaches the wheels, and stale matters more
                     # here. Nudge for one short step, then sit still long
@@ -636,6 +642,7 @@ def run_live_demo():
                         actuator.stop()
 
                 else:
+                    print("[CRUISE] cruise/approach")
                     actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
 
             if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:

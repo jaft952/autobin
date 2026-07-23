@@ -84,6 +84,7 @@ def compute_reactive_command(error: TargetError,
         return None
 
     if error.too_close:
+        print("[STOP] TOO CLOSE")
         return kin.backward(speed=BACKUP_SPEED)
 
     if error.reached:
