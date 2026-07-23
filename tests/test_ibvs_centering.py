@@ -42,7 +42,7 @@ from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error, TargetError
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach, speed_tier,
-    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, SCAN_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    MAX_SPEED, APPROACH_SPEED, BACKUP_SPEED, SCAN_SPEED, STEP_DURATION_S, STEP_SPEED, LOOK_PAUSE_S
 )
 # predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
@@ -133,16 +133,18 @@ def test_too_close_backs_away_even_when_off_center():
 # ── reactive_controller.compute_reactive_command ─────────────────────────────────
 
 def test_reactive_command_none_when_not_found():
+    ultrasonic = UltrasonicSafety()
     error = compute_target_error(DetectionResult())
-    assert compute_reactive_command(error, _kin()) is None
+    assert compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin()) is None
     print("PASS drive command is None when nothing is found")
 
 
 def test_reactive_command_none_when_reached():
+    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.5, bbox_height_px=300))
     assert error.reached
     assert not error.too_close, error
-    assert compute_reactive_command(error, _kin()) is None
+    assert compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin()) is None
     print("PASS drive command is None when reached (arm handoff)")
 
 
@@ -150,9 +152,10 @@ def test_reactive_command_backs_away_when_too_close():
     """too_close -> an active BACKWARD command (both wheels negative), not
     just a stop — recovers from an overshoot instead of sitting wedged
     against the can, even when off-center."""
+    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=360))
     assert error.too_close
-    cmd = compute_reactive_command(error, _kin())
+    cmd = compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin())
     assert cmd is not None
     assert cmd.left_speed < 0 and cmd.right_speed < 0, cmd
     assert abs(cmd.left_speed) <= BACKUP_SPEED + 1e-6, cmd
@@ -164,8 +167,9 @@ def test_reactive_command_when_can_is_left_of_center():
     slower than left) — hardware-verified mapping, see the sign-convention
     note in reactive_controller.py. Far away (>= CRUISE_DISTANCE_CM) ->
     speed at MAX_SPEED, the top hardcoded tier."""
+    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=40))
-    cmd = compute_reactive_command(error, _kin())
+    cmd = compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin())
     assert cmd is not None
     assert cmd.right_speed < cmd.left_speed, cmd
     assert cmd.left_speed >= 0.9 * MAX_SPEED, cmd   # brisk, not crawling
@@ -180,9 +184,10 @@ def test_reactive_command_when_can_is_right_of_center():
     stalling: STEP_SPEED keeps steering alive all the way to the grab
     point). frame_height oversized per the is_final_approach fixtures above
     to stay clear of CLOSE_BBOX_FRACTION at this bbox size."""
+    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000))
     assert is_final_approach(error), error
-    cmd = compute_reactive_command(error, _kin())
+    cmd = compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin())
     assert cmd is not None
     assert cmd.left_speed < cmd.right_speed, cmd
     assert abs(cmd.right_speed - STEP_SPEED) < 0.2 * STEP_SPEED, cmd   # right (outer) wheel ~= STEP_SPEED * trim
@@ -205,9 +210,10 @@ def test_reactive_command_speed_tiers_are_hardcoded():
     assert speed_tier(approach_error) == "approach", approach_error
     assert speed_tier(step_error) == "step", step_error
 
-    cruise = compute_reactive_command(cruise_error, _kin())
-    approach = compute_reactive_command(approach_error, _kin())
-    step = compute_reactive_command(step_error, _kin())
+    ultrasonic = UltrasonicSafety()
+    cruise = compute_reactive_command(cruise_error, ultrasonic.sensor.get_distance_cm(), _kin())
+    approach = compute_reactive_command(approach_error, ultrasonic.sensor.get_distance_cm(), _kin())
+    step = compute_reactive_command(step_error, ultrasonic.sensor.get_distance_cm(), _kin())
     assert cruise is not None and approach is not None and step is not None
     assert abs(cruise.right_speed - MAX_SPEED) < 0.2 * MAX_SPEED, cruise
     assert abs(approach.right_speed - APPROACH_SPEED) < 0.2 * APPROACH_SPEED, approach
@@ -610,7 +616,7 @@ def run_live_demo():
             ultra_watchdog.set_vision_distance(error.distance_cm if error.found else None)
             ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
 
-            cmd = compute_reactive_command(error, kin)
+            cmd = compute_reactive_command(error, ultra.distance_cm, kin)
             tier = speed_tier(error)   # single source of truth for driving AND display below
 
             bbox_width_px = result.best.width if result.best is not None else None
