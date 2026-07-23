@@ -498,9 +498,14 @@ def run_live_demo():
     of this loop -- it's the top-priority safety check, and camera
     inference plus the step-and-look time.sleep() below can each take
     longer than a single ultrasonic poll, during which a same-thread check
-    would have gone blind. The watchdog calls actuator.stop() itself the
-    instant it detects emergency_stop; this loop still reads its latest
-    reading every iteration and checks emergency_stop first, before issuing
+    would have gone blind. Each iteration also hands the watchdog this
+    frame's vision-based distance (set_vision_distance()) so it can tell an
+    in-range ultrasonic reading of the can we're deliberately closing in on
+    apart from an unrelated obstacle the camera doesn't see -- only the
+    latter raises emergency_stop (see UltrasonicSafety.update()). The
+    watchdog calls actuator.stop() itself the instant it detects
+    emergency_stop; this loop still reads its latest reading every iteration
+    and checks emergency_stop first, before issuing
     any new drive command, so it can't immediately re-drive over the
     watchdog's stop.
 
@@ -585,8 +590,14 @@ def run_live_demo():
     try:
         while True:
             result = detector.detect()
-            ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
             error = compute_target_error(result)
+            # Feed the watchdog this frame's vision distance BEFORE reading
+            # .latest below, so an ultrasonic reading that agrees with the
+            # can we're actually tracking doesn't trip a raw emergency stop
+            # (see UltrasonicSafety.update()'s vision_distance_cm) -- only a
+            # reading the camera can't account for should hard-stop.
+            ultra_watchdog.set_vision_distance(error.distance_cm if error.found else None)
+            ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
 
             cmd = compute_reactive_command(error, kin)
             tier = speed_tier(error)   # single source of truth for driving AND display below
@@ -599,7 +610,7 @@ def run_live_demo():
             print(f"[LOG] driving={driving}")
             print(f"[LOG] tiers={tier}")
             print(f"[LOG] cmd={cmd}")
-            print(f"[LOG] emergency={ultra.emergency_stop}")
+            print(f"[LOG] emergency={ultra.emergency_stop} matches_vision={ultra.matches_vision}")
             if driving:
                 if ultra.emergency_stop:
                     print("[STOP] EMERGENCY STOP")
@@ -680,7 +691,7 @@ def run_live_demo():
                   f"bbox_width_px={bbox_width_px if result.best is not None else None} "
                   f"bbox_height_px={bbox_height_px if result.best is not None else None} "
                   f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
-                  f"ultra_dist={ultra.distance_cm} "
+                  f"ultra_dist={ultra.distance_cm} matches_vision={ultra.matches_vision} "
                   f"reached={error.reached} too_close={error.too_close} "
                   f"tier={tier} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "

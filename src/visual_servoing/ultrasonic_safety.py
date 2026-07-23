@@ -26,12 +26,25 @@ from src.hardware.sensors.ultrasonic_sensor import (
 EMERGENCY_STOP_CM = 25.0
 GRAB_CONFIRM_CM = 25.0
 
+# How closely the ultrasonic reading must agree with the camera's own
+# monocular distance estimate (TargetError.distance_cm) to trust that both
+# sensors are looking at the SAME object -- the tracked tin can, not a wall,
+# table leg, or someone's foot that happens to be in the ultrasonic's cone
+# but outside/unrecognized in the camera's view. Only ever consulted when
+# the ultrasonic has already read <= EMERGENCY_STOP_CM, so this doesn't
+# widen the near-field trigger zone -- it only decides, once something is
+# that close, whether it's the can we're deliberately closing in on.
+# TODO tune: wide enough to absorb sensor noise + a stale vision frame,
+# tight enough that a real, unrelated obstacle can't accidentally "match".
+VISION_AGREEMENT_TOLERANCE_CM = 8.0
+
 
 @dataclass
 class UltrasonicState:
     distance_cm: Optional[float]
     emergency_stop: bool
     grab_confirmed: bool
+    matches_vision: bool = False
 
 
 class UltrasonicSafety:
@@ -45,9 +58,26 @@ class UltrasonicSafety:
             UltrasonicPins(trig=trig, echo=echo)
         )
 
-    def update(self) -> UltrasonicState:
+    def update(self, vision_distance_cm: Optional[float] = None) -> UltrasonicState:
         """
         Poll the sensor once and return the current safety state.
+
+        vision_distance_cm: the visual-servoing distance estimate for the
+        currently tracked target (TargetError.distance_cm), if available.
+        Pass None (the default) when there's no camera/target reading to
+        compare against -- e.g. no target found this frame -- which keeps
+        the old behavior of a hard stop on any close reading.
+
+        When the ultrasonic already reads within EMERGENCY_STOP_CM AND that
+        reading roughly agrees with vision_distance_cm (within
+        VISION_AGREEMENT_TOLERANCE_CM), the ultrasonic is almost certainly
+        bouncing off the same can the camera is tracking as it closes in for
+        the grab, not an unrelated obstacle -- so emergency_stop is
+        suppressed and reactive_controller's own too_close/reached handling
+        (a gentle backward nudge, or the arm handoff) is trusted to do the
+        right thing instead of a raw full stop. No vision reading, or a
+        disagreement between the two, means the ultrasonic may be seeing
+        something the camera isn't accounting for, so the hard stop stays.
         """
 
         self.sensor.update()
@@ -59,29 +89,34 @@ class UltrasonicSafety:
                 distance_cm=None,
                 emergency_stop=False,
                 grab_confirmed=False,
+                matches_vision=False,
             )
+
+        matches_vision = (vision_distance_cm is not None
+                           and abs(d - vision_distance_cm) <= VISION_AGREEMENT_TOLERANCE_CM)
 
         return UltrasonicState(
             distance_cm=d,
-            emergency_stop=d <= EMERGENCY_STOP_CM,
+            emergency_stop=(d <= EMERGENCY_STOP_CM) and not matches_vision,
             grab_confirmed=d <= GRAB_CONFIRM_CM,
+            matches_vision=matches_vision,
         )
 
-    def should_stop(self) -> bool:
+    def should_stop(self, vision_distance_cm: Optional[float] = None) -> bool:
         """
         Convenience method.
         """
-        s = self.update()
+        s = self.update(vision_distance_cm=vision_distance_cm)
         return s.emergency_stop
 
-    def can_grab(self) -> bool:
+    def can_grab(self, vision_distance_cm: Optional[float] = None) -> bool:
         """
         Convenience method.
 
         Grabbing is only allowed when the sensor is within the grab-confirm
         range and no emergency stop condition is active.
         """
-        s = self.update()
+        s = self.update(vision_distance_cm=vision_distance_cm)
         return s.grab_confirmed and not s.emergency_stop
 
     def close(self):
@@ -129,6 +164,7 @@ class UltrasonicWatchdog:
         self._interval_s = 1.0 / poll_hz
         self._lock = threading.Lock()
         self._latest = UltrasonicState(distance_cm=None, emergency_stop=False, grab_confirmed=False)
+        self._vision_distance_cm: Optional[float] = None
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ultrasonic-watchdog", daemon=True)
 
@@ -144,9 +180,31 @@ class UltrasonicWatchdog:
         with self._lock:
             return self._latest
 
+    def set_vision_distance(self, distance_cm: Optional[float]) -> None:
+        """Hand the background poll loop the latest camera-based distance
+        estimate (TargetError.distance_cm), so it can tell an in-range
+        ultrasonic reading of the tracked can apart from an unrelated
+        obstacle -- see UltrasonicSafety.update()'s vision_distance_cm.
+
+        Call this every frame from the main loop right after
+        compute_target_error() (pass None when the target isn't found this
+        frame). The watchdog polls on its own cadence and simply reads
+        whatever was set here most recently -- the same latest-value pattern
+        `.latest` uses in the other direction -- so the value it compares
+        against may be up to one camera frame stale. That's the same order
+        of staleness the rest of this control loop already tolerates (see
+        reactive_controller's step-and-look docstring) and is fine here:
+        worst case is one extra poll before a suppressed stop re-engages, or
+        vice versa.
+        """
+        with self._lock:
+            self._vision_distance_cm = distance_cm
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            state = self._safety.update()
+            with self._lock:
+                vision_distance_cm = self._vision_distance_cm
+            state = self._safety.update(vision_distance_cm=vision_distance_cm)
             with self._lock:
                 self._latest = state
             if state.emergency_stop:
