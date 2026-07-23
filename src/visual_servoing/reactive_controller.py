@@ -49,7 +49,7 @@ FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() trigg
 # below, used there, not here (this module stays hardware/time-free).
 STEP_SPEED = 25.0            # TODO tune: hand-tested fixed nudge speed for step-and-look
 STEP_DURATION_S = 0.25       # TODO tune: length of one forward/steer nudge
-LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred look
+LOOK_PAUSE_S = 0.5           # TODO tune: stopped time for a fresh, unblurred look
 
 
 def compute_reactive_command(error: TargetError,

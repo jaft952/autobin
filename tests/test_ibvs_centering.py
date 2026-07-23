@@ -625,11 +625,13 @@ def run_live_demo():
                     # look before deciding the next step.
                     now = time.monotonic()
                     if now >= step_state["next_step_at"]:
+                        print("[STEP] MOVING")
                         actuator.apply(cmd)
                         time.sleep(STEP_DURATION_S)
                         actuator.stop()
                         step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
                     else:
+                        print("[STEP] PAUSED")
                         actuator.stop()
 
                 else:
