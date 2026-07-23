@@ -42,7 +42,7 @@ from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error, TargetError
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach, speed_tier,
-    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, SCAN_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
 )
 # predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
@@ -498,16 +498,27 @@ def run_live_demo():
     of this loop -- it's the top-priority safety check, and camera
     inference plus the step-and-look time.sleep() below can each take
     longer than a single ultrasonic poll, during which a same-thread check
-    would have gone blind. Each iteration also hands the watchdog this
-    frame's vision-based distance (set_vision_distance()) so it can tell an
-    in-range ultrasonic reading of the can we're deliberately closing in on
-    apart from an unrelated obstacle the camera doesn't see -- only the
-    latter raises emergency_stop (see UltrasonicSafety.update()). The
-    watchdog calls actuator.stop() itself the instant it detects
-    emergency_stop; this loop still reads its latest reading every iteration
-    and checks emergency_stop first, before issuing
-    any new drive command, so it can't immediately re-drive over the
-    watchdog's stop.
+    would have gone blind. The watchdog calls actuator.stop() itself the
+    instant it detects emergency_stop, UNCONDITIONALLY -- the ultrasonic
+    always gets to stop the robot first, before vision has any say (see
+    UltrasonicSafety.update()). This loop still reads its latest reading
+    every iteration and checks emergency_stop first, before issuing any new
+    drive command, so it can't immediately re-drive over the watchdog's
+    stop.
+
+    Only AFTER that stop does vision get consulted: each iteration hands the
+    watchdog this frame's vision-based distance (set_vision_distance()), and
+    once stopped this loop checks ultra.matches_vision -- did the ultrasonic
+    agree with what the camera measured for the tracked can? If so, it's
+    confirmed to be the same can we're deliberately closing in on, and this
+    loop falls straight through to the normal command dispatch below
+    (whatever compute_reactive_command decided this frame -- forward/arc
+    cruise or approach, the too_close backward nudge, a step-and-look nudge,
+    or nothing if reached/not found). If NOT -- no target found, or the
+    ultrasonic and vision distances disagree -- vision can't vouch for
+    whatever tripped the ultrasonic, so instead of driving toward it the
+    loop commands a slow SCAN_SPEED turn_right() in place to look for a new
+    can, every frame, until the reading clears or a target is confirmed.
 
     reactive_controller.py looks up the commanded speed from hardcoded
     distance breakpoints (CRUISE_DISTANCE_CM / FAR_DISTANCE_CM -> MAX_SPEED /
@@ -591,11 +602,11 @@ def run_live_demo():
         while True:
             result = detector.detect()
             error = compute_target_error(result)
-            # Feed the watchdog this frame's vision distance BEFORE reading
-            # .latest below, so an ultrasonic reading that agrees with the
-            # can we're actually tracking doesn't trip a raw emergency stop
-            # (see UltrasonicSafety.update()'s vision_distance_cm) -- only a
-            # reading the camera can't account for should hard-stop.
+            # Hand the watchdog this frame's vision distance. This does NOT
+            # suppress emergency_stop -- the ultrasonic always stops first,
+            # unconditionally (see UltrasonicSafety.update()) -- it only
+            # populates matches_vision, which is consulted below AFTER the
+            # stop to decide what happens next.
             ultra_watchdog.set_vision_distance(error.distance_cm if error.found else None)
             ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
 
@@ -606,57 +617,74 @@ def run_live_demo():
             bbox_height_px = result.best.height if result.best is not None else None
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
+            # Ultrasonic stopped us and vision can't confirm it's the can we're
+            # tracking -- don't drive toward it, turn to look for a new one.
+            scanning = ultra.emergency_stop and not ultra.matches_vision
+
             recovered_nudge = False
             print(f"[LOG] driving={driving}")
             print(f"[LOG] tiers={tier}")
             print(f"[LOG] cmd={cmd}")
-            print(f"[LOG] emergency={ultra.emergency_stop} matches_vision={ultra.matches_vision}")
+            print(f"[LOG] emergency={ultra.emergency_stop} matches_vision={ultra.matches_vision} scanning={scanning}")
             if driving:
-                if ultra.emergency_stop:
-                    print("[STOP] EMERGENCY STOP")
-                    actuator.stop()
-
-                elif cmd is None:
-                    print("[STOP] STOPPED (no command)")
-                    actuator.stop()
-                    # If we were 'reached' (arm handoff) but the can has been
-                    # moved closer since the last frame, back off a bit even
-                    # though the controller would normally return None.
-                    if error.reached and error.distance_cm is not None and last_distance_cm is not None:
-                        if error.distance_cm + 1.0 < last_distance_cm:
-                            actuator.apply(kin.backward(speed=BACKUP_SPEED))
-                            time.sleep(0.15)
-                            actuator.stop()
-                            recovered_nudge = True
-                            print(f"[live] can moved closer (was {last_distance_cm:.1f}cm, "
-                                  f"now {error.distance_cm:.1f}cm) -- backed off")
-
-                elif error.too_close:
-                    actuator.apply(kin.backward(speed=BACKUP_SPEED))
-
-                elif tier == "step":
-                    print("[STEP] STEP-AND-LOOK")
-                    # Close range: a continuous command is already stale by
-                    # the time it reaches the wheels, and stale matters more
-                    # here. Nudge for one short step, then sit still long
-                    # enough for the next frame to be a fresh, unblurred
-                    # look before deciding the next step.
-                    now = time.monotonic()
-                    if now >= step_state["next_step_at"]:
-                        print("[STEP] MOVING")
-                        actuator.apply(cmd)
-                        time.sleep(STEP_DURATION_S)
-                        actuator.stop()
-                        step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
-                    else:
-                        print("[STEP] PAUSED")
-                        actuator.stop()
+                if scanning:
+                    print("[SCAN] ultrasonic close, unconfirmed by vision -- turning right to scan")
+                    actuator.apply(kin.turn_right(speed=SCAN_SPEED))
 
                 else:
-                    print("[CRUISE] cruise/approach")
-                    actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
+                    if ultra.emergency_stop:
+                        # matches_vision True: ultrasonic and vision agree this
+                        # is the tracked can -- fall through to the normal
+                        # dispatch below exactly as if there were no ultrasonic
+                        # stop at all (too_close backup / step / cruise / none).
+                        print("[RESUME] ultrasonic confirmed by vision -- resuming normal motion")
 
-            if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
+                    if cmd is None:
+                        print("[STOP] STOPPED (no command)")
+                        actuator.stop()
+                        # If we were 'reached' (arm handoff) but the can has been
+                        # moved closer since the last frame, back off a bit even
+                        # though the controller would normally return None.
+                        if error.reached and error.distance_cm is not None and last_distance_cm is not None:
+                            if error.distance_cm + 1.0 < last_distance_cm:
+                                actuator.apply(kin.backward(speed=BACKUP_SPEED))
+                                time.sleep(0.15)
+                                actuator.stop()
+                                recovered_nudge = True
+                                print(f"[live] can moved closer (was {last_distance_cm:.1f}cm, "
+                                      f"now {error.distance_cm:.1f}cm) -- backed off")
+
+                    elif error.too_close:
+                        actuator.apply(kin.backward(speed=BACKUP_SPEED))
+
+                    elif tier == "step":
+                        print("[STEP] STEP-AND-LOOK")
+                        # Close range: a continuous command is already stale by
+                        # the time it reaches the wheels, and stale matters more
+                        # here. Nudge for one short step, then sit still long
+                        # enough for the next frame to be a fresh, unblurred
+                        # look before deciding the next step.
+                        now = time.monotonic()
+                        if now >= step_state["next_step_at"]:
+                            print("[STEP] MOVING")
+                            actuator.apply(cmd)
+                            time.sleep(STEP_DURATION_S)
+                            actuator.stop()
+                            step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
+                        else:
+                            print("[STEP] PAUSED")
+                            actuator.stop()
+
+                    else:
+                        print("[CRUISE] cruise/approach")
+                        actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
+
+            # NOT "not ultra.emergency_stop" -- grab_confirmed and
+            # emergency_stop share the same threshold (both default 25cm),
+            # so they're always true together at grab range; the real gate
+            # is matches_vision, confirming the ultrasonic is reading the
+            # can itself and not something else that happens to be as close.
+            if armed and error.reached and ultra.grab_confirmed and ultra.matches_vision:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
 
             if show:

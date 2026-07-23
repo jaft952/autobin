@@ -30,10 +30,12 @@ GRAB_CONFIRM_CM = 25.0
 # monocular distance estimate (TargetError.distance_cm) to trust that both
 # sensors are looking at the SAME object -- the tracked tin can, not a wall,
 # table leg, or someone's foot that happens to be in the ultrasonic's cone
-# but outside/unrecognized in the camera's view. Only ever consulted when
-# the ultrasonic has already read <= EMERGENCY_STOP_CM, so this doesn't
-# widen the near-field trigger zone -- it only decides, once something is
-# that close, whether it's the can we're deliberately closing in on.
+# but outside/unrecognized in the camera's view. Only meaningful once the
+# ultrasonic has already read <= EMERGENCY_STOP_CM (see matches_vision on
+# UltrasonicState) -- it does NOT gate emergency_stop itself (that stays an
+# unconditional distance check, see update()); it's purely what the CALLER
+# consults, after the stop has already happened, to decide whether to
+# resume normal driving or go into a scan turn. See run_live_demo.
 # TODO tune: wide enough to absorb sensor noise + a stale vision frame,
 # tight enough that a real, unrelated obstacle can't accidentally "match".
 VISION_AGREEMENT_TOLERANCE_CM = 8.0
@@ -62,22 +64,27 @@ class UltrasonicSafety:
         """
         Poll the sensor once and return the current safety state.
 
-        vision_distance_cm: the visual-servoing distance estimate for the
-        currently tracked target (TargetError.distance_cm), if available.
-        Pass None (the default) when there's no camera/target reading to
-        compare against -- e.g. no target found this frame -- which keeps
-        the old behavior of a hard stop on any close reading.
+        emergency_stop is an unconditional distance check (d <=
+        EMERGENCY_STOP_CM) -- the ultrasonic always wins first, regardless
+        of what vision says. It is deliberately NOT suppressed by vision
+        agreement: the ultrasonic must be allowed to stop the robot before
+        anything else gets a say (that's UltrasonicWatchdog's whole job --
+        see its docstring). Vision only comes in AFTER the stop, to decide
+        what happens next.
 
-        When the ultrasonic already reads within EMERGENCY_STOP_CM AND that
-        reading roughly agrees with vision_distance_cm (within
-        VISION_AGREEMENT_TOLERANCE_CM), the ultrasonic is almost certainly
-        bouncing off the same can the camera is tracking as it closes in for
-        the grab, not an unrelated obstacle -- so emergency_stop is
-        suppressed and reactive_controller's own too_close/reached handling
-        (a gentle backward nudge, or the arm handoff) is trusted to do the
-        right thing instead of a raw full stop. No vision reading, or a
-        disagreement between the two, means the ultrasonic may be seeing
-        something the camera isn't accounting for, so the hard stop stays.
+        vision_distance_cm: the visual-servoing distance estimate for the
+        currently tracked target (TargetError.distance_cm), if available;
+        None when no target was found this frame. Used only to compute
+        matches_vision below -- it has no effect on emergency_stop.
+
+        matches_vision is True when the ultrasonic reading is within
+        VISION_AGREEMENT_TOLERANCE_CM of vision_distance_cm: both sensors
+        are looking at the same object (the tracked can), not an unrelated
+        obstacle vision can't see. The CALLER (see run_live_demo) reads this
+        once emergency_stop has already halted the robot, to decide whether
+        to resume normal driving (matches_vision True -- it's the can) or
+        turn to scan for a new target (matches_vision False -- something
+        else is that close and vision doesn't confirm it).
         """
 
         self.sensor.update()
@@ -97,27 +104,30 @@ class UltrasonicSafety:
 
         return UltrasonicState(
             distance_cm=d,
-            emergency_stop=(d <= EMERGENCY_STOP_CM) and not matches_vision,
+            emergency_stop=d <= EMERGENCY_STOP_CM,
             grab_confirmed=d <= GRAB_CONFIRM_CM,
             matches_vision=matches_vision,
         )
 
-    def should_stop(self, vision_distance_cm: Optional[float] = None) -> bool:
+    def should_stop(self) -> bool:
         """
         Convenience method.
         """
-        s = self.update(vision_distance_cm=vision_distance_cm)
+        s = self.update()
         return s.emergency_stop
 
     def can_grab(self, vision_distance_cm: Optional[float] = None) -> bool:
         """
         Convenience method.
 
-        Grabbing is only allowed when the sensor is within the grab-confirm
-        range and no emergency stop condition is active.
+        Grabbing is only allowed within the grab-confirm range AND once
+        vision confirms it's actually the tracked can at that range -- NOT
+        "no emergency stop", since emergency_stop and grab_confirmed share
+        the same threshold (both default to 25cm) and would otherwise always
+        be true together, making this permanently False.
         """
         s = self.update(vision_distance_cm=vision_distance_cm)
-        return s.grab_confirmed and not s.emergency_stop
+        return s.grab_confirmed and s.matches_vision
 
     def close(self):
         self.sensor.close()
@@ -140,12 +150,17 @@ class UltrasonicWatchdog:
     Top priority: the moment a poll comes back with emergency_stop, this
     thread calls stop_callback (e.g. actuator.stop) ITSELF, immediately --
     it does not wait for the main loop to notice a flag and react next
-    iteration. The main loop should still read `.latest` every iteration
-    and treat emergency_stop as the first check before issuing any new
-    drive command (see run_live_demo): the watchdog's own stop_callback
-    call handles "already moving right now", and the main loop's check
-    stops it from immediately re-driving over that on its very next
-    command -- the two work together, neither alone is enough.
+    iteration, and it does NOT consult vision agreement first (see
+    UltrasonicSafety.update() -- emergency_stop is an unconditional distance
+    check). The ultrasonic gets to stop the robot before anything else has a
+    say; only AFTER that stop does the main loop check matches_vision to
+    decide whether to resume driving or turn to scan (see run_live_demo).
+    The main loop should still read `.latest` every iteration and treat
+    emergency_stop as the first check before issuing any new drive command:
+    the watchdog's own stop_callback call handles "already moving right
+    now", and the main loop's check stops it from immediately re-driving
+    over that on its very next command -- the two work together, neither
+    alone is enough.
 
     stop_callback may be called from this background thread concurrently
     with the main thread calling actuator.apply()/stop(); that's accepted

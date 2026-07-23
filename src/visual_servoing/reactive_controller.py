@@ -37,6 +37,16 @@ FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estim
 # it back up a bit).
 BACKUP_SPEED = 20.0          # TODO tune: gentle reverse to recover from an overshoot
 
+# Used by the live loop (not compute_reactive_command itself -- there's no
+# TargetError case that means "scan"): when the ultrasonic stops the robot
+# but vision doesn't confirm it's the tracked can (UltrasonicState.
+# matches_vision is False), the caller turns in place at this speed instead
+# of driving toward an unconfirmed obstacle, looking for a new target.
+# Deliberately slower than BACKUP_SPEED -- this is a search, not a recovery,
+# and a slow turn gives the camera a real chance to pick something up
+# instead of sweeping past it.
+SCAN_SPEED = 15.0            # TODO tune: slow in-place turn while scanning for a new can
+
 MAX_STEER_ANGLE_DEG = 80.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
 
