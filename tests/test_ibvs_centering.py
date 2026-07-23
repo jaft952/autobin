@@ -596,6 +596,7 @@ def run_live_demo():
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
             recovered_nudge = False
+            print(f"[live] driving: {driving}")
             if driving:
                 if ultra.emergency_stop:
                     actuator.stop()
