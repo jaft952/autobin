@@ -10,7 +10,8 @@ Usage: python test_ibvs_centering.py [--drive] [--arm] [--speed 0.x] [--turn 0.x
             tapers down as it approaches but never below 0.3 (no stall crawl)
   --turn  : steer speed multiplier, 0..1 (default: same as --speed; turning has
             no rolling friction, so it usually wants a LOWER value, e.g.
-            --speed 0.6 --turn 0.3)
+            --speed 0.6 --turn 0.3). MAX-MIN form works too: --turn 0.4-0.2
+            (big error turns at 0.4, tapers to 0.2 near center)
   --mode  : step   = aim, drive straight, re-aim when tin leaves central 70% (default)
             chase  = car-like continuous pursuit: drive + steer at the same time,
                      pivoting only if the tin nears the frame edge
@@ -174,7 +175,7 @@ def _make_chassis():
 
 
 def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step",
-         speed_min=0.0):
+         speed_min=0.0, turn_min=0.0):
     """Real-time visual servoing with cascade control (multi-rate, smooth motion)."""
     import cv2
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
@@ -202,14 +203,16 @@ def main(drive=False, speed=1.0, use_ncnn=True, arm=False, turn=None, mode="step
     print(f"Motor: ~1000 Hz (smooth interpolation)")
     print(f"Drive: {'ON' if driving else 'OFF'}   Arm: {'ARMED' if armed else 'OFF'}   Mode: {mode.upper()}")
     spd_txt = f"{speed:.2f}" if speed_min <= 0 else f"max={speed:.2f} min={speed_min:.2f}"
-    print(f"Speed scale: fwd={spd_txt} turn={(turn if turn is not None else speed):.2f}  "
+    turn_val = turn if turn is not None else speed
+    turn_txt = f"{turn_val:.2f}" if turn_min <= 0 else f"max={turn_val:.2f} min={turn_min:.2f}"
+    print(f"Speed scale: fwd={spd_txt} turn={turn_txt}  "
           f"(--speed / --turn 0.x to slow down)")
     print(f"Keys: m = toggle drive, g = toggle arm, q = quit")
     print(f"{'='*70}\n")
 
     controller = CascadeController(detector, centering, chassis, speed_scale=speed,
                                    steer_scale=turn, driving=driving, mode=mode,
-                                   speed_min=speed_min)
+                                   speed_min=speed_min, steer_min=turn_min)
     controller.start()
 
     show = True
@@ -328,9 +331,15 @@ if __name__ == "__main__":
             speed_min = float(parts[1])
             if speed_min > speed:
                 sys.exit(f"--speed MAX-MIN: max ({speed}) must be >= min ({speed_min})")
-    turn = None
+    turn, turn_min = None, 0.0
     if "--turn" in sys.argv:
-        turn = float(sys.argv[sys.argv.index("--turn") + 1])
+        raw = sys.argv[sys.argv.index("--turn") + 1]
+        parts = raw.split("-")
+        turn = float(parts[0])
+        if len(parts) > 1:
+            turn_min = float(parts[1])
+            if turn_min > turn:
+                sys.exit(f"--turn MAX-MIN: max ({turn}) must be >= min ({turn_min})")
     mode = "step"
     if "--mode" in sys.argv:
         mode = sys.argv[sys.argv.index("--mode") + 1]
@@ -338,4 +347,4 @@ if __name__ == "__main__":
             sys.exit(f"--mode must be 'step', 'chase' or 'cruise', got '{mode}'")
     use_ncnn = "--pt" not in sys.argv
     main(drive=drive, speed=speed, use_ncnn=use_ncnn, arm=arm, turn=turn, mode=mode,
-         speed_min=speed_min)
+         speed_min=speed_min, turn_min=turn_min)

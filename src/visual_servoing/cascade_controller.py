@@ -292,6 +292,8 @@ class CascadeController:
             steer_scale: multiplier (0..1) on the steer component — turning has
                 no rolling friction so it runs away at the forward scale; None
                 = same as speed_scale
+            steer_min: > 0 maps the steer output into [steer_min, steer_scale]
+                the same way (--turn 0.4-0.2)
             driving: whether motor commands actually reach the chassis — the real
                 gate; see set_driving()
             mode: "step" = pivot until the tin is central, then drive straight,
