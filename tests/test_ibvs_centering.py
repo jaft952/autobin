@@ -13,17 +13,23 @@ For a live run on the robot (real camera, optionally real motors/arm) use:
     python tests/test_ibvs_centering.py --live            # camera + overlay only, nothing moves
     python tests/test_ibvs_centering.py --live --drive    # also sends commands to the wheels
     python tests/test_ibvs_centering.py --live --drive --arm   # + grabs when "reached"
-    python tests/test_ibvs_centering.py --live --drive --predictive  # use the receding-horizon
-                                                                       # planner instead of the
-                                                                       # reactive controller
 
---drive, --arm and --predictive are ONLY read together with --live; they do
-nothing to the pure-logic test suite. Without --drive the wheels never move —
-distance_error and the active controller (reactive_controller by default, or
-predictive_controller with --predictive) still run every frame and their
-output is shown on the video overlay and console, so you can check the
-planned steer/speed before ever letting it touch the motors. Keys while the
-window is focused: m = toggle drive, g = toggle arm, q = quit.
+Live flags (only read with --live):
+  --drive              send commands to the wheels (default: look only)
+  --arm                grab when reached (needs a calibrated arc_grasp)
+  --mode predictive|chase|cruise|step   pursuit style (default predictive):
+       predictive = receding-horizon planner: smooth slow-start / cruise /
+                    gradual stop, re-planned every frame (vision-only)
+       chase  = reactive: drive + steer continuously toward the can
+       cruise = reactive: continuous, speed tapers with distance (slower near)
+       step   = reactive: point-and-look bursts at close range (stale-frame safe)
+  --speed MAX[-MIN]    scale forward speed (0..1). MAX-MIN tapers with distance
+  --turn  MAX[-MIN]    scale steer speed. MAX-MIN tapers as the can nears center
+
+Without --drive the wheels never move — distance_error and reactive_controller
+still run every frame and their output shows on the overlay/console, so the
+planned steer/speed can be checked before it touches the motors. Keys while the
+window is focused: m = toggle drive, g = toggle arm, n = cycle mode, q = quit.
 
 This whole function is NOT executed by the test suite or by pytest — see
 run_live_demo() at the bottom.
@@ -38,13 +44,16 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))   # for test_arc_gra
 
 from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
-from src.motion.differential_kinematics import DifferentialKinematics
-from src.visual_servoing.distance_error import compute_target_error, TargetError
+from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
+from src.visual_servoing.distance_error import compute_target_error, TargetError, STOP_DISTANCE_CM
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach, speed_tier,
-    MAX_SPEED, APPROACH_SPEED, BACKUP_SPEED, SCAN_SPEED, STEP_DURATION_S, STEP_SPEED, LOOK_PAUSE_S
+    MAX_SPEED, APPROACH_SPEED, BACKUP_SPEED, SCAN_SPEED, STEP_DURATION_S, STEP_SPEED, LOOK_PAUSE_S,
+    CRUISE_DISTANCE_CM,
 )
-# predictive approach removed — only reactive controller used
+from src.visual_servoing.predictive_controller import (
+    compute_predictive_command, ControllerState,
+)
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
 
 
@@ -488,6 +497,49 @@ def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -
     print("[arm] grab sequence done.")
 
 
+def _parse_max_min(flag: str, default_max: float = 1.0):
+    """Read --speed / --turn as MAX or MAX-MIN (e.g. 0.6 or 0.6-0.3).
+    Returns (max, min); min == max when a single value is given."""
+    if flag not in sys.argv:
+        return default_max, default_max
+    raw = sys.argv[sys.argv.index(flag) + 1]
+    parts = raw.split("-")
+    hi = float(parts[0])
+    lo = float(parts[1]) if len(parts) > 1 else hi
+    if lo > hi:
+        sys.exit(f"{flag} MAX-MIN: max ({hi}) must be >= min ({lo})")
+    return hi, lo
+
+
+def _scale_wheel_command(cmd, speed_factor: float, turn_factor: float):
+    """Scale a WheelCommand's forward and turn components independently.
+    speed_factor multiplies the common (forward) part, turn_factor the
+    differential (steer) part — so --speed and --turn tune drive vs turning
+    separately, same knobs the old cascade controller exposed."""
+    if cmd is None:
+        return None
+    fwd = (cmd.left_speed + cmd.right_speed) / 2.0
+    turn = (cmd.left_speed - cmd.right_speed) / 2.0
+    fwd *= speed_factor
+    turn *= turn_factor
+    return WheelCommand(fwd + turn, fwd - turn, cmd.apply_trim, cmd.trim_set)
+
+
+def _approach_factors(error, speed_max, speed_min, turn_max, turn_min, taper_speed: bool):
+    """Per-frame (speed_factor, turn_factor). Speed tapers max->min with
+    distance (cruise); turn tapers max->min as the can nears center."""
+    if taper_speed and error.distance_cm is not None:
+        span = max(1e-6, CRUISE_DISTANCE_CM - STOP_DISTANCE_CM)
+        t = (error.distance_cm - STOP_DISTANCE_CM) / span
+        t = max(0.0, min(1.0, t))
+        speed_factor = speed_min + (speed_max - speed_min) * t
+    else:
+        speed_factor = speed_max
+    te = max(0.0, min(1.0, abs(error.lateral_error) / 0.5))
+    turn_factor = turn_min + (turn_max - turn_min) * te
+    return speed_factor, turn_factor
+
+
 def run_live_demo():
     """Live camera view (segmentation + bbox + base-contact point, same as
     the perception module's own annotator) with the distance_error /
@@ -563,6 +615,21 @@ def run_live_demo():
     want_arm = "--arm" in sys.argv
     controller_name = "reactive"
 
+    # Pursuit mode:
+    #   predictive = receding-horizon planner (smooth slow-start/cruise/gradual
+    #                stop, re-planned every frame) -- the default
+    #   chase      = reactive: drive + steer continuously, flat --speed scale
+    #   cruise     = reactive: continuous, --speed tapers max->min with distance
+    #   step       = reactive: point-and-look bursts at close range
+    mode = "predictive"
+    if "--mode" in sys.argv:
+        mode = sys.argv[sys.argv.index("--mode") + 1]
+        if mode not in ("predictive", "chase", "cruise", "step"):
+            sys.exit(f"--mode must be predictive|chase|cruise|step, got '{mode}'")
+    speed_max, speed_min = _parse_max_min("--speed")
+    turn_max, turn_min = _parse_max_min("--turn")
+    print(f"[live] mode={mode} speed={speed_max}-{speed_min} turn={turn_max}-{turn_min}")
+
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
@@ -573,6 +640,7 @@ def run_live_demo():
     # a step-and-look time.sleep() below. See UltrasonicWatchdog's docstring.
     ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=actuator.stop).start()
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
+    pred_state = ControllerState()      # receding-horizon ramp continuity (predictive mode)
     # Track the previous camera-based distance to detect someone pushing the
     # tin closer while we're already at the "reached" handoff point; if the
     # can moves noticeably closer, command a short backward nudge.
@@ -616,7 +684,13 @@ def run_live_demo():
             ultra_watchdog.set_vision_distance(error.distance_cm if error.found else None)
             ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
 
-            cmd = compute_reactive_command(error, ultra.distance_cm, kin)
+            if mode == "predictive":
+                # Vision-only receding-horizon plan; ultrasonic still e-stops
+                # via the watchdog thread. Threads ControllerState for the
+                # speed/steer ramp continuity between frames.
+                cmd, pred_state = compute_predictive_command(error, kin, pred_state)
+            else:
+                cmd = compute_reactive_command(error, ultra.distance_cm, kin)
             tier = speed_tier(error)   # single source of truth for driving AND display below
 
             bbox_width_px = result.best.width if result.best is not None else None
@@ -663,27 +737,29 @@ def run_live_demo():
                     elif error.too_close:
                         actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
-                    elif tier == "step":
-                        print("[STEP] STEP-AND-LOOK")
-                        # Close range: a continuous command is already stale by
-                        # the time it reaches the wheels, and stale matters more
-                        # here. Nudge for one short step, then sit still long
-                        # enough for the next frame to be a fresh, unblurred
-                        # look before deciding the next step.
-                        now = time.monotonic()
-                        if now >= step_state["next_step_at"]:
-                            print("[STEP] MOVING")
-                            actuator.apply(cmd)
-                            time.sleep(STEP_DURATION_S)
-                            actuator.stop()
-                            step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
-                        else:
-                            print("[STEP] PAUSED")
-                            actuator.stop()
-
                     else:
-                        print("[CRUISE] cruise/approach")
-                        actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
+                        # Apply the --speed/--turn scaling; cruise also tapers
+                        # speed with distance (slower as it nears the can).
+                        sf, tf = _approach_factors(
+                            error, speed_max, speed_min, turn_max, turn_min,
+                            taper_speed=(mode == "cruise"))
+                        scaled = _scale_wheel_command(cmd, sf, tf)
+                        if mode == "step" and tier == "step":
+                            # point-and-look: nudge, then pause for a fresh
+                            # frame — avoids overshoot on a stale close-range frame
+                            now = time.monotonic()
+                            if now >= step_state["next_step_at"]:
+                                print("[STEP] MOVING")
+                                actuator.apply(scaled)
+                                time.sleep(STEP_DURATION_S)
+                                actuator.stop()
+                                step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
+                            else:
+                                print("[STEP] PAUSED")
+                                actuator.stop()
+                        else:
+                            print(f"[{mode.upper()}] continuous  sf={sf:.2f} tf={tf:.2f}")
+                            actuator.apply(scaled)   # chase/cruise: drive every frame
 
             # NOT "not ultra.emergency_stop" -- grab_confirmed and
             # emergency_stop share the same threshold (both default 25cm),
@@ -704,7 +780,7 @@ def run_live_demo():
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
                                         tier=tier, recovered_nudge=recovered_nudge)
-                    cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
+                    cv2.imshow("IBVS centering  (m=drive g=arm n=mode q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
@@ -716,6 +792,11 @@ def run_live_demo():
                     if key == ord("g") and arm is not None:
                         armed = not armed
                         print(f"\n[mode] arm {'ARMED' if armed else 'OFF'}\n")
+                    if key == ord("n"):
+                        mode = {"predictive": "chase", "chase": "cruise",
+                                "cruise": "step", "step": "predictive"}[mode]
+                        pred_state = ControllerState()   # drop any stale journey
+                        print(f"\n[mode] pursuit -> {mode.upper()}\n")
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False

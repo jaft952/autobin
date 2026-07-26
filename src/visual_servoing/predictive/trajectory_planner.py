@@ -50,7 +50,10 @@ from dataclasses import dataclass, field
 from typing import List
 
 from src.visual_servoing.distance_error import TargetError, STOP_DISTANCE_CM, CENTER_TOLERANCE
-from ..reactive_controller import MAX_SPEED, MAX_STEER_ANGLE_DEG, FAR_DISTANCE_CM
+from ..reactive_controller import (
+    MAX_SPEED, MAX_STEER_ANGLE_DEG,
+    CRUISE_DISTANCE_CM as FAR_DISTANCE_CM,   # renamed in the reactive-only refactor
+)
 from .prediction_model import (
     ActionStep, CONTROL_DT_S,
     estimate_initial_state, step as physics_step, predicted_error,
