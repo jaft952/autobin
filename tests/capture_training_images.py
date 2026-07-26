@@ -64,7 +64,7 @@ def _open_writer(out_dir: Path, fw: int, fh: int, fps: float):
     rate = fps if 1.0 <= fps <= 120.0 else 30.0   # guard against a bogus reported fps
     for fourcc, ext in (("mp4v", ".mp4"), ("MJPG", ".avi")):
         path = out_dir / f"vid_{idx:04d}{ext}"
-        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*fourcc),
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*fourcc), # type: ignore
                                  rate, (fw, fh))
         if writer.isOpened():
             return writer, path
@@ -151,7 +151,7 @@ def main():
                         print(f"● recording -> {video_path}")
                 else:
                     recording = False
-                    writer.release()
+                    writer.release() # type: ignore
                     print(f"✓ saved video {video_path}  ({vid_frames} frames)")
                     writer, video_path = None, None
     except KeyboardInterrupt:

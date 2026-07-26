@@ -19,8 +19,8 @@ def _make_arm():
         import importlib.util
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_arc_grasp.py")
         spec = importlib.util.spec_from_file_location("arc_tool", p)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)          # raises if hardware libs missing
+        mod = importlib.util.module_from_spec(spec) # type: ignore
+        spec.loader.exec_module(mod) # type: ignore
         arm = mod.Arm()
         print("[arm] ready — 'g' grabs, 'h' homes.")
         return arm
@@ -135,8 +135,8 @@ def main():
                 # lying   -> bbox CENTER (tracks the graspable middle at
                 #            every orientation; the bottom edge doesn't).
                 u, v = best.base_center if pose == "upright" else best.center
-                nx = u / result.frame_width
-                ny = v / result.frame_height
+                nx = u / result.frame_width # type: ignore
+                ny = v / result.frame_height # type: ignore
                 solved, hint = _classify(solver, nx, ny, pose, angle)
                 tag = (f"GRABBABLE {solved}" if solved is not None else hint)
                 print(f"ref=({u:4d},{v:4d}) n=({nx:.3f},{ny:.3f}) [{pose_label}]  {tag}")
@@ -190,9 +190,18 @@ def main():
                 if arm is None:
                     print("[bin] (no hardware) would dump to bin")
                 else:
+                    # Mirror ArmExecutor's real autonomous sequence
+                    # (grab -> dump -> home): don't leave the arm parked
+                    # over the bin holding a pose — ramp home under power,
+                    # THEN cut PWM, so it isn't burning battery holding a
+                    # pose between grabs (rest() does both, in order).
                     arm.dump_to_bin()
+                    arm.rest()
             if key == ord("h") and arm is not None:
-                arm.force_home()
+                # force_home() alone would leave it holding HOME under PWM
+                # forever — that's a pose, not rest. rest() ramps there
+                # under power, then cuts PWM so it actually goes idle.
+                arm.rest()
             if key == ord("r") and arm is not None:
                 arm.release()   # cut PWM — arm goes limp (servo_jog-style)
 

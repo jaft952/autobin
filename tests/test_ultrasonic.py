@@ -10,8 +10,8 @@ Usage (Pi):
 Wiring (BCM numbering):
     VCC  -> 5V   (physical pin 2)
     GND  -> GND  (physical pin 6)
-    TRIG -> BCM 5 (physical pin 29)
-    ECHO -> BCM 6 (physical pin 31) THROUGH a 1k/2k voltage divider —
+    TRIG -> GPIO 23 (physical pin 16)
+    ECHO -> GPIO 24 (physical pin 18)
             ECHO outputs 5V, Pi GPIO tolerates only 3.3V!
 
 What you should see:
@@ -34,14 +34,14 @@ BAR_WIDTH = 40
 
 def main():
     ap = argparse.ArgumentParser(description="HC-SR04 wiring check")
-    ap.add_argument("--trig", type=int, default=5, help="TRIG pin (BCM)")
-    ap.add_argument("--echo", type=int, default=6, help="ECHO pin (BCM)")
+    ap.add_argument("--trig", type=int, default=23, help="TRIG pin (GPIO)")
+    ap.add_argument("--echo", type=int, default=24, help="ECHO pin (GPIO)")
     ap.add_argument("--hz", type=float, default=10.0, help="poll rate")
     args = ap.parse_args()
 
     sensor = UltrasonicSensor(UltrasonicPins(trig=args.trig, echo=args.echo))
     period = 1.0 / args.hz
-    print(f"TRIG=BCM{args.trig} ECHO=BCM{args.echo} @ {args.hz:.0f} Hz — Ctrl+C to quit")
+    print(f"TRIG=GPIO{args.trig} ECHO=GPIO{args.echo} @ {args.hz:.0f} Hz — Ctrl+C to quit")
 
     try:
         while True:
