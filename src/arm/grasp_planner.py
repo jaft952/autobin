@@ -16,7 +16,7 @@ GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]
 # MG996R gear gripper, safe window 0..55 enforced by CHANNEL_ANGLE_LIMITS.
 # Keep in sync with tests/test_arc_grasp.py.
 GRIPPER_OPEN = 0.0
-GRIPPER_CLOSED = 50.0
+GRIPPER_CLOSED = 55.0
 
 # Arc-grasp sequence: calibrated poses assume this exact order and pacing.
 ARC_LIFT_ARM      = [96.7, 96.7, 100.0, 100.0, 90.0]
