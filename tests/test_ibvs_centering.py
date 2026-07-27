@@ -750,7 +750,7 @@ def run_live_demo():
                             now = time.monotonic()
                             if now >= step_state["next_step_at"]:
                                 print("[STEP] MOVING")
-                                actuator.apply(scaled)
+                                actuator.apply(scaled) # type: ignore
                                 time.sleep(STEP_DURATION_S)
                                 actuator.stop()
                                 step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
@@ -759,7 +759,7 @@ def run_live_demo():
                                 actuator.stop()
                         else:
                             print(f"[{mode.upper()}] continuous  sf={sf:.2f} tf={tf:.2f}")
-                            actuator.apply(scaled)   # chase/cruise: drive every frame
+                            actuator.apply(scaled) # type: ignore ; chase/cruise: drive every frame
 
             # NOT "not ultra.emergency_stop" -- grab_confirmed and
             # emergency_stop share the same threshold (both default 25cm),
