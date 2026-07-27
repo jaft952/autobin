@@ -49,7 +49,7 @@ HOME_ARM = [100.0, 30.0, 0.0, 150.0, 90.0]   # keep = GraspPlanner HOME_ANGLES
 LIFT_ARM = [96.7, 96.7, 100.0, 100.0, 90.0]
 BIN_ARM  = [96.7, 96.7, 100.0, 20.0, 90.0]   # keep = GraspPlanner BIN_DROP_ANGLES
 # keep = grasp_planner values; safe window 0..55 enforced in the driver
-GRIPPER_OPEN, GRIPPER_CLOSE = 0.0, 50.0
+GRIPPER_OPEN, GRIPPER_CLOSE = 50.0, 4.0
 STEP_DEG, STEP_DELAY = 2.0, 0.15      
 
 

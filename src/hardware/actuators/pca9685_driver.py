@@ -21,7 +21,7 @@ SERVO_RANGE_DEG = 180
 # same rationale as OPEN parking off the stop at the low end: don't command
 # right up to the mechanical limit you measured, in case of any drift.
 GRIPPER_MIN_DEG = 0.0
-GRIPPER_MAX_DEG = 180.0
+GRIPPER_MAX_DEG = 78.0
 CHANNEL_ANGLE_LIMITS = {5: (GRIPPER_MIN_DEG, GRIPPER_MAX_DEG)}
 
 
