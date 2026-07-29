@@ -258,6 +258,15 @@ _GRAB_COOLDOWN_S = 3.0   # after a grab attempt (success or refusal), don't re-s
 STEP_DURATION_S = 0.25
 LOOK_PAUSE_S = 0.6
 
+# Cruise tier (FORWARD_HIGH_SPEED, far away) needs the same step-and-look
+# treatment -- FORWARD_HIGH_SPEED is fast enough now that driving it
+# continuously overshoots straight over the can before the next frame's
+# detection can react. Longer step / shorter pause than the close-range
+# "step" tier above since cruise starts much farther out and can afford a
+# bigger nudge between looks.
+CRUISE_STEP_DURATION_S = 1.0
+CRUISE_LOOK_PAUSE_S = 0.5
+
 
 def _pose_and_angle(box):
     """(pose, angle_deg_or_None) for arc_grasp, from the detection's
@@ -458,18 +467,22 @@ def run_live_demo():
     distance breakpoints (FAR_DISTANCE_CM / LOW_DISTANCE_CM -> FORWARD_HIGH_SPEED /
     FORWARD_MID_SPEED / FORWARD_LOW_SPEED — see that module) rather than a continuous
     formula — same command either way, but HOW it's applied switches with
-    distance: far out it's driven every frame like any other command
-    (cruise/approach), while inside LOW_DISTANCE_CM (speed_tier() == "step")
-    it's applied as a short STEP_DURATION_S nudge followed by a
-    LOOK_PAUSE_S stop (TODO: reactive_controller.py no longer defines either
-    constant -- see the placeholders defined near _GRAB_COOLDOWN_S below),
-    so the camera gets a fresh, unblurred frame to re-aim
-    from before the next nudge, walking the robot into the grab position
-    instead of risking an overshoot on a stale frame. The overlay's DRIVE
-    line and the console log both show reactive_controller.speed_tier()'s
-    label (CRUISE / APPROACH / STEP / BACKUP / REACHED / FALLBACK / NONE)
-    directly, so what's on screen can't drift out of sync with which
-    constant is actually driving the wheels.
+    distance: at "approach" it's driven every frame like any other command,
+    while both "cruise" (far, FORWARD_HIGH_SPEED) and "step" (inside
+    LOW_DISTANCE_CM) use a step-and-look pattern instead -- a continuous
+    command at either extreme is already stale by the time it reaches the
+    wheels, and FORWARD_HIGH_SPEED is fast enough to overshoot straight over
+    the can before the next detection can react. "cruise" nudges for
+    CRUISE_STEP_DURATION_S then pauses CRUISE_LOOK_PAUSE_S; "step" nudges for
+    STEP_DURATION_S then pauses LOOK_PAUSE_S (TODO: reactive_controller.py no
+    longer defines either STEP_DURATION_S or LOOK_PAUSE_S -- see the
+    placeholders defined near _GRAB_COOLDOWN_S below), so the camera gets a
+    fresh, unblurred frame to re-aim from before the next nudge, walking the
+    robot toward the can instead of risking an overshoot on a stale frame.
+    The overlay's DRIVE line and the console log both show
+    reactive_controller.speed_tier()'s label (CRUISE / APPROACH / STEP /
+    BACKUP / REACHED / FALLBACK / NONE) directly, so what's on screen can't
+    drift out of sync with which constant is actually driving the wheels.
 
     If the can ends up too_close (bbox fills the frame), the command is a
     gentle BACKWARD nudge (BACKUP_SPEED) instead of a stop, so a bad
@@ -503,6 +516,7 @@ def run_live_demo():
     # a step-and-look time.sleep() below. See UltrasonicWatchdog's docstring.
     ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=actuator.stop).start()
     step_state = {"next_step_at": 0.0} # only consulted in the "step" speed tier
+    cruise_step_state = {"next_step_at": 0.0} # only consulted in the "cruise" speed tier
     # Track the previous camera-based distance to detect someone pushing the
     # tin closer while we're already at the "reached" handoff point; if the
     # can moves noticeably closer, command a short backward nudge.
@@ -572,6 +586,24 @@ def run_live_demo():
                 elif error.too_close:
                     actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
+                elif tier == "cruise":
+                    # Far away, driven at FORWARD_HIGH_SPEED -- fast enough
+                    # that a continuous full-rate command overshoots straight
+                    # over the can before the next frame's detection can
+                    # react (same staleness problem as the "step" tier
+                    # below, just happening at higher speed over a longer
+                    # distance). Nudge for CRUISE_STEP_DURATION_S, then stop
+                    # for CRUISE_LOOK_PAUSE_S so the next frame is a fresh
+                    # look before committing to more forward motion.
+                    now = time.monotonic()
+                    if now >= cruise_step_state["next_step_at"]:
+                        actuator.apply(cmd)
+                        time.sleep(CRUISE_STEP_DURATION_S)
+                        actuator.stop()
+                        cruise_step_state["next_step_at"] = time.monotonic() + CRUISE_LOOK_PAUSE_S
+                    else:
+                        actuator.stop()
+
                 elif tier == "step":
                     # Close range: a continuous command is already stale by
                     # the time it reaches the wheels, and stale matters more
@@ -588,7 +620,7 @@ def run_live_demo():
                         actuator.stop()
 
                 else:
-                    actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
+                    actuator.apply(cmd) # approach: continuous, full-rate driving
 
             if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
                 _attempt_grab(result, solver, arm, actuator, grab_state)
