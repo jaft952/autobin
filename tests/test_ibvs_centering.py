@@ -368,8 +368,20 @@ def _format_motion_plan(cmd, error, tier: str, ultra_emergency: bool = False) ->
         return f"STOPPED ({tier})"
     if cmd.left_speed < 0 and cmd.right_speed < 0:
         return f"BACKING UP: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}"
+
     steer = "RIGHT" if error.lateral_error > 0.02 else "LEFT" if error.lateral_error < -0.02 else "STRAIGHT"
-    return f"{tier.upper()}: {steer} | L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}"
+
+    if steer == "LEFT":
+        expected = "L_faster" if cmd.left_speed > cmd.right_speed else "R_faster"
+        status = "[OK]" if cmd.left_speed > cmd.right_speed else "[ERR]"
+    elif steer == "RIGHT":
+        expected = "R_faster" if cmd.right_speed > cmd.left_speed else "L_faster"
+        status = "[OK]" if cmd.right_speed > cmd.left_speed else "[ERR]"
+    else:
+        expected = "equal"
+        status = "[OK]" if abs(cmd.left_speed - cmd.right_speed) < 0.5 else "[WARN]"
+
+    return f"{tier.upper()}: {steer} {status} | L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} ({expected})"
 
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
