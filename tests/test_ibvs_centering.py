@@ -13,17 +13,13 @@ For a live run on the robot (real camera, optionally real motors/arm) use:
     python tests/test_ibvs_centering.py --live            # camera + overlay only, nothing moves
     python tests/test_ibvs_centering.py --live --drive    # also sends commands to the wheels
     python tests/test_ibvs_centering.py --live --drive --arm   # + grabs when "reached"
-    python tests/test_ibvs_centering.py --live --drive --predictive  # use the receding-horizon
-                                                                       # planner instead of the
-                                                                       # reactive controller
 
---drive, --arm and --predictive are ONLY read together with --live; they do
-nothing to the pure-logic test suite. Without --drive the wheels never move —
-distance_error and the active controller (reactive_controller by default, or
-predictive_controller with --predictive) still run every frame and their
-output is shown on the video overlay and console, so you can check the
-planned steer/speed before ever letting it touch the motors. Keys while the
-window is focused: m = toggle drive, g = toggle arm, q = quit.
+--drive and --arm are ONLY read together with --live; they do nothing to the
+pure-logic test suite. Without --drive the wheels never move — distance_error
+and reactive_controller still run every frame and their output is shown on
+the video overlay and console, so you can check the planned steer/speed
+before ever letting it touch the motors. Keys while the window is focused:
+m = toggle drive, g = toggle arm, q = quit.
 
 This whole function is NOT executed by the test suite or by pytest — see
 run_live_demo() at the bottom.
@@ -44,7 +40,6 @@ from src.visual_servoing.reactive_controller import (
     compute_reactive_command, speed_tier,
     FORWARD_HIGH_SPEED, FORWARD_MID_SPEED, FORWARD_LOW_SPEED, BACKUP_SPEED,
 )
-# predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
 
 
