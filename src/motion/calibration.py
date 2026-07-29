@@ -26,7 +26,7 @@ class MotionCalibration:
 
     motor_a_forward_trim: float = 1.0
     motor_b_forward_trim: float = 0.87
-    motor_a_backward_trim: float = 1.0
+    motor_a_backward_trim: float = 0.9
     motor_b_backward_trim: float = 1.0
     motor_a_turn_trim: float = 1.0
     motor_b_turn_trim: float = 1.0
