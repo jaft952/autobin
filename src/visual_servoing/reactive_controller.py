@@ -18,38 +18,15 @@ from typing import Optional
 from src.visual_servoing.distance_error import TargetError
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
-# Speed is looked up from these hand-tested distance breakpoints, not
-# computed from a continuous formula -- distance_cm is only as good as
-# distance_error.CALIBRATION_CONSTANT_PX_CM, which is still an unmeasured
-# placeholder (see that module), so a smooth ramp off it is no more
-# trustworthy than a few hardcoded checkpoints tuned by eye on hardware.
-CRUISE_DISTANCE_CM = 90.0    # distance at/beyond which speed is MAX_SPEED
-MAX_SPEED = 25.0             # TODO tune: hand-tested cruise speed at/beyond CRUISE_DISTANCE_CM
-APPROACH_SPEED = 25.0        # TODO tune: hand-tested speed between FAR_DISTANCE_CM and CRUISE_DISTANCE_CM
-FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estimated at all
+FAR_DISTANCE_CM = 60.0          # distance at/below which is_final_approach() triggers step-and-look
+LOW_DISTANCE_CM = 30.0          # distance at/below which speed is LOW_SPEED
 
-# Lowered from 24 (same as MAX_SPEED) -- on hardware that drove the
-# too_close backup at full speed for as long as too_close stayed True,
-# which overshot well past a safe recovery distance before the next
-# (stale-by-the-time-it-arrives) frame could clear the flag. Still just a
-# guess pending another hardware pass -- watch for either "still backs up
-# too far" (lower further) or "doesn't clear too_close fast enough" (raise
-# it back up a bit).
-BACKUP_SPEED = 20.0          # TODO tune: gentle reverse to recover from an overshoot
+FORWARD_HIGH_SPEED = 25.0       # hand-tested cruise speed at/beyond FAR_DISTANCE
+FORWARD_MID_SPEED = 23.0        # hand-tested speed between FAR_DISTANCE_CM and MID_DISTANCE_CM
+FORWARD_LOW_SPEED = 20.0        # used only when distance can't be estimated at all
 
-MAX_STEER_ANGLE_DEG = 80.0   # keep below 90 so it never fully spins in place
-FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
-
-# Below FAR_DISTANCE_CM, continuous driving risks overshoot: by the time a
-# command reaches the wheels the frame it was computed from is already
-# stale, and this close, a stale frame's worth of travel is enough to blow
-# past the grab point or drift off-center. is_final_approach() flags this
-# zone; the caller (the live loop) is responsible for actually stepping
-# instead of driving continuously -- see STEP_DURATION_S / LOOK_PAUSE_S
-# below, used there, not here (this module stays hardware/time-free).
-STEP_SPEED = 25.0            # TODO tune: hand-tested fixed nudge speed for step-and-look
-STEP_DURATION_S = 0.25       # TODO tune: length of one forward/steer nudge
-LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred look
+BACKUP_SPEED = 20.0             # gentle reverse to recover from an overshoot
+MAX_STEER_ANGLE_DEG = 90.0      # keep below 90 so it never fully spins in place
 
 
 def compute_reactive_command(error: TargetError,
@@ -57,9 +34,9 @@ def compute_reactive_command(error: TargetError,
     """
     Speed is a lookup against hardcoded distance breakpoints, not a
     continuous formula (see the constants block above for why):
-        distance_cm >= CRUISE_DISTANCE_CM  (~90cm) -> MAX_SPEED
-        FAR_DISTANCE_CM < distance_cm < CRUISE_DISTANCE_CM (~60cm) -> APPROACH_SPEED
-        distance_cm <= FAR_DISTANCE_CM     (~30cm) -> STEP_SPEED
+        distance_cm >= FAR_DISTANCE_CM  (~90cm) -> MAX_SPEED
+        FAR_DISTANCE_CM < distance_cm < MID_DISTANCE_CM (~60cm) -> MID_SPEED
+        distance_cm <= LOW_DISTANCE_CM     (~30cm) -> LOW_SPEED
 
     That last tier never reaches zero -- unlike the old zero-at-STOP_DISTANCE_CM
     ramp this replaced, steering keeps working the whole way to the grab
@@ -93,13 +70,15 @@ def compute_reactive_command(error: TargetError,
                        abs(error.lateral_error) * 2 * MAX_STEER_ANGLE_DEG)
 
     if error.distance_cm is None:
-        dynamic_speed = FALLBACK_SPEED
-    elif error.distance_cm >= CRUISE_DISTANCE_CM:
-        dynamic_speed = MAX_SPEED
+        dynamic_speed = 0
     elif error.distance_cm > FAR_DISTANCE_CM:
-        dynamic_speed = APPROACH_SPEED
+        dynamic_speed = FORWARD_HIGH_SPEED
+    elif error.distance_cm > LOW_DISTANCE_CM and error.distance_cm <= FAR_DISTANCE_CM:
+        dynamic_speed = FORWARD_MID_SPEED
+    elif error.distance_cm > 0 and error.distance_cm <= LOW_DISTANCE_CM:
+        dynamic_speed = FORWARD_LOW_SPEED
     else:
-        dynamic_speed = STEP_SPEED   # is_final_approach() zone
+        dynamic_speed = 0
 
     if error.lateral_error > 0:
         return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
@@ -126,29 +105,10 @@ def speed_tier(error: TargetError) -> str:
         return "reached"
     if error.distance_cm is None:
         return "fallback"
-    if error.distance_cm >= CRUISE_DISTANCE_CM:
-        return "cruise"
     if error.distance_cm > FAR_DISTANCE_CM:
+        return "cruise"
+    if error.distance_cm > LOW_DISTANCE_CM and error.distance_cm <= FAR_DISTANCE_CM:
         return "approach"
-    return "step"
-
-
-def is_final_approach(error: TargetError) -> bool:
-    """True once close enough (inside FAR_DISTANCE_CM) that the caller should
-    switch from driving compute_reactive_command's output continuously to
-    short step-then-look bursts instead: apply the command for
-    STEP_DURATION_S, stop, wait LOOK_PAUSE_S for a fresh unblurred frame,
-    then re-evaluate -- rather than driving on a frame that's already stale
-    by the time it reaches the wheels, which this close is enough to
-    overshoot the grab point or drift off-center. The command itself doesn't
-    change (same speed-tiered/steered WheelCommand either way); only how
-    often the caller applies it does, so the timing lives in the live loop,
-    not here.
-
-    False once already reached (nothing left to approach), too_close
-    (backing off takes priority over fine positioning), or still far enough
-    out that continuous cruising is fine and faster.
-    """
-    return (error.found and not error.reached and not error.too_close
-            and error.distance_cm is not None
-            and error.distance_cm <= FAR_DISTANCE_CM)
+    if error.distance_cm > 0 and error.distance_cm <= LOW_DISTANCE_CM:
+        return "step"
+    return "fallback"

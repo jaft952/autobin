@@ -162,9 +162,9 @@ class AluminiumCanDetector:
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.60,       # keep = runtime CameraSensor
-        frame_width: int = 1920,
-        frame_height: int = 1080,
+        conf_threshold: float = 0.60,
+        frame_width: int = 1280,
+        frame_height: int = 720,
         device=None,
         imgsz: int = 640,
         use_ncnn: bool = True,

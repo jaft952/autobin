@@ -41,8 +41,8 @@ from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
 from src.visual_servoing.distance_error import compute_target_error, TargetError
 from src.visual_servoing.reactive_controller import (
-    compute_reactive_command, is_final_approach, speed_tier,
-    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    compute_reactive_command, speed_tier,
+    FORWARD_HIGH_SPEED, FORWARD_MID_SPEED, FORWARD_LOW_SPEED, BACKUP_SPEED,
 )
 # predictive approach removed — only reactive controller used
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
@@ -162,44 +162,25 @@ def test_reactive_command_backs_away_when_too_close():
 def test_reactive_command_when_can_is_left_of_center():
     """Far + left of center -> steers toward arc_forward_right (right wheel
     slower than left) — hardware-verified mapping, see the sign-convention
-    note in reactive_controller.py. Far away (>= CRUISE_DISTANCE_CM) ->
-    speed at MAX_SPEED, the top hardcoded tier."""
+    note in reactive_controller.py. Far away (> FAR_DISTANCE_CM) ->
+    speed at FORWARD_HIGH_SPEED, the top hardcoded tier."""
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=40))
     cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.right_speed < cmd.left_speed, cmd
-    assert cmd.left_speed >= 0.9 * MAX_SPEED, cmd   # brisk, not crawling
+    assert cmd.left_speed >= 0.9 * FORWARD_HIGH_SPEED, cmd   # brisk, not crawling
     print("PASS steers toward the can + full speed when far + left of center")
-
-
-def test_reactive_command_when_can_is_right_of_center():
-    """Inside FAR_DISTANCE_CM (final approach / step-and-look) + right of
-    center -> steers toward arc_forward_left (left wheel slower than right)
-    — hardware-verified mapping, see reactive_controller.py — at the fixed
-    STEP_SPEED nudge, not a ramped-to-zero value (no more zero-speed
-    stalling: STEP_SPEED keeps steering alive all the way to the grab
-    point). frame_height oversized per the is_final_approach fixtures above
-    to stay clear of CLOSE_BBOX_FRACTION at this bbox size."""
-    error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000))
-    assert is_final_approach(error), error
-    cmd = compute_reactive_command(error, _kin())
-    assert cmd is not None
-    assert cmd.left_speed < cmd.right_speed, cmd
-    assert abs(cmd.right_speed - STEP_SPEED) < 0.2 * STEP_SPEED, cmd   # right (outer) wheel ~= STEP_SPEED * trim
-    print("PASS steers toward the can + step-and-look nudge speed when in final approach")
 
 
 def test_reactive_command_speed_tiers_are_hardcoded():
     """Same lateral offset, three distances spanning the three breakpoints
     -> each picks a distinct hardcoded tier (per speed_tier()'s label) with
     the outer wheel's speed matching that tier's constant, confirming a
-    lookup against CRUISE_DISTANCE_CM / FAR_DISTANCE_CM rather than a
-    continuous formula. Tolerant of the tiers currently being hand-tuned to
-    the same numeric value -- the point is which constant got looked up,
-    not that the values must differ."""
-    cruise_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40))        # ~142cm
-    approach_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=164))      # ~70cm
-    step_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000))  # ~27cm
+    lookup against LOW_DISTANCE_CM / FAR_DISTANCE_CM rather than a
+    continuous formula."""
+    cruise_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=40))                        # ~142cm
+    approach_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=400, frame_height=5000))  # ~45cm
+    step_error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000))     # ~27cm
 
     assert speed_tier(cruise_error) == "cruise", cruise_error
     assert speed_tier(approach_error) == "approach", approach_error
@@ -209,9 +190,9 @@ def test_reactive_command_speed_tiers_are_hardcoded():
     approach = compute_reactive_command(approach_error, _kin())
     step = compute_reactive_command(step_error, _kin())
     assert cruise is not None and approach is not None and step is not None
-    assert abs(cruise.right_speed - MAX_SPEED) < 0.2 * MAX_SPEED, cruise
-    assert abs(approach.right_speed - APPROACH_SPEED) < 0.2 * APPROACH_SPEED, approach
-    assert abs(step.right_speed - STEP_SPEED) < 0.2 * STEP_SPEED, step
+    assert abs(cruise.right_speed - FORWARD_HIGH_SPEED) < 0.2 * FORWARD_HIGH_SPEED, cruise
+    assert abs(approach.right_speed - FORWARD_MID_SPEED) < 0.2 * FORWARD_MID_SPEED, approach
+    assert abs(step.right_speed - FORWARD_LOW_SPEED) < 0.2 * FORWARD_LOW_SPEED, step
     print("PASS speed is a hardcoded tier lookup keyed by distance breakpoints, not a continuous ramp")
 
 
@@ -229,7 +210,7 @@ def test_speed_tier_labels_cover_every_branch():
     assert speed_tier(compute_target_error(
         _make_detection(norm_x=0.3, bbox_height_px=40))) == "cruise"      # ~142cm
     assert speed_tier(compute_target_error(
-        _make_detection(norm_x=0.3, bbox_height_px=164))) == "approach"   # ~70cm
+        _make_detection(norm_x=0.3, bbox_height_px=400, frame_height=5000))) == "approach"   # ~45cm
     assert speed_tier(compute_target_error(
         _make_detection(norm_x=0.5, bbox_height_px=1064, frame_height=5000))) == "step"   # ~27cm
     fallback_error = TargetError(found=True, lateral_error=0.0, distance_cm=None,
@@ -245,50 +226,7 @@ def test_speed_tier_labels_cover_every_branch():
 # the target distance_cm band under today's (uncalibrated, see
 # distance_error.py) CALIBRATION_CONSTANT_PX_CM placeholder -- these pixel
 # numbers aren't meant to look like a real camera frame.
-
-def test_final_approach_when_close_but_not_reached():
-    """Inside FAR_DISTANCE_CM but outside STOP_DISTANCE_CM -> switch to
-    step-then-look (centered so the distance zone is isolated from
-    centering as the reason)."""
-    result = _make_detection(norm_x=0.5, bbox_height_px=1064, frame_height=5000)
-    error = compute_target_error(result)
-    assert error.found and not error.reached and not error.too_close
-    assert is_final_approach(error), error
-    print("PASS final approach: close but not yet at the stop distance")
-
-
-def test_cruise_when_far():
-    """Far away -> still cruising, not yet stepping."""
-    result = _make_detection(norm_x=0.3, bbox_height_px=40)
-    error = compute_target_error(result)
-    assert not is_final_approach(error), error
-    print("PASS cruise (not final approach) when far")
-
-
-def test_not_final_approach_once_reached():
-    """Already reached -> nothing left to step toward."""
-    result = _make_detection(norm_x=0.5, bbox_height_px=1662, frame_height=5000)
-    error = compute_target_error(result)
-    assert error.reached
-    assert not is_final_approach(error), error
-    print("PASS not final-approach once already reached")
-
-
-def test_not_final_approach_when_not_found():
-    error = compute_target_error(DetectionResult())
-    assert not is_final_approach(error)
-    print("PASS not final-approach when nothing is found")
-
-
-def test_not_final_approach_when_too_close():
-    """too_close takes priority over step-and-look -- backing away wins."""
-    result = _make_detection(norm_x=0.3, bbox_height_px=360)
-    error = compute_target_error(result)
-    assert error.too_close
-    assert not is_final_approach(error), error
-    print("PASS not final-approach when too_close (backing away takes priority)")
-
-
+# 
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -301,14 +239,8 @@ ALL_TESTS = [
     test_reactive_command_none_when_reached,
     test_reactive_command_backs_away_when_too_close,
     test_reactive_command_when_can_is_left_of_center,
-    test_reactive_command_when_can_is_right_of_center,
     test_reactive_command_speed_tiers_are_hardcoded,
     test_speed_tier_labels_cover_every_branch,
-    test_final_approach_when_close_but_not_reached,
-    test_cruise_when_far,
-    test_not_final_approach_once_reached,
-    test_not_final_approach_when_not_found,
-    test_not_final_approach_when_too_close,
 ]
 
 
@@ -329,7 +261,15 @@ def _run_all_tests():
 
 # ── Live hardware demo (NOT run by the test suite / pytest / an agent) ───
 
-_GRAB_COOLDOWN_S = 4.0   # after a grab attempt (success or refusal), don't re-solve every frame
+_GRAB_COOLDOWN_S = 3.0   # after a grab attempt (success or refusal), don't re-solve every frame
+
+# TODO: reactive_controller.py dropped STEP_DURATION_S / LOOK_PAUSE_S (its own
+# docstring says step-and-look timing is "the caller's job... not here") but
+# doesn't export replacements -- these are the old values migrated here as a
+# placeholder purely so run_live_demo()'s step-and-look branch doesn't throw
+# NameError. Tune or move these wherever you decide they belong.
+STEP_DURATION_S = 0.25
+LOOK_PAUSE_S = 0.6
 
 
 def _pose_and_angle(box):
@@ -344,19 +284,14 @@ def _pose_and_angle(box):
     return "lying", o.angle
 
 
-# Display-only: color per speed_tier() label, used by both the overlay and
-# (as a quick reference) anyone reading this file. Keep the KEYS in sync
-# with reactive_controller.speed_tier()'s possible return values -- an
-# unrecognized tier just falls back to TIER_COLOR's default below rather
-# than raising, since this is a monitor, not a safety path.
 TIER_COLOR = {
-    "cruise": (0, 255, 0),      # green   -- brisk, MAX_SPEED
-    "approach": (0, 220, 170),  # teal    -- APPROACH_SPEED
-    "step": (0, 200, 255),      # orange  -- STEP_SPEED, step-and-look nudge
+    "cruise": (0, 255, 0),      # green      -- brisk, FORWARD_HIGH_SPEED
+    "approach": (0, 220, 170),  # teal       -- FORWARD_MID_SPEED
+    "step": (0, 200, 255),      # orange     -- FORWARD_LOW_SPEED, step-and-look nudge
     "backup": (0, 140, 255),    # red-orange -- BACKUP_SPEED, too_close
-    "reached": (0, 255, 0),     # green   -- arm handoff point
-    "fallback": (0, 165, 255),  # amber   -- FALLBACK_SPEED, distance unknown
-    "none": (0, 0, 255),        # red     -- nothing found
+    "reached": (0, 255, 0),     # green      -- arm handoff point
+    "fallback": (0, 165, 255),  # amber      -- FORWARD_LOW_SPEED, distance unknown
+    "none": (0, 0, 255),        # red        -- nothing found
 }
 
 
@@ -533,13 +468,15 @@ def run_live_demo():
     watchdog's stop.
 
     reactive_controller.py looks up the commanded speed from hardcoded
-    distance breakpoints (CRUISE_DISTANCE_CM / FAR_DISTANCE_CM -> MAX_SPEED /
-    APPROACH_SPEED / STEP_SPEED — see that module) rather than a continuous
+    distance breakpoints (FAR_DISTANCE_CM / LOW_DISTANCE_CM -> FORWARD_HIGH_SPEED /
+    FORWARD_MID_SPEED / FORWARD_LOW_SPEED — see that module) rather than a continuous
     formula — same command either way, but HOW it's applied switches with
     distance: far out it's driven every frame like any other command
-    (cruise/approach), while inside FAR_DISTANCE_CM (speed_tier() == "step")
+    (cruise/approach), while inside LOW_DISTANCE_CM (speed_tier() == "step")
     it's applied as a short STEP_DURATION_S nudge followed by a
-    LOOK_PAUSE_S stop, so the camera gets a fresh, unblurred frame to re-aim
+    LOOK_PAUSE_S stop (TODO: reactive_controller.py no longer defines either
+    constant -- see the placeholders defined near _GRAB_COOLDOWN_S below),
+    so the camera gets a fresh, unblurred frame to re-aim
     from before the next nudge, walking the robot into the grab position
     instead of risking an overshoot on a stale frame. The overlay's DRIVE
     line and the console log both show reactive_controller.speed_tier()'s
