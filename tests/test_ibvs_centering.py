@@ -571,9 +571,6 @@ def run_live_demo():
 
                 elif cmd is None:
                     actuator.stop()
-                    # If we were 'reached' (arm handoff) but the can has been
-                    # moved closer since the last frame, back off a bit even
-                    # though the controller would normally return None.
                     if error.reached and error.distance_cm is not None and last_distance_cm is not None:
                         if error.distance_cm + 1.0 < last_distance_cm:
                             actuator.apply(kin.backward(speed=BACKUP_SPEED))
@@ -586,41 +583,28 @@ def run_live_demo():
                 elif error.too_close:
                     actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
-                elif tier == "cruise":
-                    # Far away, driven at FORWARD_HIGH_SPEED -- fast enough
-                    # that a continuous full-rate command overshoots straight
-                    # over the can before the next frame's detection can
-                    # react (same staleness problem as the "step" tier
-                    # below, just happening at higher speed over a longer
-                    # distance). Nudge for CRUISE_STEP_DURATION_S, then stop
-                    # for CRUISE_LOOK_PAUSE_S so the next frame is a fresh
-                    # look before committing to more forward motion.
-                    now = time.monotonic()
-                    if now >= cruise_step_state["next_step_at"]:
-                        actuator.apply(cmd)
-                        time.sleep(CRUISE_STEP_DURATION_S)
-                        actuator.stop()
-                        cruise_step_state["next_step_at"] = time.monotonic() + CRUISE_LOOK_PAUSE_S
-                    else:
-                        actuator.stop()
+                # elif tier == "cruise":
+                #     now = time.monotonic()
+                #     if now >= cruise_step_state["next_step_at"]:
+                #         actuator.apply(cmd)
+                #         time.sleep(CRUISE_STEP_DURATION_S)
+                #         actuator.stop()
+                #         cruise_step_state["next_step_at"] = time.monotonic() + CRUISE_LOOK_PAUSE_S
+                #     else:
+                #         actuator.stop()
 
-                elif tier == "step":
-                    # Close range: a continuous command is already stale by
-                    # the time it reaches the wheels, and stale matters more
-                    # here. Nudge for one short step, then sit still long
-                    # enough for the next frame to be a fresh, unblurred
-                    # look before deciding the next step.
-                    now = time.monotonic()
-                    if now >= step_state["next_step_at"]:
-                        actuator.apply(cmd)
-                        time.sleep(STEP_DURATION_S)
-                        actuator.stop()
-                        step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
-                    else:
-                        actuator.stop()
+                # elif tier == "step":
+                #     now = time.monotonic()
+                #     if now >= step_state["next_step_at"]:
+                #         actuator.apply(cmd)
+                #         time.sleep(STEP_DURATION_S)
+                #         actuator.stop()
+                #         step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
+                #     else:
+                #         actuator.stop()
 
                 else:
-                    actuator.apply(cmd) # approach: continuous, full-rate driving
+                    actuator.apply(cmd)
 
             if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
                 _attempt_grab(result, solver, arm, actuator, grab_state)

@@ -11,8 +11,8 @@ from typing import Optional
 from src.visual_servoing.distance_error import TargetError
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
-FAR_DISTANCE_CM = 100.0          # distance at/below which speed drops from FORWARD_HIGH_SPEED
-LOW_DISTANCE_CM = 50.0          # distance at/below which speed is LOW_SPEED
+FAR_DISTANCE_CM = 200.0          # distance at/below which speed drops from FORWARD_HIGH_SPEED
+LOW_DISTANCE_CM = 100.0          # distance at/below which speed is LOW_SPEED
 
 FORWARD_HIGH_SPEED = 55.0       # hand-tested cruise speed at/beyond FAR_DISTANCE
 FORWARD_MID_SPEED = 50.0        # hand-tested speed between FAR_DISTANCE_CM and MID_DISTANCE_CM
