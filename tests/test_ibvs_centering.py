@@ -689,11 +689,12 @@ def run_live_demo():
             bbox_info = f"BBOX: w={bbox_width_px} h={bbox_height_px} area={bbox_area_px}px" if bbox_area_px else "BBOX: none"
             mode_status = f"MODE: drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} ctrl={controller_name}"
 
+            print("\n" + "-" * 80)
             print(f"[MOTION] {motion_plan}")
-            print(f"  [ULTRASONIC] {ultra_status}")
-            print(f"  [TARGET] {target_status}")
-            print(f"  [BBOX] {bbox_info}")
-            print(f"  [MODE] {mode_status}")
+            print(f"[ULTRASONIC] {ultra_status}")
+            print(f"[TARGET] {target_status}")
+            print(f"[BBOX] {bbox_info}")
+            print(f"[MODE] {mode_status}")
 
             # Update AFTER this frame's decisions/log use the previous value
             # -- see the "can moved closer" recovery above, which compares
