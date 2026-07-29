@@ -264,8 +264,8 @@ LOOK_PAUSE_S = 0.6
 # detection can react. Longer step / shorter pause than the close-range
 # "step" tier above since cruise starts much farther out and can afford a
 # bigger nudge between looks.
-CRUISE_STEP_DURATION_S = 0.5
-CRUISE_LOOK_PAUSE_S = 0.5
+CRUISE_STEP_DURATION_S = 0.7
+CRUISE_LOOK_PAUSE_S = 0.1
 
 
 def _pose_and_angle(box):
