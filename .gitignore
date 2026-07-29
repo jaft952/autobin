@@ -256,7 +256,7 @@ ai/models/subsystem1/checkpoints/
 ai/models/subsystem1/experiments/
 ai/models/subsystem2/checkpoints/
 ai/models/subsystem2/experiments/
-*.pt
+src/models/*
 
 *.yaml.cache
 ai/data/datasets/

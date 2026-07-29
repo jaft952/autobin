@@ -539,6 +539,8 @@ def run_live_demo():
           f"ctrl={controller_name} — m=toggle drive, g=toggle arm, q=quit")
 
     show = True
+    loop_times = []
+    last_tick = time.monotonic()
     try:
         while True:
             result = detector.detect()
@@ -642,6 +644,18 @@ def run_live_demo():
             # against what was last seen, not the current frame.
             if error.distance_cm is not None:
                 last_distance_cm = error.distance_cm
+
+            now = time.monotonic()
+            loop_time_ms = (now - last_tick) * 1000
+            loop_times.append(loop_time_ms)
+            last_tick = now
+
+            if len(loop_times) % 30 == 0:
+                avg_ms = sum(loop_times[-30:]) / 30
+                min_ms = min(loop_times[-30:])
+                max_ms = max(loop_times[-30:])
+                fps = 1000 / avg_ms if avg_ms > 0 else 0
+                print(f"[TIMING] avg={avg_ms:.1f}ms min={min_ms:.1f}ms max={max_ms:.1f}ms fps={fps:.1f}")
     except KeyboardInterrupt:
         pass
     finally:
