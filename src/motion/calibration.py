@@ -28,8 +28,8 @@ class MotionCalibration:
     motor_b_forward_trim: float = 0.87
     motor_a_backward_trim: float = 1.0
     motor_b_backward_trim: float = 0.92
-    motor_a_turn_trim: float = 0.95
-    motor_b_turn_trim: float = 1.0
+    motor_a_turn_trim: float = 1.0
+    motor_b_turn_trim: float = 0.95
 
 
     # Direction flags — derived from the tests/test_wheels.py session on
