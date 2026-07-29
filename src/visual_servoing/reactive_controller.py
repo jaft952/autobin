@@ -11,8 +11,8 @@ from typing import Optional
 from src.visual_servoing.distance_error import TargetError
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
-FAR_DISTANCE_CM = 60.0          # distance at/below which speed drops from FORWARD_HIGH_SPEED
-LOW_DISTANCE_CM = 30.0          # distance at/below which speed is LOW_SPEED
+FAR_DISTANCE_CM = 100.0          # distance at/below which speed drops from FORWARD_HIGH_SPEED
+LOW_DISTANCE_CM = 50.0          # distance at/below which speed is LOW_SPEED
 
 FORWARD_HIGH_SPEED = 55.0       # hand-tested cruise speed at/beyond FAR_DISTANCE
 FORWARD_MID_SPEED = 50.0        # hand-tested speed between FAR_DISTANCE_CM and MID_DISTANCE_CM
@@ -27,9 +27,9 @@ def compute_reactive_command(error: TargetError,
     """
     Speed is a lookup against hardcoded distance breakpoints, not a
     continuous formula (see the constants block above for why):
-        distance_cm >= FAR_DISTANCE_CM  (~90cm) -> MAX_SPEED
-        FAR_DISTANCE_CM < distance_cm < MID_DISTANCE_CM (~60cm) -> MID_SPEED
-        distance_cm <= LOW_DISTANCE_CM     (~30cm) -> LOW_SPEED
+        distance_cm >= FAR_DISTANCE_CM  (~100cm) -> MAX_SPEED
+        FAR_DISTANCE_CM < distance_cm < MID_DISTANCE_CM (~50cm) -> MID_SPEED
+        distance_cm <= LOW_DISTANCE_CM     (~50cm) -> LOW_SPEED
 
     That last tier never reaches zero -- unlike the old zero-at-STOP_DISTANCE_CM
     ramp this replaced, steering keeps working the whole way to the grab
