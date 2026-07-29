@@ -43,14 +43,3 @@ class MotionCalibration:
     swap_left_right: bool = False
 
     arc_inner_wheel_ratio: float = 0.3
-
-    # ── Predictive planner (src/visual_servoing/prediction_model.py) ───────
-    # Physical constants needed to turn a WheelCommand's +-100 duty-cycle
-    # percentages into real cm/s and rad/s for forward-simulating trajectories.
-    track_width_cm: float = 15.0
-    # TODO measure: distance between the left/right wheel contact patches (ruler).
-    wheel_speed_cm_per_s_per_unit: float = 0.5
-    # TODO calibrate: command forward(speed=50) for a measured time, measure the
-    # distance travelled, divide by (50 * time_s) -> cm/s per 1 unit (%) of
-    # commanded wheel speed. Same placeholder-until-measured spirit as
-    # CALIBRATION_CONSTANT_PX_CM in distance_error.py.
