@@ -3,13 +3,6 @@ src/visual_servoing/reactive_controller.py
 
 Target error -> WheelCommand, via DifferentialKinematics. Pure function: no
 hardware access here (Rule: hardware access only through src/hardware).
-
-Also exposes is_final_approach(), a pure predicate the live loop uses to
-decide WHEN to switch from driving compute_reactive_command's output
-continuously (cruising) to applying it in short step-then-look bursts
-instead (inside FAR_DISTANCE_CM) -- see that function's docstring. The
-timing itself (STEP_DURATION_S / LOOK_PAUSE_S) is the caller's job, same as
-the rest of hardware/timing.
 """
 from __future__ import annotations
 
@@ -18,7 +11,7 @@ from typing import Optional
 from src.visual_servoing.distance_error import TargetError
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
 
-FAR_DISTANCE_CM = 60.0          # distance at/below which is_final_approach() triggers step-and-look
+FAR_DISTANCE_CM = 60.0          # distance at/below which speed drops from FORWARD_HIGH_SPEED
 LOW_DISTANCE_CM = 30.0          # distance at/below which speed is LOW_SPEED
 
 FORWARD_HIGH_SPEED = 30.0       # hand-tested cruise speed at/beyond FAR_DISTANCE
@@ -42,8 +35,7 @@ def compute_reactive_command(error: TargetError,
     ramp this replaced, steering keeps working the whole way to the grab
     point since dynamic_speed (which both forward speed AND steer angle scale
     off, via DifferentialKinematics.arc_forward_*) never collapses to
-    nothing. The caller applies this tier as a short step-and-look nudge
-    rather than driving it continuously -- see is_final_approach().
+    nothing.
 
     Returns:
         None              — no target found, or reached (arm handoff point;
@@ -94,8 +86,7 @@ def speed_tier(error: TargetError) -> str:
     as they get re-tuned; keep the two in sync if the branches ever change.
 
     One of: "none" (not found), "reached", "backup" (too_close), "fallback"
-    (distance_cm unknown), "cruise", "approach", "step" (the
-    is_final_approach() zone).
+    (distance_cm unknown), "cruise", "approach", "step".
     """
     if not error.found:
         return "none"

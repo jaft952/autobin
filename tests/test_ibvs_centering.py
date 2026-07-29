@@ -219,14 +219,6 @@ def test_speed_tier_labels_cover_every_branch():
     print("PASS speed_tier labels match every compute_reactive_command branch")
 
 
-# ── reactive_controller.is_final_approach ────────────────────────────────
-#
-# Fixtures below use an oversized frame_height (5000px) purely to keep
-# bbox_height_px/frame_height under CLOSE_BBOX_FRACTION while still hitting
-# the target distance_cm band under today's (uncalibrated, see
-# distance_error.py) CALIBRATION_CONSTANT_PX_CM placeholder -- these pixel
-# numbers aren't meant to look like a real camera frame.
-# 
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -515,7 +507,7 @@ def run_live_demo():
     # emergency_stop -- top priority, not delayed behind camera inference or
     # a step-and-look time.sleep() below. See UltrasonicWatchdog's docstring.
     ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=actuator.stop).start()
-    step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
+    step_state = {"next_step_at": 0.0} # only consulted in the "step" speed tier
     # Track the previous camera-based distance to detect someone pushing the
     # tin closer while we're already at the "reached" handoff point; if the
     # can moves noticeably closer, command a short backward nudge.
