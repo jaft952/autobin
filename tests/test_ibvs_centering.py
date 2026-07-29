@@ -360,9 +360,22 @@ TIER_COLOR = {
 }
 
 
+def _format_motion_plan(cmd, error, tier: str, ultra_emergency: bool = False) -> str:
+    """Format the planned motion for clear console display."""
+    if ultra_emergency:
+        return "ULTRASONIC OVERRIDE: EMERGENCY STOP"
+    if cmd is None:
+        return f"STOPPED ({tier})"
+    if cmd.left_speed < 0 and cmd.right_speed < 0:
+        return f"BACKING UP: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}"
+    steer = "RIGHT" if error.lateral_error > 0.02 else "LEFT" if error.lateral_error < -0.02 else "STRAIGHT"
+    return f"{tier.upper()}: {steer} | L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}"
+
+
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
-                         tier: str = "none", recovered_nudge: bool = False) -> None:
+                         tier: str = "none", recovered_nudge: bool = False,
+                         ultra_emergency: bool = False) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -403,7 +416,10 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
             ((0, 140, 255) if error.too_close else (0, 255, 255))
     cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.55, target_color, 2)
 
-    if cmd is None:
+    if ultra_emergency:
+        drive_line = "DRIVE: [ULTRASONIC] EMERGENCY STOP"
+        drive_color = (0, 0, 255) # red
+    elif cmd is None:
         if recovered_nudge:
             reason = "reached, backed off (can moved closer)"
         elif tier == "reached":
@@ -599,6 +615,7 @@ def run_live_demo():
             if driving:
                 if ultra.emergency_stop:
                     actuator.stop()
+                    print(f"  [SAFETY] Ultrasonic emergency stop triggered at {ultra.distance_cm}cm!")
 
                 elif cmd is None:
                     actuator.stop()
@@ -648,7 +665,8 @@ def run_live_demo():
                     _draw_status_overlay(frame, error, cmd, driving, armed,
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
-                                        tier=tier, recovered_nudge=recovered_nudge)
+                                        tier=tier, recovered_nudge=recovered_nudge,
+                                        ultra_emergency=ultra.emergency_stop)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -665,16 +683,17 @@ def run_live_demo():
                     print("[!] no display available — continuing text-only")
                     show = False
 
-            print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
-                  f"dist_cm={error.distance_cm} last_dist_cm={last_distance_cm} "
-                  f"bbox_width_px={bbox_width_px if result.best is not None else None} "
-                  f"bbox_height_px={bbox_height_px if result.best is not None else None} "
-                  f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
-                  f"ultra_dist={ultra.distance_cm} "
-                  f"reached={error.reached} too_close={error.too_close} "
-                  f"tier={tier} "
-                  f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
-                  f"ctrl={controller_name}")
+            motion_plan = _format_motion_plan(cmd, error, tier, ultra.emergency_stop)
+            ultra_status = f"ULTRASONIC: {ultra.distance_cm}cm | emergency={ultra.emergency_stop} grab_ok={ultra.grab_confirmed}"
+            target_status = f"TARGET: found={error.found} lateral={error.lateral_error:+.2f} dist={error.distance_cm}cm reached={error.reached} too_close={error.too_close}"
+            bbox_info = f"BBOX: w={bbox_width_px} h={bbox_height_px} area={bbox_area_px}px" if bbox_area_px else "BBOX: none"
+            mode_status = f"MODE: drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} ctrl={controller_name}"
+
+            print(f"[MOTION] {motion_plan}")
+            print(f"  [ULTRASONIC] {ultra_status}")
+            print(f"  [TARGET] {target_status}")
+            print(f"  [BBOX] {bbox_info}")
+            print(f"  [MODE] {mode_status}")
 
             # Update AFTER this frame's decisions/log use the previous value
             # -- see the "can moved closer" recovery above, which compares
