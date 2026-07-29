@@ -127,7 +127,7 @@ def main():
             # Cut PWM to every channel: duty 0 -> no pulse -> servos go limp.
             # Stops twitching, and nothing is held so power-cycling won't snap back.
             for i in range(6):
-                act.kit.servo[i].angle = None
+                act.kit.servo[i].angle = None # type: ignore
             print("  RELEASED all servos (no signal — arm is limp). "
                   "Set any channel to re-engage.")
         elif cmd == "h":
@@ -138,7 +138,7 @@ def main():
             for i, a in enumerate(NEUTRAL):
                 apply(i, a)
                 a = clamp_channel_angle(i, a)      # never bypass the window
-                act.kit.servo[i].angle = a
+                act.kit.servo[i].angle = a # type: ignore
                 angles[i] = a
             print(f"  homed CH1-6 -> {[round(a, 1) for a in NEUTRAL]}")
             last_ch = 0

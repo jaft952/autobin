@@ -18,7 +18,7 @@ from src.perception.orientation import Orientation, estimate_orientation
 # THE production model — single source of truth. CameraSensor (runtime),
 # the calibration tools and the NCNN export all read this constant, so
 # switching to a newly trained checkpoint is a ONE-LINE change here.
-RUNTIME_MODEL_PATH = "src/models/best.pt"
+RUNTIME_MODEL_PATH = "src/models/yolov11n-seg.pt"
 
 
 @dataclass

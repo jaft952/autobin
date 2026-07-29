@@ -113,7 +113,7 @@ class CameraSensor(SensorInterface):
                 return DetectionResult()
             return self._latest_result
 
-    def get_litter_position(self):
+    def get_litter_position(self): # type: ignore
         """
         Returns normalized (x, y) of the best-detected aluminium can,
         where (0.5, 0.5) is the center of the frame.
@@ -125,7 +125,7 @@ class CameraSensor(SensorInterface):
         """
         return self._fresh_result().normalized_center()
 
-    def get_litter_ground_contact(self):
+    def get_litter_ground_contact(self): # type: ignore
         """
         Returns normalized (x, y) of the best detection's ground-contact
         point (bbox bottom-center), or None. Arc-grasp and pixel_to_arm
@@ -136,7 +136,7 @@ class CameraSensor(SensorInterface):
         """
         return self._fresh_result().normalized_base_center()
 
-    def get_litter_pose(self):
+    def get_litter_pose(self): # type: ignore
         """
         Returns the best detection's pose estimated from its segmentation
         mask: {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180},
@@ -152,7 +152,7 @@ class CameraSensor(SensorInterface):
         o = best.orientation
         return {"klass": o.klass, "angle": o.angle}
 
-    def get_aerial_trash_position(self):
+    def get_aerial_trash_position(self): # type: ignore
         """Not used for floor litter. Returns None."""
         return None
 
@@ -177,3 +177,13 @@ class CameraSensor(SensorInterface):
         Use with cv2.imshow() or the web dashboard's MJPEG stream.
         """
         return self._detector.get_annotated_frame(self.get_latest_result())
+
+    def read_camera_frame(self):
+        """
+        Opens the camera (if not already open) and returns one raw frame —
+        no model load, no inference. For sanity-checking the camera feed by
+        itself, e.g. cv2.imshow() from a manual test script.
+        """
+        if not self._detector._cap or not self._detector._cap.isOpened():
+            self._detector._open_camera()
+        return self._detector.read_frame()
