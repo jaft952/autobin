@@ -40,6 +40,7 @@ import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.hardware.actuators.print_actuator import PrintActuator
 from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor
 from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
@@ -52,38 +53,28 @@ from src.subsumption.layers.layer3_collect import CollectLitterLayer
 from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
 
 
-class PrintActuator:
-    """--no-motors: show what WOULD go to the wheels."""
-
-    def apply(self, cmd):
-        print(f"   [wheels] L={cmd.left_speed:+6.1f}  R={cmd.right_speed:+6.1f}  ({cmd.trim_set})")
-
-    def stop(self):
-        pass  # silent — stop spam would drown the log while idle/halted
-
-    def close(self):
-        pass
-
-
 class PrintPlanner:
     """--no-arm: GraspPlanner stand-in that narrates instead of moving."""
 
-    def home(self):
-        print("   [arm] home()")
+    def goto(self, target, label=""):
+        print(f"   [arm] goto({target})")
 
-    def grab_arc_pose(self, pose):
-        print(f"   [arm] grab_arc_pose({[round(v, 1) for v in pose]})")
+    def collect(self, pose, tin_pose="upright", dump=True):
+        print(f"   [arm] collect({[round(v, 1) for v in pose]}, {tin_pose})")
         return True
 
-    def move_to(self, xyz, **kw):
-        print(f"   [arm] move_to({[round(v, 3) for v in xyz]})")
+    def ik_move(self, xyz, **kw):
+        print(f"   [arm] ik_move({[round(v, 3) for v in xyz]})")
         return True
+
+    def open_gripper(self):
+        print("   [arm] gripper open")
+
+    def close_gripper(self):
+        print("   [arm] gripper close")
 
     def dump_to_bin(self):
         print("   [arm] dump_to_bin()")
-
-    def control_gripper(self, action):
-        print(f"   [arm] gripper {action}")
 
 
 def main():

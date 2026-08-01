@@ -14,7 +14,7 @@ method, halts the base, and emits the grab as a semantic command. Execution
 
 2. MODEL IK (fallback, ONLY outside the calibrated region): pixel ->
    homography (pixel_to_arm) -> floor point in meters -> ActionCommand
-   carries the target; ArmExecutor runs GraspPlanner.move_to() with sag
+   carries the target; ArmExecutor runs GraspPlanner.ik_move() with sag
    compensation. Less accurate than the tuned poses (that's why IK was
    demoted from primary), but better than refusing to grab in areas nobody
    calibrated. The radial gate below keeps it from lunging at hopeless

@@ -131,6 +131,17 @@ def ch5_from_angle(angle_deg: float, anchors=None) -> float:
     return max(0.0, min(180.0, pts[-1][1]))
 
 
+def pose_and_angle(box):
+    """(pose, angle_deg_or_None) for solve(), from a detection's
+    segmentation-based orientation. No usable mask -> assume upright."""
+    o = getattr(box, "orientation", None)
+    if o is None or o.klass == "upright":
+        return "upright", None
+    if o.klass == "axial":
+        return "lying", None
+    return "lying", o.angle
+
+
 class ArcGraspSolver:
     """solve(nx, ny, pose, angle_deg) -> [CH1..CH5] servo commands, or None
     (not grabbable there / that pose's grid not calibrated)."""

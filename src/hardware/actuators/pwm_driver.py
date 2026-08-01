@@ -62,6 +62,7 @@ except Exception:  # pragma: no cover
 
 class PWMActuator:
     """Hardware module: converts wheel command into GPIO + PWM signals.
+    Implements src.hardware.actuators.interfaces.ActuatorInterface.
 
     Wired for the ZK-BM1 dual H-bridge, which has NO ENA/ENB enable pins.
     Unlike an L298N (separate direction inputs + a PWM enable line), the

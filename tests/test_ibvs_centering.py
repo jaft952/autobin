@@ -17,35 +17,26 @@ For a live run on the robot (real camera, optionally real motors/arm) use:
 Live flags (only read with --live):
   --drive              send commands to the wheels (default: look only)
   --arm                grab when reached (needs a calibrated arc_grasp)
-  --mode predictive|chase|cruise|step   pursuit style (default predictive):
-       predictive = receding-horizon planner: smooth slow-start / cruise /
-                    gradual stop, re-planned every frame (vision-only)
-       chase  = reactive: drive + steer continuously toward the can
-       cruise = reactive: continuous, speed tapers with distance (slower near)
-       step   = reactive: point-and-look bursts at close range (stale-frame safe)
-  --speed MAX[-MIN]    scale forward speed (0..1). MAX-MIN tapers with distance
-  --turn  MAX[-MIN]    scale steer speed. MAX-MIN tapers as the can nears center
 
 Without --drive the wheels never move — distance_error and reactive_controller
 still run every frame and their output shows on the overlay/console, so the
 planned steer/speed can be checked before it touches the motors. Keys while the
-window is focused: m = toggle drive, g = toggle arm, n = cycle mode, q = quit.
+window is focused: m = toggle drive, g = toggle arm, q = quit.
 
-This whole function is NOT executed by the test suite or by pytest — see
+The live demo is NOT executed by the test suite or by pytest — see
 run_live_demo() at the bottom.
 """
-import os
 import sys
 from pathlib import Path
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))   # for test_arc_grasp (--arm)
 
 from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
-from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
-from src.visual_servoing.distance_error import compute_target_error, TargetError, STOP_DISTANCE_CM
+from src.motion.differential_kinematics import DifferentialKinematics
+from src.arm.arc_grasp import pose_and_angle
+from src.visual_servoing.distance_error import compute_target_error, TargetError
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach, speed_tier,
     MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
@@ -337,18 +328,6 @@ def _run_all_tests():
 _GRAB_COOLDOWN_S = 4.0   # after a grab attempt (success or refusal), don't re-solve every frame
 
 
-def _pose_and_angle(box):
-    """(pose, angle_deg_or_None) for arc_grasp, from the detection's
-    segmentation-based orientation — same convention as src/arm/arc_grasp.py
-    and the old ibvs_centering pipeline. No usable mask -> assume upright."""
-    o = box.orientation
-    if o is None or o.klass == "upright":
-        return "upright", None
-    if o.klass == "axial":
-        return "lying", None
-    return "lying", o.angle
-
-
 # Display-only: color per speed_tier() label, used by both the overlay and
 # (as a quick reference) anyone reading this file. Keep the KEYS in sync
 # with reactive_controller.speed_tier()'s possible return values -- an
@@ -454,9 +433,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
 
 def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -> None:
     """Solve an arc-grasp pose from the current detection and, if grabbable,
-    run the SAME grab -> dump -> home sequence tests/test_arc_grasp.py uses
-    (via the shared Arm class), so this is byte-for-byte the grab you tune
-    there. Cooldown-gated so a tin sitting in the band doesn't re-trigger
+    run the SAME collect (grab -> dump) -> home sequence the autonomous stack
+    runs, so this is byte-for-byte the grab you tune in the calibration tool. Cooldown-gated so a tin sitting in the band doesn't re-trigger
     every single frame."""
     import time as _time
     if _time.monotonic() < state["cooldown_until"]:
@@ -464,7 +442,7 @@ def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -
     best = result.best
     if best is None:
         return
-    pose, angle = _pose_and_angle(best)
+    pose, angle = pose_and_angle(best)
     point = result.normalized_center() if pose == "lying" else result.normalized_base_center()
     if point is None:
         return
@@ -478,56 +456,18 @@ def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -
 
     print(f"[arm] GRAB ({pose}) @ nx={point[0]:.2f} ny={point[1]:.2f}")
     if not state["homed"]:
-        arm.force_home()   # tracked pose may be from a stale prior session
+        arm.goto("home")   # tracked pose may be from a stale prior session
         state["homed"] = True
-    arm.grab(solved, tin_pose=pose)   # brakes the wheels internally
-    arm.dump_to_bin()
-    arm.rest()
-    actuator.stop()
+    # Hold the base ourselves: the arm shakes the chassis, and coasting
+    # wheels would drift the robot off the solved spot mid-grab.
+    actuator.brake()
+    try:
+        arm.collect(solved, tin_pose=pose)   # grab + drop in the bin
+        arm.goto("home")
+        arm.release()
+    finally:
+        actuator.stop()
     print("[arm] grab sequence done.")
-
-
-def _parse_max_min(flag: str, default_max: float = 1.0):
-    """Read --speed / --turn as MAX or MAX-MIN (e.g. 0.6 or 0.6-0.3).
-    Returns (max, min); min == max when a single value is given."""
-    if flag not in sys.argv:
-        return default_max, default_max
-    raw = sys.argv[sys.argv.index(flag) + 1]
-    parts = raw.split("-")
-    hi = float(parts[0])
-    lo = float(parts[1]) if len(parts) > 1 else hi
-    if lo > hi:
-        sys.exit(f"{flag} MAX-MIN: max ({hi}) must be >= min ({lo})")
-    return hi, lo
-
-
-def _scale_wheel_command(cmd, speed_factor: float, turn_factor: float):
-    """Scale a WheelCommand's forward and turn components independently.
-    speed_factor multiplies the common (forward) part, turn_factor the
-    differential (steer) part — so --speed and --turn tune drive vs turning
-    separately, same knobs the old cascade controller exposed."""
-    if cmd is None:
-        return None
-    fwd = (cmd.left_speed + cmd.right_speed) / 2.0
-    turn = (cmd.left_speed - cmd.right_speed) / 2.0
-    fwd *= speed_factor
-    turn *= turn_factor
-    return WheelCommand(fwd + turn, fwd - turn, cmd.apply_trim, cmd.trim_set)
-
-
-def _approach_factors(error, speed_max, speed_min, turn_max, turn_min, taper_speed: bool):
-    """Per-frame (speed_factor, turn_factor). Speed tapers max->min with
-    distance (cruise); turn tapers max->min as the can nears center."""
-    if taper_speed and error.distance_cm is not None:
-        span = max(1e-6, CRUISE_DISTANCE_CM - STOP_DISTANCE_CM)
-        t = (error.distance_cm - STOP_DISTANCE_CM) / span
-        t = max(0.0, min(1.0, t))
-        speed_factor = speed_min + (speed_max - speed_min) * t
-    else:
-        speed_factor = speed_max
-    te = max(0.0, min(1.0, abs(error.lateral_error) / 0.5))
-    turn_factor = turn_min + (turn_max - turn_min) * te
-    return speed_factor, turn_factor
 
 
 def run_live_demo():
@@ -589,21 +529,6 @@ def run_live_demo():
     want_arm = "--arm" in sys.argv
     controller_name = "reactive"
 
-    # Pursuit mode:
-    #   predictive = receding-horizon planner (smooth slow-start/cruise/gradual
-    #                stop, re-planned every frame) -- the default
-    #   chase      = reactive: drive + steer continuously, flat --speed scale
-    #   cruise     = reactive: continuous, --speed tapers max->min with distance
-    #   step       = reactive: point-and-look bursts at close range
-    mode = "predictive"
-    if "--mode" in sys.argv:
-        mode = sys.argv[sys.argv.index("--mode") + 1]
-        if mode not in ("predictive", "chase", "cruise", "step"):
-            sys.exit(f"--mode must be predictive|chase|cruise|step, got '{mode}'")
-    speed_max, speed_min = _parse_max_min("--speed")
-    turn_max, turn_min = _parse_max_min("--turn")
-    print(f"[live] mode={mode} speed={speed_max}-{speed_min} turn={turn_max}-{turn_min}")
-
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
@@ -614,7 +539,6 @@ def run_live_demo():
     # a step-and-look time.sleep() below. See UltrasonicWatchdog's docstring.
     ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=actuator.stop).start()
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
-    pred_state = ControllerState()      # receding-horizon ramp continuity (predictive mode)
     # Track the previous camera-based distance to detect someone pushing the
     # tin closer while we're already at the "reached" handoff point; if the
     # can moves noticeably closer, command a short backward nudge.
@@ -629,14 +553,12 @@ def run_live_demo():
     if want_arm:
         try:
             from src.arm.arc_grasp import ArcGraspSolver
-            from test_arc_grasp import Arm   # tests/ is on sys.path (see top of file)
+            from src.arm.grasp_planner import GraspPlanner
             solver = ArcGraspSolver()
             if not solver.ready_for("upright") and not solver.ready_for("lying"):
                 print(f"[arm] arc_grasp not calibrated ({solver.status()}) — arm disabled.")
             else:
-                # Share OUR actuator: Arm() building its own would GPIO.cleanup
-                # the shared motor pins and kill this loop's wheel control.
-                arm = Arm(wheels=actuator)
+                arm = GraspPlanner(release_on_start=True)
                 armed = True
                 print("[arm] ready — press 'g' to toggle grabbing on/off.")
         except Exception as exc:
@@ -713,7 +635,7 @@ def run_live_demo():
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
                                         tier=tier, recovered_nudge=recovered_nudge)
-                    cv2.imshow("IBVS centering  (m=drive g=arm n=mode q=quit)", frame)
+                    cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
@@ -725,11 +647,6 @@ def run_live_demo():
                     if key == ord("g") and arm is not None:
                         armed = not armed
                         print(f"\n[mode] arm {'ARMED' if armed else 'OFF'}\n")
-                    if key == ord("n"):
-                        mode = {"predictive": "chase", "chase": "cruise",
-                                "cruise": "step", "step": "predictive"}[mode]
-                        pred_state = ControllerState()   # drop any stale journey
-                        print(f"\n[mode] pursuit -> {mode.upper()}\n")
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False

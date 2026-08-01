@@ -86,7 +86,7 @@ class AnalyticalArmIK:
         elif approach == "free":
             pitches = [(np.radians(p), None) for p in range(-180, 91, FREE_SWEEP_STEP_DEG)]
         else:
-            raise ValueError(f"approach must be 'down', 'up' or 'free', got {approach!r}")
+            raise ValueError(f"approach must be 'down', 'up', 'level' or 'free', got {approach!r}")
 
         best = None  # (cost, angles)
         for theta1, r in self._yaw_branches(x, y):
