@@ -167,12 +167,13 @@ class GraspPlanner:
             return False
         print(f"[arm] collect ({tin_pose}) at CH1-5 = {solved}")
         self.open_gripper()
-        for ch in (1, 2, 3):                         # CH2/CH3/CH4 -> lift high
-            self.move_channel(ch, self.poses["lift"][ch])
+        # TESTING: skip pre-lift/post-lift, go straight grab -> bin, see outcome.
+        # for ch in (1, 2, 3):                         # CH2/CH3/CH4 -> lift high
+        #     self.move_channel(ch, self.poses["lift"][ch])
         for ch in grab_order(tin_pose):
             self.move_channel(ch, float(solved[ch]))
         self.close_gripper()
-        self.move_channel(1, self.poses["lift"][1])  # lift shoulder, holding
+        # self.move_channel(1, self.poses["lift"][1])  # lift shoulder, holding
         if not dump:
             print("[arm] grabbed — still holding.")
             return True
