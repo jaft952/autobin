@@ -35,12 +35,14 @@ sys.path.append(str(project_root))
 from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics
-from src.arm.arc_grasp import pose_and_angle
+from src.arm.arc_grasp import (
+    pose_and_angle, BAND_TOO_CLOSE, BAND_TOO_FAR, BAND_NX_OUTSIDE,
+    BAND_NOT_CALIBRATED)
 from src.visual_servoing.distance_error import compute_target_error, TargetError
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach, speed_tier,
     MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
-    RETREAT_PULSE_S,
+    RETREAT_PULSE_S, ALIGN_TURN_SPEED, ALIGN_PULSE_S,
 )
 from src.visual_servoing.ultrasonic_safety import (
     UltrasonicSafety, UltrasonicWatchdog, EMERGENCY_STOP_CM, GRAB_CONFIRM_CM)
@@ -329,6 +331,11 @@ def _run_all_tests():
 
 _GRAB_COOLDOWN_S = 4.0   # after a grab attempt (success or refusal), don't re-solve every frame
 
+# How long a "solver says grabbable" answer keeps the wheels stopped after
+# the solver stops saying it -- rides out single-frame detection jitter so a
+# blink doesn't restart the approach.
+GRABBABLE_LATCH_S = 2.0
+
 
 # Display-only: color per speed_tier() label, used by both the overlay and
 # (as a quick reference) anyone reading this file. Keep the KEYS in sync
@@ -349,7 +356,8 @@ TIER_COLOR = {
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
                          tier: str = "none", recovered_nudge: bool = False,
-                         ultra=None) -> None:
+                         ultra=None, solved=None, grabbable: bool = False,
+                         band: str = BAND_NOT_CALIBRATED) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -372,12 +380,16 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
 
     ultra: the watchdog's latest UltrasonicState, or None if unavailable —
     shown as its own line so a dead/miswired sensor (reading stays "--") is
-    distinguishable from a live one that simply isn't tripping yet."""
+    distinguishable from a live one that simply isn't tripping yet.
+
+    solved: arc_grasp's live solution this frame (None = not in the band).
+    grabbable: the latched version that actually stops the wheels — shown
+    separately so a latch riding out a detection blink is visible as such."""
     import cv2
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    banner_h = 136
+    banner_h = 162
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, fh - banner_h), (fw, fh), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
@@ -441,6 +453,24 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
             ((0, 255, 0) if ultra.grab_confirmed else (200, 200, 200))
     cv2.putText(frame, ultra_line, (16, fh - banner_h + 106), font, 0.55, ultra_color, 2)
 
+    if solved is not None:
+        grab_line = ("GRABBABLE: YES  arm=["
+                     + " ".join(f"{v:.0f}" for v in solved) + "]")
+        grab_color = (0, 255, 0)
+    elif grabbable:
+        grab_line = "GRABBABLE: latched (solver blinked, holding stop)"
+        grab_color = (0, 255, 255)
+    else:
+        why = {
+            BAND_TOO_FAR: "too far -- keep approaching",
+            BAND_TOO_CLOSE: "OVERSHOT past nearest arc -- backing off",
+            BAND_NX_OUTSIDE: "nx off sampled span -- turning in place",
+            BAND_NOT_CALIBRATED: "no arc grid / no detection",
+        }.get(band, band)
+        grab_line = f"GRABBABLE: no ({why})"
+        grab_color = (0, 140, 255) if band == BAND_TOO_CLOSE else (170, 170, 170)
+    cv2.putText(frame, grab_line, (16, fh - banner_h + 132), font, 0.55, grab_color, 2)
+
     dcol = (0, 255, 0) if driving else (0, 0, 255)
     cv2.putText(frame, "DRIVE ON" if driving else "DRIVE OFF", (fw - 190, 30), font, 0.65, (0, 0, 0), 3)
     cv2.putText(frame, "DRIVE ON" if driving else "DRIVE OFF", (fw - 190, 30), font, 0.65, dcol, 1)
@@ -449,28 +479,37 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         cv2.putText(frame, "ARM ARMED", (fw - 190, 58), font, 0.65, (0, 255, 0), 1)
 
 
-def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -> None:
-    """Solve an arc-grasp pose from the current detection and, if grabbable,
-    run the SAME collect (grab -> dump) -> home sequence the autonomous stack
-    runs, so this is byte-for-byte the grab you tune in the calibration tool. Cooldown-gated so a tin sitting in the band doesn't re-trigger
-    every single frame."""
+def _solve_for_detection(result: DetectionResult, solver):
+    """(solved_CH1_5_or_None, tin_pose, point, band) for the current detection.
+
+    The single grabbability check: the live loop calls this every frame to
+    decide when to STOP driving, and the same answer runs the grab. Driving
+    used to stop on error.reached instead, which is a bbox-area threshold
+    against an uncalibrated constant and knows nothing about arc_grasp.yaml
+    -- so the robot drove past perfectly grabbable rows until the ultrasonic
+    tripped. band says WHY a None is None, so overshooting the nearest arc
+    can back off instead of closing in further."""
+    if solver is None or result.best is None:
+        return None, None, None, BAND_NOT_CALIBRATED
+    pose, angle = pose_and_angle(result.best)
+    point = result.normalized_center() if pose == "lying" else result.normalized_base_center()
+    if point is None:
+        return None, pose, None, BAND_NOT_CALIBRATED
+    solved, band = solver.solve_with_band(point[0], point[1],
+                                          pose=pose, angle_deg=angle)
+    return solved, pose, point, band
+
+
+def _attempt_grab(solved, pose, point, arm, actuator, state: dict) -> None:
+    """Run the SAME collect (grab -> dump) -> home sequence the autonomous
+    stack runs, so this is byte-for-byte the grab you tune in the calibration
+    tool. solved/pose/point come from _solve_for_detection (already checked
+    non-None by the caller). Cooldown-gated so a tin sitting in the band
+    doesn't re-trigger every single frame."""
     import time as _time
     if _time.monotonic() < state["cooldown_until"]:
         return
-    best = result.best
-    if best is None:
-        return
-    pose, angle = pose_and_angle(best)
-    point = result.normalized_center() if pose == "lying" else result.normalized_base_center()
-    if point is None:
-        return
-
-    solved = solver.solve(point[0], point[1], pose=pose, angle_deg=angle)
     state["cooldown_until"] = _time.monotonic() + _GRAB_COOLDOWN_S
-    if solved is None:
-        print(f"[arm] {pose} tin at nx={point[0]:.2f} ny={point[1]:.2f} "
-              f"— not in the calibrated grab band ({solver.status()})")
-        return
 
     print(f"[arm] GRAB ({pose}) @ nx={point[0]:.2f} ny={point[1]:.2f}")
     if not state["homed"]:
@@ -552,29 +591,46 @@ def run_live_demo():
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
 
-    def _retreat_from_obstacle() -> None:
-        """Stop before reversing -- an H-bridge direction flip without a
+    def _retreat_pulse() -> None:
+        """One bounded backward nudge, then stop.
+
+        Stops before reversing -- an H-bridge direction flip without a
         zero-input gap between is a brake pulse / shoot-through spike (see
-        docs/hardware_safety_patterns.md). Runs on the watchdog thread and
-        fires every poll while emergency_stop stays true, so this is a
-        pulsed retreat, not a single shot -- but each pulse is now bounded
-        to RETREAT_PULSE_S and stops itself, instead of driving backward for
-        the whole ~65ms gap until the next poll. Without this the robot
-        never got a chance to re-check distance mid-retreat and would
-        overshoot straight back into range, re-triggering the same retreat
-        (approach/retreat loop)."""
+        docs/hardware_safety_patterns.md). Bounded to RETREAT_PULSE_S so
+        whoever called it re-reads its sensor between pulses instead of
+        reversing blind; driving backward continuously overshot straight
+        back out of range and re-triggered the approach (retreat loop).
+
+        Shared by the ultrasonic watchdog (fires every poll while
+        emergency_stop holds) and the main loop's BAND_TOO_CLOSE branch."""
         actuator.stop()
         time.sleep(0.05)
         actuator.apply(kin.backward(speed=BACKUP_SPEED))
         time.sleep(RETREAT_PULSE_S)
         actuator.stop()
 
+    def _align_pulse(lateral_error: float) -> None:
+        """One bounded pivot-in-place to recover nx alignment, then stop.
+
+        Same sign convention as compute_reactive_command's arc_forward_*
+        choice -- that mapping is hardware-specific and has flipped once
+        before, so it is mirrored here rather than re-derived. Stops before
+        turning for the same H-bridge reason as _retreat_pulse."""
+        actuator.stop()
+        time.sleep(0.05)
+        actuator.apply(kin.turn_left(speed=ALIGN_TURN_SPEED) if lateral_error > 0
+                       else kin.turn_right(speed=ALIGN_TURN_SPEED))
+        time.sleep(ALIGN_PULSE_S)
+        actuator.stop()
+
     # Polls the sensor in its own thread instead of once per main-loop
     # iteration, and retreats itself the instant it sees emergency_stop --
     # top priority, not delayed behind camera inference or a step-and-look
     # time.sleep() below. See UltrasonicWatchdog's docstring.
-    ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=_retreat_from_obstacle).start()
+    ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=_retreat_pulse).start()
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
+    grab_latch = {"on": False, "until": 0.0}
+    band = BAND_NOT_CALIBRATED   # last frame's band; gates the fast-path detect
     # Track the previous camera-based distance to detect someone pushing the
     # tin closer while we're already at the "reached" handoff point; if the
     # can moves noticeably closer, command a short backward nudge.
@@ -606,12 +662,29 @@ def run_live_demo():
     show = True
     try:
         while True:
-            result = detector.detect()
+            # Orientation only matters once the tin is near the arc band, and
+            # it runs per detection per frame. Use LAST frame's band to skip
+            # it while still cruising -- one stale frame at the boundary costs
+            # nothing, since BAND_TOO_FAR can't solve a grab anyway.
+            result = detector.detect(fast=(band == BAND_TOO_FAR))
             ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
             error = compute_target_error(result)
 
             cmd = compute_reactive_command(error, kin)
             tier = speed_tier(error)   # single source of truth for driving AND display below
+
+            # Ask arc_grasp EVERY frame, and stop the moment it can solve --
+            # not when the uncalibrated distance_cm says "reached".
+            solved, tin_pose, point, band = _solve_for_detection(result, solver)
+            if solved is not None:
+                grab_latch["on"] = True
+                grab_latch["until"] = time.monotonic() + GRABBABLE_LATCH_S
+            elif grab_latch["on"] and time.monotonic() >= grab_latch["until"]:
+                grab_latch["on"] = False
+            # Latched: ny_tol_near is near-zero, so one frame of jitter drops
+            # the tin out of the band. Without the latch that instantly
+            # re-starts the approach -- straight back into the old loop.
+            grabbable = grab_latch["on"]
 
             bbox_width_px = result.best.width if result.best is not None else None
             bbox_height_px = result.best.height if result.best is not None else None
@@ -622,6 +695,23 @@ def run_live_demo():
                 if ultra.emergency_stop:
                     pass   # watchdog thread owns retreat while this is true;
                            # don't fight it with a stop() every frame here
+
+                elif grabbable:
+                    actuator.stop()   # in the calibrated band -- stop closing in
+
+                elif band == BAND_TOO_CLOSE:
+                    # Overshot past the NEAREST calibrated arc. Nothing else
+                    # in the chain knows about the arc band, so without this
+                    # the loop just keeps driving forward until the vision
+                    # too_close guess or the ultrasonic catches it.
+                    _retreat_pulse()
+
+                elif band == BAND_NX_OUTSIDE and error.found:
+                    # Inside the band's ny range but off the sampled nx span:
+                    # a lateral miss. Arcing forward to fix it spends the
+                    # remaining distance and lands in BAND_TOO_CLOSE, so turn
+                    # in place instead and keep the distance we have.
+                    _align_pulse(error.lateral_error)
 
                 elif cmd is None:
                     actuator.stop()
@@ -658,8 +748,11 @@ def run_live_demo():
                 else:
                     actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
 
-            if armed and error.reached and ultra.grab_confirmed and not ultra.emergency_stop:
-                _attempt_grab(result, solver, arm, actuator, grab_state)
+            # solved (live this frame), not the latch: the stop can coast on a
+            # stale solution, an actual grab may not.
+            if armed and solved is not None and ultra.grab_confirmed and not ultra.emergency_stop:
+                _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state)
+                grab_latch["on"] = False   # can should be gone -- re-evaluate fresh
 
             if show:
                 try:
@@ -672,7 +765,8 @@ def run_live_demo():
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
                                         tier=tier, recovered_nudge=recovered_nudge,
-                                        ultra=ultra)
+                                        ultra=ultra, solved=solved, grabbable=grabbable,
+                                        band=band)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):

@@ -42,6 +42,12 @@ BACKUP_SPEED = 15.0          # TODO tune: gentle reverse to recover from an over
 # as long as emergency_stop stays true (see _retreat_from_obstacle).
 RETREAT_PULSE_S = 0.12       # TODO tune: length of one backward retreat pulse
 
+# Pivot-in-place used when the tin is inside the arc band's ny range but off
+# the sampled nx span: that's a LATERAL miss, and arcing forward to fix it
+# eats the remaining distance and overshoots the band instead.
+ALIGN_TURN_SPEED = 20.0      # TODO tune: in-place turn to recover nx alignment
+ALIGN_PULSE_S = 0.15         # TODO tune: one align nudge, then re-look
+
 MAX_STEER_ANGLE_DEG = 80.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
 
@@ -53,7 +59,7 @@ FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() trigg
 # instead of driving continuously -- see STEP_DURATION_S / LOOK_PAUSE_S
 # below, used there, not here (this module stays hardware/time-free).
 STEP_SPEED = 17.0            # TODO tune: hand-tested fixed nudge speed for step-and-look
-STEP_DURATION_S = 0.25       # TODO tune: length of one forward/steer nudge
+STEP_DURATION_S = 0.15      # TODO tune: length of one forward/steer nudge
 LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred look
 
 

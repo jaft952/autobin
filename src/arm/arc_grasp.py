@@ -21,6 +21,16 @@ NY_TOL_DEFAULT = 0.02
 
 POSES = ("upright", "lying")
 
+# Why solve() returned None. "not grabbable" alone can't tell a caller
+# whether to keep closing in or back off -- BAND_TOO_CLOSE means the tin has
+# gone PAST the nearest calibrated arc, where driving further only makes it
+# worse.
+BAND_IN = "in_band"
+BAND_TOO_FAR = "too_far"              # above the farthest arc: keep approaching
+BAND_TOO_CLOSE = "too_close"          # below the nearest arc: overshot, back off
+BAND_NX_OUTSIDE = "nx_outside"        # ny is fine, but nx is off the sampled span
+BAND_NOT_CALIBRATED = "not_calibrated"
+
 # User-measured CH5 anchors (2026-07-08): image-axis angle -> wrist roll.
 # 90 deg (tin pointing at robot) -> 90; 0/180 (lying across) -> 180.
 DEFAULT_CH5_ANCHORS = [[0.0, 180.0], [90.0, 90.0], [180.0, 180.0]]
@@ -211,52 +221,69 @@ class ArcGraspSolver:
         angle_deg: LYING only — the tin's image long-axis angle from
               perception (Orientation.angle). None -> 90 (straight).
         """
+        return self.solve_with_band(nx, ny, pose, angle_deg)[0]
+
+    def solve_with_band(self, nx: float, ny: float, pose: str = "upright",
+                        angle_deg: float | None = None):
+        """(arm_or_None, band) — solve(), plus WHY when the answer is None.
+
+        band is one of the BAND_* constants. A caller driving toward the tin
+        needs the difference: BAND_TOO_FAR means keep approaching,
+        BAND_TOO_CLOSE means it has already overshot the nearest arc and
+        should back off instead.
+        """
         lying = pose in ("lying", "axial")
         rows = self.rows_for(pose)
         if not rows:
-            return None
-        arm = self._solve_grid(rows, float(nx), float(ny))
+            return None, BAND_NOT_CALIBRATED
+        arm, band = self._solve_grid(rows, float(nx), float(ny))
         if arm is None:
-            return None
+            return None, band
         if lying:
             # The grid's CH5 samples are the baseline pose; the actual roll
             # tracks how the tin lies on the floor ("axial" -> straight).
             arm[4] = ch5_from_angle(90.0 if angle_deg is None else angle_deg,
                                     self._anchors)
-        return [round(max(0.0, min(180.0, float(v))), 1) for v in arm]
+        return [round(max(0.0, min(180.0, float(v))), 1) for v in arm], band
 
     def _solve_grid(self, rs, nx: float, ny: float):
-        """Rows are CURVES in the image (see row_ny_at): evaluate every
-        row's height at THIS nx, then bracket the query ny between adjacent
-        curves. A flat-line model overestimated reach at the image edges —
-        the same radius really sits lower there."""
+        """(arm_or_None, band). Rows are CURVES in the image (see row_ny_at):
+        evaluate every row's height at THIS nx, then bracket the query ny
+        between adjacent curves. A flat-line model overestimated reach at the
+        image edges — the same radius really sits lower there."""
         curves = sorted(((row_ny_at(r, nx), r) for r in rs), key=lambda p: p[0])
         lo_ny, lo_row = curves[0]
         hi_ny, hi_row = curves[-1]
         if ny < lo_ny - float(lo_row.get("ny_tol", NY_TOL_DEFAULT)):
-            return None                    # too far, above the farthest arc
+            return None, BAND_TOO_FAR      # above the farthest arc
         # Below the nearest arc the tolerance is ASYMMETRIC and tiny: a tin
         # closer than the calibrated line gets overshot by the grab pose.
         if ny > hi_ny + float(hi_row.get("ny_tol_near", NY_TOL_NEAR_DEFAULT)):
-            return None                    # too close, below the nearest arc
+            return None, BAND_TOO_CLOSE    # below the nearest arc
         ny = min(max(ny, lo_ny), hi_ny)    # clamp into the strip
         if len(curves) == 1:
-            return self._solve_row(lo_row, nx)
+            return self._banded(self._solve_row(lo_row, nx))
         for (a_ny, a_row), (b_ny, b_row) in zip(curves, curves[1:]):
             if ny <= b_ny:
                 if b_ny - a_ny <= 1e-9:    # curves touch at this nx
-                    return self._solve_row(a_row, nx)
+                    return self._banded(self._solve_row(a_row, nx))
                 t = (ny - a_ny) / (b_ny - a_ny)
                 if t <= 1e-9:              # sitting ON curve a: only a matters
-                    return self._solve_row(a_row, nx)
+                    return self._banded(self._solve_row(a_row, nx))
                 if t >= 1.0 - 1e-9:        # sitting ON curve b: only b matters
-                    return self._solve_row(b_row, nx)
+                    return self._banded(self._solve_row(b_row, nx))
                 arm_a = self._solve_row(a_row, nx)
                 arm_b = self._solve_row(b_row, nx)
                 if arm_a is None or arm_b is None:
-                    return None            # nx outside one row's sampled span
-                return _lerp_arm(arm_a, arm_b, t)
-        return self._solve_row(curves[-1][1], nx)
+                    return None, BAND_NX_OUTSIDE
+                return _lerp_arm(arm_a, arm_b, t), BAND_IN
+        return self._banded(self._solve_row(curves[-1][1], nx))
+
+    @staticmethod
+    def _banded(arm):
+        """One row's answer -> (arm, band): None from _solve_row means nx fell
+        off that row's sampled span, not that the tin left the ny band."""
+        return (arm, BAND_IN) if arm is not None else (None, BAND_NX_OUTSIDE)
 
     @staticmethod
     def _solve_row(row, nx: float):
