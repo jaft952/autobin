@@ -42,7 +42,8 @@ from src.visual_servoing.reactive_controller import (
     MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
     RETREAT_PULSE_S,
 )
-from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
+from src.visual_servoing.ultrasonic_safety import (
+    UltrasonicSafety, UltrasonicWatchdog, EMERGENCY_STOP_CM, GRAB_CONFIRM_CM)
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
@@ -347,7 +348,8 @@ TIER_COLOR = {
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
-                         tier: str = "none", recovered_nudge: bool = False) -> None:
+                         tier: str = "none", recovered_nudge: bool = False,
+                         ultra=None) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -366,12 +368,16 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     bbox_area_px is shown raw (not just the derived distance_cm) because
     CALIBRATION_CONSTANT_PX_CM starts as an unmeasured placeholder — this is
     the number you read off the screen with the can at a known distance to
-    calibrate it (see distance_error.py)."""
+    calibrate it (see distance_error.py).
+
+    ultra: the watchdog's latest UltrasonicState, or None if unavailable —
+    shown as its own line so a dead/miswired sensor (reading stays "--") is
+    distinguishable from a live one that simply isn't tripping yet."""
     import cv2
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    banner_h = 110
+    banner_h = 136
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, fh - banner_h), (fw, fh), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
@@ -423,6 +429,17 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     mode_line = (f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   "
                  f"ctrl={controller_name}   [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
+
+    if ultra is None or ultra.distance_cm is None:
+        ultra_line = "ULTRA: no reading (sensor dead/out of range?)"
+        ultra_color = (0, 0, 255)
+    else:
+        ultra_line = (f"ULTRA: {ultra.distance_cm:.1f}cm  "
+                      f"estop={ultra.emergency_stop} (<={EMERGENCY_STOP_CM:.0f})  "
+                      f"grab_ok={ultra.grab_confirmed} (<={GRAB_CONFIRM_CM:.0f})")
+        ultra_color = (0, 140, 255) if ultra.emergency_stop else \
+            ((0, 255, 0) if ultra.grab_confirmed else (200, 200, 200))
+    cv2.putText(frame, ultra_line, (16, fh - banner_h + 106), font, 0.55, ultra_color, 2)
 
     dcol = (0, 255, 0) if driving else (0, 0, 255)
     cv2.putText(frame, "DRIVE ON" if driving else "DRIVE OFF", (fw - 190, 30), font, 0.65, (0, 0, 0), 3)
@@ -654,7 +671,8 @@ def run_live_demo():
                     _draw_status_overlay(frame, error, cmd, driving, armed,
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
-                                        tier=tier, recovered_nudge=recovered_nudge)
+                                        tier=tier, recovered_nudge=recovered_nudge,
+                                        ultra=ultra)
                     cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
