@@ -443,6 +443,10 @@ def main():
                 cfg[pose]["rows"], arm.arm, pt[0], pt[1])
             print(f"[cal] attach by posture: CH2-4 distance {pdist:.0f} deg"
                   + (f" — {note}" if note else ""))
+            if "new arc" in note:
+                print("[cal] refusing to attach — posture doesn't match any "
+                      "existing row. Press 'y' to start a new row instead.")
+                continue
             gap = abs(row_ny_at(row, pt[0]) - pt[1])
             if gap > 2 * float(row.get("ny_tol", NY_TOL_DEFAULT)):
                 print(f"[cal] note: clicked ny={pt[1]:.3f} is {gap:.3f} from this "

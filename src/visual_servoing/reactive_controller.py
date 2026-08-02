@@ -37,6 +37,11 @@ FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estim
 # it back up a bit).
 BACKUP_SPEED = 20.0          # TODO tune: gentle reverse to recover from an overshoot
 
+# Bounds one watchdog retreat pulse so it backs off a small step and stops
+# to let the sensor re-poll, instead of driving backward continuously for
+# as long as emergency_stop stays true (see _retreat_from_obstacle).
+RETREAT_PULSE_S = 0.12       # TODO tune: length of one backward retreat pulse
+
 MAX_STEER_ANGLE_DEG = 80.0   # keep below 90 so it never fully spins in place
 FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
 

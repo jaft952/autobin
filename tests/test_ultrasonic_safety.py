@@ -19,10 +19,21 @@ class FakeUltrasonicSensor:
 
 def test_can_grab_is_blocked_when_emergency_stop_is_active():
     safety = UltrasonicSafety.__new__(UltrasonicSafety)
-    safety.sensor = FakeUltrasonicSensor(20.0) # type: ignore
+    safety.sensor = FakeUltrasonicSensor(10.0) # type: ignore
 
     state = safety.update()
 
     assert state.emergency_stop is True
     assert state.grab_confirmed is True
     assert safety.can_grab() is False
+
+
+def test_can_grab_when_within_grab_range_but_outside_emergency_stop():
+    safety = UltrasonicSafety.__new__(UltrasonicSafety)
+    safety.sensor = FakeUltrasonicSensor(20.0) # type: ignore
+
+    state = safety.update()
+
+    assert state.emergency_stop is False
+    assert state.grab_confirmed is True
+    assert safety.can_grab() is True

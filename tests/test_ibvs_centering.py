@@ -40,6 +40,7 @@ from src.visual_servoing.distance_error import compute_target_error, TargetError
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach, speed_tier,
     MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    RETREAT_PULSE_S,
 )
 from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
 
@@ -539,10 +540,17 @@ def run_live_demo():
         zero-input gap between is a brake pulse / shoot-through spike (see
         docs/hardware_safety_patterns.md). Runs on the watchdog thread and
         fires every poll while emergency_stop stays true, so this is a
-        pulsed retreat, not a single shot."""
+        pulsed retreat, not a single shot -- but each pulse is now bounded
+        to RETREAT_PULSE_S and stops itself, instead of driving backward for
+        the whole ~65ms gap until the next poll. Without this the robot
+        never got a chance to re-check distance mid-retreat and would
+        overshoot straight back into range, re-triggering the same retreat
+        (approach/retreat loop)."""
         actuator.stop()
         time.sleep(0.05)
         actuator.apply(kin.backward(speed=BACKUP_SPEED))
+        time.sleep(RETREAT_PULSE_S)
+        actuator.stop()
 
     # Polls the sensor in its own thread instead of once per main-loop
     # iteration, and retreats itself the instant it sees emergency_stop --
