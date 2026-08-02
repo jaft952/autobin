@@ -466,9 +466,21 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     cv2.putText(frame, ultra_line, (16, fh - banner_h + 106), font, 0.55, ultra_color, 2)
 
     if solved is not None:
+        # Solver says reachable -- say why the grab still is not firing, or a
+        # gate disagreeing with the band looks like the arm simply hanging.
+        if not armed:
+            blocked = "  BLOCKED: arm not armed [g]"
+        elif ultra is None or ultra.distance_cm is None:
+            blocked = "  BLOCKED: no ultrasonic reading"
+        elif ultra.emergency_stop:
+            blocked = f"  BLOCKED: estop ({ultra.distance_cm:.0f}<={EMERGENCY_STOP_CM:.0f})"
+        elif not ultra.grab_confirmed:
+            blocked = f"  BLOCKED: ultra {ultra.distance_cm:.0f}>{GRAB_CONFIRM_CM:.0f}"
+        else:
+            blocked = ""
         grab_line = ("GRABBABLE: YES  arm=["
-                     + " ".join(f"{v:.0f}" for v in solved) + "]")
-        grab_color = (0, 255, 0)
+                     + " ".join(f"{v:.0f}" for v in solved) + "]" + blocked)
+        grab_color = (0, 140, 255) if blocked else (0, 255, 0)
     elif grabbable:
         grab_line = "GRABBABLE: latched (solver blinked, holding stop)"
         grab_color = (0, 255, 255)
