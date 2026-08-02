@@ -533,11 +533,22 @@ def run_live_demo():
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
+
+    def _retreat_from_obstacle() -> None:
+        """Stop before reversing -- an H-bridge direction flip without a
+        zero-input gap between is a brake pulse / shoot-through spike (see
+        docs/hardware_safety_patterns.md). Runs on the watchdog thread and
+        fires every poll while emergency_stop stays true, so this is a
+        pulsed retreat, not a single shot."""
+        actuator.stop()
+        time.sleep(0.05)
+        actuator.apply(kin.backward(speed=BACKUP_SPEED))
+
     # Polls the sensor in its own thread instead of once per main-loop
-    # iteration, and calls actuator.stop() itself the instant it sees
-    # emergency_stop -- top priority, not delayed behind camera inference or
-    # a step-and-look time.sleep() below. See UltrasonicWatchdog's docstring.
-    ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=actuator.stop).start()
+    # iteration, and retreats itself the instant it sees emergency_stop --
+    # top priority, not delayed behind camera inference or a step-and-look
+    # time.sleep() below. See UltrasonicWatchdog's docstring.
+    ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=_retreat_from_obstacle).start()
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
     # Track the previous camera-based distance to detect someone pushing the
     # tin closer while we're already at the "reached" handoff point; if the
@@ -584,7 +595,8 @@ def run_live_demo():
             recovered_nudge = False
             if driving:
                 if ultra.emergency_stop:
-                    actuator.stop()
+                    pass   # watchdog thread owns retreat while this is true;
+                           # don't fight it with a stop() every frame here
 
                 elif cmd is None:
                     actuator.stop()

@@ -28,7 +28,7 @@ ARC_GRAB_ORDER = {
 
 # Move pacing: step_deg per step_delay seconds is read as a SPEED by
 # stepped_move. Gentle = lower peak current on a weak supply.
-ARC_STEP_DEG   = 2.0
+ARC_STEP_DEG   = 5.0
 ARC_STEP_DELAY = 0.15
 JOG_STEP_DELAY = 0.5
 
