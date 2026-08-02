@@ -112,6 +112,21 @@ class GraspPlanner:
         for ch in range(5):
             self.move_channel(ch, target[ch])
 
+    def goto_stacked(self, target, label: str = "") -> None:
+        """Like goto(), but unwinds CH5->CH1 (LIFO) instead of CH1->CH5 --
+        folds the arm back the way it extended, so the wrist (CH4) tucks in
+        before the elbow (CH3) sweeps, instead of catching on the bin rim."""
+        if isinstance(target, str):
+            if target not in self.poses:
+                raise ValueError(f"unknown pose '{target}'; "
+                                 f"known: {list(self.poses)}")
+            label = label or f"{target} pose"
+            target = self.poses[target]
+        if label:
+            print(f"[arm] {label}")
+        for ch in reversed(range(5)):
+            self.move_channel(ch, target[ch])
+
     def open_gripper(self) -> None:
         self.move_channel(5, self.profile.gripper_open)
 
@@ -178,6 +193,7 @@ class GraspPlanner:
             print("[arm] grabbed — still holding.")
             return True
         self.dump_to_bin()
+        self.goto_stacked("home", "returning home (stacked)")
         return True
 
     def dump_to_bin(self) -> None:
