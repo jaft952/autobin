@@ -25,7 +25,7 @@ from src.motion.differential_kinematics import DifferentialKinematics, WheelComm
 # trustworthy than a few hardcoded checkpoints tuned by eye on hardware.
 CRUISE_DISTANCE_CM = 90.0    # distance at/beyond which speed is MAX_SPEED
 MAX_SPEED = 25.0             # TODO tune: hand-tested cruise speed at/beyond CRUISE_DISTANCE_CM
-APPROACH_SPEED = 20.0        # TODO tune: hand-tested speed between FAR_DISTANCE_CM and CRUISE_DISTANCE_CM
+APPROACH_SPEED = 17.0        # TODO tune: hand-tested speed between FAR_DISTANCE_CM and CRUISE_DISTANCE_CM
 FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estimated at all
 
 # Lowered from 24 (same as MAX_SPEED) -- on hardware that drove the
@@ -35,7 +35,7 @@ FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estim
 # guess pending another hardware pass -- watch for either "still backs up
 # too far" (lower further) or "doesn't clear too_close fast enough" (raise
 # it back up a bit).
-BACKUP_SPEED = 20.0          # TODO tune: gentle reverse to recover from an overshoot
+BACKUP_SPEED = 15.0          # TODO tune: gentle reverse to recover from an overshoot
 
 # Bounds one watchdog retreat pulse so it backs off a small step and stops
 # to let the sensor re-poll, instead of driving backward continuously for
@@ -52,7 +52,7 @@ FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() trigg
 # zone; the caller (the live loop) is responsible for actually stepping
 # instead of driving continuously -- see STEP_DURATION_S / LOOK_PAUSE_S
 # below, used there, not here (this module stays hardware/time-free).
-STEP_SPEED = 20.0            # TODO tune: hand-tested fixed nudge speed for step-and-look
+STEP_SPEED = 17.0            # TODO tune: hand-tested fixed nudge speed for step-and-look
 STEP_DURATION_S = 0.25       # TODO tune: length of one forward/steer nudge
 LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred look
 
