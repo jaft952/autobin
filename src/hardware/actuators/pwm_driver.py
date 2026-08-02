@@ -10,6 +10,24 @@ from src.motion.differential_kinematics import WheelCommand
 PWM_FREQ_HZ = 200
 ZKBM1_MAX_PWM_HZ = 2000
 
+# Static friction floor: duty below this buzzes without turning. 0 = off.
+MIN_MOVE_DUTY = 0.0   # TODO tune on hardware: raise until the chassis creeps
+
+
+def _apply_stiction_floor(left: float, right: float):
+    """Scale a too-weak wheel pair up together so the faster wheel clears
+    MIN_MOVE_DUTY, keeping left/right ratio (and so the steering) intact.
+
+    The slower wheel may still land under the floor -- that is wanted: a
+    dragging inner wheel tightens the arc, which is what a low-speed turn
+    physically is. A stopped pair stays stopped.
+    """
+    peak = max(abs(left), abs(right))
+    if MIN_MOVE_DUTY <= 0.0 or peak <= 0.0 or peak >= MIN_MOVE_DUTY:
+        return left, right
+    gain = MIN_MOVE_DUTY / peak
+    return left * gain, right * gain
+
 
 class PWMProtocol(Protocol):
     def start(self, value: float) -> None: ...
@@ -79,6 +97,7 @@ class PWMActuator:
                              f"~{ZKBM1_MAX_PWM_HZ} Hz input limit")
         self.pins = pins or MotorPins()
         self.cal = calibration or MotionCalibration()
+        self.last_duty = (0.0, 0.0)
 
         my_pins = [self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4]
 
@@ -127,6 +146,8 @@ class PWMActuator:
                 left_speed *= self.cal.motor_a_turn_trim
                 right_speed *= self.cal.motor_b_turn_trim
 
+        left_speed, right_speed = _apply_stiction_floor(left_speed, right_speed)
+
         left_speed = max(-100.0, min(100.0, left_speed))
         right_speed = max(-100.0, min(100.0, right_speed))
 
@@ -142,6 +163,9 @@ class PWMActuator:
         if self.cal.swap_left_right:
             left_speed, right_speed = right_speed, left_speed
 
+        # Telemetry for bench tools: the duty actually sent, after trim,
+        # stiction floor, clamp, invert and swap.
+        self.last_duty = (left_speed, right_speed)
         self._set_left(left_speed)
         self._set_right(right_speed)
 
@@ -150,6 +174,7 @@ class PWMActuator:
         motor windings open. The wheels are free to spin — an external push
         (e.g. the arm shaking the chassis) can roll the robot out of position.
         Use brake() to hold."""
+        self.last_duty = (0.0, 0.0)
         for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
             pwm.ChangeDutyCycle(0)
 
