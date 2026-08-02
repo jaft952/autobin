@@ -2,9 +2,9 @@ version: 3
 upright:
   rows:
   - ny: 0.8806
-    ny_tol: 0.02
+    ny_tol: 0.015
     ny_tol_near: 0.01
-    nx_tol: 0.02
+    nx_tol: 0.015
     samples:
     - nx: 0.0898
       ny: 0.9444
