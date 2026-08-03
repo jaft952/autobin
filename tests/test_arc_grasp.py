@@ -448,6 +448,7 @@ def main():
                       "existing row. Press 'y' to start a new row instead.")
                 continue
             gap = abs(row_ny_at(row, pt[0]) - pt[1])
+            assert row is not None
             if gap > 2 * float(row.get("ny_tol", NY_TOL_DEFAULT)):
                 print(f"[cal] note: clicked ny={pt[1]:.3f} is {gap:.3f} from this "
                       f"row's current curve — fine at an edge (arcs dip there).")
@@ -455,6 +456,7 @@ def main():
             # mixing legacy flat samples with new ny-carrying ones zigzags the curve.
             new_nx = round(pt[0], 4)
             tol = float(row.get("nx_tol", NX_TOL_DEFAULT))
+            assert row is not None
             samples = row.setdefault("samples", [])
             stale = [s for s in samples if abs(float(s["nx"]) - new_nx) <= tol]
             for s in stale:

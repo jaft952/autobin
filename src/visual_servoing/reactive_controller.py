@@ -110,7 +110,7 @@ def compute_reactive_command(error: TargetError,
     elif error.distance_cm > FAR_DISTANCE_CM:
         dynamic_speed = APPROACH_SPEED
     else:
-        dynamic_speed = STEP_SPEED   # is_final_approach() zone
+        dynamic_speed = STEP_SPEED # is_final_approach() zone
 
     if error.lateral_error > 0:
         return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
