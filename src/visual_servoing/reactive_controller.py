@@ -14,9 +14,9 @@ from src.motion.differential_kinematics import DifferentialKinematics, WheelComm
 FAR_DISTANCE_CM = 200.0          # distance at/below which speed drops from FORWARD_HIGH_SPEED
 LOW_DISTANCE_CM = 100.0          # distance at/below which speed is LOW_SPEED
 
-FORWARD_HIGH_SPEED = 22.0       # hand-tested cruise speed at/beyond FAR_DISTANCE
-FORWARD_MID_SPEED = 20.0        # hand-tested speed between FAR_DISTANCE_CM and MID_DISTANCE_CM
-FORWARD_LOW_SPEED = 18.0        # used only when distance can't be estimated at all
+FORWARD_HIGH_SPEED = 20.0       # hand-tested cruise speed at/beyond FAR_DISTANCE
+FORWARD_MID_SPEED = 18.0        # hand-tested speed between FAR_DISTANCE_CM and MID_DISTANCE_CM
+FORWARD_LOW_SPEED = 16.0        # used only when distance can't be estimated at all
 
 BACKUP_SPEED = 15.0             # gentle reverse to recover from an overshoot
 MAX_STEER_ANGLE_DEG = 90.0      # keep below 90 so it never fully spins in place
