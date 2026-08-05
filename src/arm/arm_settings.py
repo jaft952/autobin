@@ -11,7 +11,7 @@ from typing import Optional
 
 from src.hardware.actuators.pca9685_driver import clamp_channel_angle
 
-HOME_ANGLES     = [100.0, 100.0, 120.0, 0.0, 80.0]
+HOME_ANGLES     = [100.0, 100.0, 85.0, 0.0, 80.0]
 BIN_DROP_ANGLES = [100.0, 100.0, 85.0, 10.0, 80.0]
 GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]
 ARC_LIFT_ARM    = [96.7, 96.7, 100.0, 100.0, 80.0]
