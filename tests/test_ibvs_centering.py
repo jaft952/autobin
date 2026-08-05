@@ -408,12 +408,12 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     if solved is not None:
         # Solver says reachable -- say why the grab still is not firing, or a
         # gate disagreeing with the band looks like the arm simply hanging.
+        # Mirrors run_live_demo's actual trigger: armed + solved + grab_confirmed
+        # -- emergency_stop is a drive-only cutoff, not a grab-blocking reason.
         if not armed:
             blocked = "  BLOCKED: arm not armed [g]"
         elif ultra is None or ultra.distance_cm is None:
             blocked = "  BLOCKED: no ultrasonic reading"
-        elif ultra.emergency_stop:
-            blocked = f"  BLOCKED: estop ({ultra.distance_cm:.0f}<={EMERGENCY_STOP_CM:.0f})"
         elif not ultra.grab_confirmed:
             blocked = f"  BLOCKED: ultra {ultra.distance_cm:.0f}>{GRAB_CONFIRM_CM:.0f}"
         else:
@@ -766,10 +766,13 @@ def run_live_demo():
                     actuator.apply(cmd)   # cruise/approach/step: continuous, full-rate driving
 
             # solved is this frame's, not the latch: a stop may coast on a
-            # stale solution, a grab may not. Keeps UltrasonicSafety.can_grab's
-            # contract -- vision and ultrasonic stay two independent checks.
-            if (armed and solved is not None
-                    and ultra.grab_confirmed and not ultra.emergency_stop):
+            # stale solution, a grab may not. Gated on grab_confirmed alone,
+            # NOT emergency_stop -- that's a drive-only cutoff, and the tin
+            # can is expected to trip it too at the correct grab distance
+            # (see EMERGENCY_STOP_CM in ultrasonic_safety.py). Vision
+            # (solved) and ultrasonic (grab_confirmed) stay the two
+            # independent checks that must agree.
+            if armed and solved is not None and ultra.grab_confirmed:
                 grab_state["grabbing"] = True
                 try:
                     _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state)

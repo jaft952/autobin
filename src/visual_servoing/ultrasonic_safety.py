@@ -23,11 +23,13 @@ from src.hardware.sensors.ultrasonic_sensor import (
     UltrasonicPins,
 )
 
-# The arc_grasp grid is the authority on whether the arm can reach; these are
-# a coarse sanity bound around it (something really is in front, and it is not
-# so close we are about to hit it). Measured: solver says grabbable at ~29cm,
-# so a 25cm confirm window deadlocked the grab against the band stop.
-EMERGENCY_STOP_CM = 40.0
+# Two independent signals, not a nested pair -- emergency_stop is a DRIVE-only
+# safety cutoff (stop/retreat the wheels so they don't ram into something);
+# grab_confirmed is the ARM's proximity gate. They must stay independent: the
+# tin can is EXPECTED to be this close at the correct grab position (measured:
+# solver says grabbable at ~29cm), so treating "close" as universally
+# dangerous would block a legitimate grab. See can_grab()/UltrasonicState.
+EMERGENCY_STOP_CM = 35.0
 GRAB_CONFIRM_CM = 35.0
 
 
@@ -82,11 +84,14 @@ class UltrasonicSafety:
         """
         Convenience method.
 
-        Grabbing is only allowed when the sensor is within the grab-confirm
-        range and no emergency stop condition is active.
+        Gated on proximity alone (within GRAB_CONFIRM_CM) -- NOT on
+        emergency_stop, which is a separate drive-only cutoff. At the
+        correct grab distance the tin can is expected to trip it too, so
+        ANDing the two would block a legitimate grab (see EMERGENCY_STOP_CM
+        above).
         """
         s = self.update()
-        return s.grab_confirmed and not s.emergency_stop
+        return s.grab_confirmed
 
     def close(self):
         self.sensor.close()
