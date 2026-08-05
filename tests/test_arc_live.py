@@ -1,10 +1,14 @@
+"""
+Live arc-grasp viewer: YOLO detections drawn against the calibrated arcs, with
+'g' running the real grab. Arm behaviour comes from src/arm/grasp_planner.py.
+"""
 import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.arc_grasp import (
-    ArcGraspSolver, row_ny_at,
+    ArcGraspSolver, row_ny_at, pose_and_angle,
     NY_TOL_DEFAULT, NY_TOL_NEAR_DEFAULT, NX_TOL_DEFAULT,
 )
 
@@ -13,15 +17,10 @@ INFER_EVERY = 1
 
 
 def _make_arm():
-    """Reuse test_arc_grasp's tuned grab sequence (loaded by file path so a
-    missing PCA9685 only disables 'g', it doesn't kill the viewer)."""
+    """The shared manual arm; a missing PCA9685 only disables 'g'."""
     try:
-        import importlib.util
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_arc_grasp.py")
-        spec = importlib.util.spec_from_file_location("arc_tool", p)
-        mod = importlib.util.module_from_spec(spec) # type: ignore
-        spec.loader.exec_module(mod) # type: ignore
-        arm = mod.Arm()
+        from src.arm.grasp_planner import GraspPlanner
+        arm = GraspPlanner(release_on_start=True)
         print("[arm] ready — 'g' grabs, 'h' homes.")
         return arm
     except Exception as exc:
@@ -29,15 +28,10 @@ def _make_arm():
         return None
 
 
-def _pose_of(box):
-    """(pose, angle_deg_or_None, label) from a detection's segmentation mask.
-    No usable mask -> assume upright (the historical behaviour)."""
-    o = box.orientation
-    if o is None or o.klass == "upright":
-        return "upright", None, "upright"
-    if o.klass == "axial":
-        return "lying", None, "lying end-on"
-    return "lying", o.angle, f"lying {o.angle:.0f}deg"
+def _pose_label(pose, angle):
+    if pose == "upright":
+        return "upright"
+    return "lying end-on" if angle is None else f"lying {angle:.0f}deg"
 
 
 def _classify(solver, nx, ny, pose, angle_deg):
@@ -63,11 +57,9 @@ def _classify(solver, nx, ny, pose, angle_deg):
 
 
 def _draw_arcs(frame, solver):
-    """Upright grid in cyan, lying grid in magenta. Rows are CURVES drawn as
-    polylines through the samples' own (nx, ny) points. NO filled band —
-    it over-promised: the physically valid spot is ON the line or a little
-    ABOVE it (farther), so we draw the bright arc plus one faint line at
-    the far tolerance edge. Place the tin between those two lines."""
+    """Upright grid in cyan, lying grid in magenta, drawn as polylines through
+    the samples. No filled band: the valid spot is ON the line or a little
+    ABOVE it (farther), so the faint second line is the far tolerance edge."""
     import cv2
     import numpy as np
     fh, fw = frame.shape[:2]
@@ -83,9 +75,7 @@ def _draw_arcs(frame, solver):
             ext = ([(max(0.0, pts[0][0] - xtol), pts[0][1])] + pts +
                    [(min(1.0, pts[-1][0] + xtol), pts[-1][1])])
             px = np.array([[int(x * fw), int(y * fh)] for x, y in ext], np.int32)
-            # faint upper line = how far ABOVE the arc still grabs
             cv2.polylines(frame, [px + [0, -int(far_tol * fh)]], False, faint, 1)
-            # the arc itself — put the tin ON this line or slightly above
             cv2.polylines(frame, [px], False, color, 2)
             for x, y in pts:
                 cv2.drawMarker(frame, (int(x * fw), int(y * fh)), color,
@@ -93,21 +83,37 @@ def _draw_arcs(frame, solver):
 
 
 def main():
+    import argparse
     import cv2
     from src.perception.detector import AluminiumCanDetector
+
+    ap = argparse.ArgumentParser(description="Live arc-grasp viewer")
+    ap.add_argument("--step-deg", type=float, default=None,
+                    help="arm move pacing: degrees per --step-delay")
+    ap.add_argument("--step-delay", type=float, default=None,
+                    help="arm move pacing: seconds per --step-deg")
+    args = ap.parse_args()
 
     solver = ArcGraspSolver()
     print(f"[cfg] {solver.status()}")
     if not solver.ready:
         print("[cfg] no calibration — the viewer runs, but nothing will be grabbable.")
 
-    # Defaults mirror the runtime: RUNTIME_MODEL_PATH, conf 0.5, device auto
-    # (NCNN export picked up automatically if present).
+    # Defaults mirror the runtime: RUNTIME_MODEL_PATH, conf 0.5, device auto.
     detector = AluminiumCanDetector(imgsz=IMGSZ)
     detector.start()
     arm = _make_arm()
+    if arm is not None:
+        arm.set_speed(args.step_deg, args.step_delay)
+    try:
+        from src.hardware.actuators.pwm_driver import PWMActuator
+        wheels = PWMActuator()
+        print("[wheels] brake available — held during grabs.")
+    except Exception as e:
+        wheels = None
+        print(f"[wheels] no motor driver ({e}); grabs run without brake.")
 
-    print("\nKeys: g=grab (ends holding)  b=dump to bin  h=home  q=quit\n")
+    print("\nKeys: g=grab + drop in bin + home   h=home  r=release  q=quit\n")
     show = True
     result = None
     solved = None
@@ -129,11 +135,11 @@ def main():
 
             pose_label = ""
             if best is not None:
-                pose, angle, pose_label = _pose_of(best)
+                pose, angle = pose_and_angle(best)
+                pose_label = _pose_label(pose, angle)
                 # Reference point matches the calibration convention:
                 # upright -> ground contact (bbox bottom-center);
-                # lying   -> bbox CENTER (tracks the graspable middle at
-                #            every orientation; the bottom edge doesn't).
+                # lying   -> bbox CENTER (the bottom edge drifts with angle).
                 u, v = best.base_center if pose == "upright" else best.center
                 nx = u / result.frame_width # type: ignore
                 ny = v / result.frame_height # type: ignore
@@ -168,7 +174,7 @@ def main():
                 cv2.putText(annotated, pose_txt, (20, fh - 60), font, 0.6, (0, 255, 0), 1)
 
             try:
-                cv2.imshow("arc grasp live  (g=grab  h=home  r=release  q=quit)", annotated)
+                cv2.imshow("arc grasp live  (g=grab+bin  h=home  r=release  q=quit)", annotated)
                 key = cv2.waitKey(1) & 0xFF
             except cv2.error:
                 print("[!] no display — continuing text-only")
@@ -183,27 +189,24 @@ def main():
                 elif arm is None:
                     print(f"[grab] (no hardware) would send {solved}")
                 else:
-                    # ends HOLDING — press 'b' to dump; the approach order
-                    # follows the detected tin pose (lying: elbow last)
-                    arm.grab(solved, tin_pose=pose)
-            if key == ord("b"):
-                if arm is None:
-                    print("[bin] (no hardware) would dump to bin")
-                else:
-                    # Mirror ArmExecutor's real autonomous sequence
-                    # (grab -> dump -> home): don't leave the arm parked
-                    # over the bin holding a pose — ramp home under power,
-                    # THEN cut PWM, so it isn't burning battery holding a
-                    # pose between grabs (rest() does both, in order).
-                    arm.dump_to_bin()
-                    arm.rest()
+                    # Same full cycle ArmExecutor runs: grab, drop in the bin,
+                    # ramp home under power, THEN cut PWM so nothing holds a
+                    # pose idle. Wheels braked the whole time — the shaking
+                    # can't drift the base off the solved spot.
+                    if wheels is not None:
+                        wheels.brake()
+                    try:
+                        arm.collect(solved, tin_pose=pose)
+                    finally:
+                        if wheels is not None:
+                            wheels.stop()
+                    arm.goto("home")
+                    arm.release()
             if key == ord("h") and arm is not None:
-                # force_home() alone would leave it holding HOME under PWM
-                # forever — that's a pose, not rest. rest() ramps there
-                # under power, then cuts PWM so it actually goes idle.
-                arm.rest()
+                arm.goto("home")
+                arm.release()
             if key == ord("r") and arm is not None:
-                arm.release()   # cut PWM — arm goes limp (servo_jog-style)
+                arm.release()   # cut PWM — arm goes limp
 
     except KeyboardInterrupt:
         print("\nstopped.")
@@ -215,6 +218,11 @@ def main():
         try:
             if arm is not None:
                 arm.release()   # never leave servos holding a pose after exit
+        except Exception:
+            pass
+        try:
+            if wheels is not None:
+                wheels.stop()   # never leave the base braked after exit
         except Exception:
             pass
         try:

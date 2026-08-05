@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from src.hardware.actuators.interfaces import ActuatorInterface
 from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 from src.subsumption.arbitrator import ActionCommand
@@ -46,7 +47,7 @@ class MotionExecutor:
 
     def __init__(
         self,
-        actuator=None,
+        actuator: Optional[ActuatorInterface] = None,
         calibration: Optional[MotionCalibration] = None,
         pins: Optional[MotorPins] = None,
     ) -> None:
@@ -54,7 +55,7 @@ class MotionExecutor:
         if actuator is None:
             from src.hardware.actuators.pwm_driver import PWMActuator
             actuator = PWMActuator(pins=pins, calibration=self.cal)
-        self.actuator = actuator
+        self.actuator: ActuatorInterface = actuator
 
     def execute(self, command: ActionCommand) -> None:
         """Apply the winning command's motion_vector to the base.
@@ -106,8 +107,8 @@ class MotionExecutor:
 
     def brake(self) -> None:
         """Actively hold position — resist being pushed. Used while the arm
-        grabs so the shaking chassis doesn't drift. Falls back to a plain
-        stop() for actuators without a brake (e.g. print stubs in tests)."""
+        grabs so the shaking chassis doesn't drift. brake() is optional on
+        ActuatorInterface; falls back to stop() when an actuator omits it."""
         brake_fn = getattr(self.actuator, "brake", None)
         if callable(brake_fn):
             brake_fn()

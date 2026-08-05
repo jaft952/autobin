@@ -128,6 +128,12 @@ class ArmActuator:
         self.kit.servo[5].angle = angle # type: ignore
         print(f"[Actuator] CH6 (Gripper) hardware written angle: {angle:.1f}°")
 
+    def release(self):
+        """Cut PWM to CH1-6: duty 0 -> no pulse -> servos go limp, nothing
+        holds a pose against gravity."""
+        for i in range(6):
+            self.kit.servo[i].angle = None
+
 
 # Hobby servos refresh their PWM at ~50 Hz — stream setpoints at that rate so
 # the servo follows the trajectory CONTINUOUSLY instead of sprinting to each

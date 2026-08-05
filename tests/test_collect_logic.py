@@ -131,22 +131,25 @@ class FakePlanner:
         self.arc_ok, self.ik_ok = arc_ok, ik_ok
         self.calls = []
 
-    def home(self):
-        self.calls.append("home")
+    def goto(self, target, label=""):
+        self.calls.append(("goto", target if isinstance(target, str) else "pose"))
 
-    def grab_arc_pose(self, pose, tin_pose="upright"):
+    def collect(self, pose, tin_pose="upright", dump=True):
         self.calls.append(("arc", tuple(round(v, 1) for v in pose), tin_pose))
         return self.arc_ok
 
-    def dump_to_bin(self):
-        self.calls.append("dump")
-
-    def move_to(self, xyz, **kw):
-        self.calls.append(("move_to", tuple(round(v, 3) for v in xyz)))
+    def ik_move(self, xyz, **kw):
+        self.calls.append(("ik_move", tuple(round(v, 3) for v in xyz)))
         return self.ik_ok
 
-    def control_gripper(self, action):
-        self.calls.append(("grip", action))
+    def open_gripper(self):
+        self.calls.append(("grip", "open"))
+
+    def close_gripper(self):
+        self.calls.append(("grip", "close"))
+
+    def dump_to_bin(self):
+        self.calls.append("dump")
 
 
 class FakeClock:
@@ -363,11 +366,12 @@ def test_executor_grab_dump_home_and_cooldown():
         grab = ActionCommand(3, True, (0, 0, 0), 'grab_arc', "",
                              {'pose': [100.0, 145.0, 75.0, 165.0, 90.0]})
         ex.execute(grab)
-        # First command since boot: force-home first (unknown boot pose;
-        # FakePlanner has no force_home -> falls back to home()), then grab.
-        assert planner.calls == ["home",
+        # First command since boot: home first (unknown boot pose; goto()
+        # asserts every channel), then collect (grab + dump, both inside
+        # the fake's single "arc" call), then home.
+        assert planner.calls == [("goto", "home"), ("grip", "open"),
                                  ("arc", (100.0, 145.0, 75.0, 165.0, 90.0), "upright"),
-                                 "dump", "home"], planner.calls
+                                 ("goto", "home"), ("grip", "open")], planner.calls
 
         # Tin still visible next tick (mid-cooldown) -> must NOT re-grab.
         planner.calls.clear()
@@ -388,16 +392,16 @@ def test_executor_stow_idempotent_and_failed_ik():
         assert planner.calls == []          # no movement at boot
 
         stow = ActionCommand(1, True, (0.5, 0, 0), 'stow', "")
-        ex.execute(stow)                    # first command -> force-home once
+        ex.execute(stow)                    # first command -> home once
         ex.execute(stow)                    # already home -> no extra moves
-        assert planner.calls == ["home"], planner.calls
+        assert planner.calls == [("goto", "home"), ("grip", "open")], planner.calls
         planner.calls.clear()
 
         # Unreachable IK grab: no dump, but the arm still returns home.
         ex.execute(ActionCommand(3, True, (0, 0, 0), 'grab_ik', "",
                                  {'target_m': (0.05, 0.28)}))
-        assert "dump" not in planner.calls, planner.calls
-        assert planner.calls[-1] == "home", planner.calls
+        assert ("goto", "bin") not in planner.calls, planner.calls
+        assert planner.calls[-2] == ("goto", "home"), planner.calls
 
         # After a grab the pose is dirty -> next stow really homes again,
         # but only ONCE.
@@ -418,24 +422,24 @@ def test_command_write_through():
     p = GraspPlanner()                       # DummyServo kit on dev machines
     # Simulate tracking being wrong: physical servo somewhere else entirely.
     p.actuator.kit.servo[0].angle = 50.0
-    assert p._arm[0] != 50.0                 # tracked pose disagrees
+    assert p.arm[0] != 50.0                 # tracked pose disagrees
     p.jog_channel(0, 0.0)                    # command == tracked value (no-op diff)
-    assert p.actuator.kit.servo[0].angle == p._arm[0], \
+    assert p.actuator.kit.servo[0].angle == p.arm[0], \
         "command equal to tracked pose must still be written through"
 
-    # Full-pose moves assert every channel too (home() with tracking already
+    # Full-pose moves assert every channel too (goto with tracking already
     # at home must still command the servos).
     p.actuator.kit.servo[2].angle = 10.0
-    p.home()
-    assert p.actuator.kit.servo[2].angle == p._arm[2], \
+    p.goto("home")
+    assert p.actuator.kit.servo[2].angle == p.arm[2], \
         "full-pose move must write channels the tracker thinks are in place"
 
-    # force_home is now stepped (gentle) but must STILL assert the pose.
+    # a second home must still assert the pose.
     p.actuator.kit.servo[3].angle = 5.0
-    p.force_home()
-    assert p.actuator.kit.servo[3].angle == p._arm[3], \
-        "stepped force_home must still write through stale tracking"
-    print("PASS commands write through stale tracking (jog + full pose + force_home)")
+    p.goto("home")
+    assert p.actuator.kit.servo[3].angle == p.arm[3], \
+        "a repeated home must still write through stale tracking"
+    print("PASS commands write through stale tracking (jog + full pose + repeat home)")
 
 
 def test_curved_arc_rows():
@@ -541,39 +545,39 @@ def test_pose_persists_across_sessions():
     from src.arm.grasp_planner import GraspPlanner
     p = GraspPlanner()
     p.jog_channel(0, +7.0)                        # move + persist
-    moved_to = p._arm[0]
+    moved_to = p.arm[0]
 
     q = GraspPlanner()                            # "next session"
-    assert q._arm[0] == moved_to, \
+    assert q.arm[0] == moved_to, \
         "new session must resume the previous session's commanded pose"
 
-    q.force_home()                                # leave a clean state behind
+    q.goto("home")                                # leave a clean state behind
     r = GraspPlanner()
-    assert r._arm == q._arm and r._gripper == q._gripper
+    assert r.arm == q.arm and r.gripper == q.gripper
     print("PASS commanded pose persists across sessions (ramps start true)")
 
 
 def test_grab_order_per_tin_pose():
-    """User-specified approach orders (2026-07-11): the LAST channel is the
-    descent onto the tin — upright: CH2 shoulder; lying: CH3 elbow.
-    Sequence = pre-lift (1,2,3) + pose order + final shoulder lift (1)."""
+    """LAST channel is the descent onto the tin — upright: CH2 shoulder;
+    lying: CH3 elbow. Full sequence = open + pre-lift(1,2,3) + pose order
+    + close + final shoulder lift(1); gripper steps through move_channel
+    too, since an instant jaw move spikes current."""
     from src.arm.grasp_planner import GraspPlanner
     p = GraspPlanner()
     seq = []
-    p._move_one = lambda ch, v: seq.append(ch)     # spy on the channel order
-    p.control_gripper = lambda a: None
+    p.move_channel = lambda ch, v: seq.append(ch)     # spy on the channel order
     pose = [100.0, 140.0, 70.0, 160.0, 90.0]
 
-    p.grab_arc_pose(pose)                          # upright (default)
-    assert seq == [1, 2, 3] + [0, 4, 2, 3, 1] + [1], seq
+    p.collect(pose, dump=False)                    # upright (default)
+    assert seq == [5] + [1, 2, 3] + [0, 4, 2, 3, 1] + [5, 1], seq
 
     seq.clear()
-    p.grab_arc_pose(pose, tin_pose="lying")        # elbow (CH3=idx 2) LAST
-    assert seq == [1, 2, 3] + [0, 4, 3, 1, 2] + [1], seq
+    p.collect(pose, tin_pose="lying", dump=False)  # elbow (CH3=idx 2) LAST
+    assert seq == [5] + [1, 2, 3] + [0, 4, 3, 1, 2] + [5, 1], seq
 
     seq.clear()
-    p.grab_arc_pose(pose, tin_pose="axial")        # axial grabs like lying
-    assert seq == [1, 2, 3] + [0, 4, 3, 1, 2] + [1], seq
+    p.collect(pose, tin_pose="axial", dump=False)  # axial grabs like lying
+    assert seq == [5] + [1, 2, 3] + [0, 4, 3, 1, 2] + [5, 1], seq
     print("PASS grab order: upright shoulder-last, lying/axial elbow-last")
 
 

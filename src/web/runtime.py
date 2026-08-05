@@ -243,14 +243,14 @@ class RobotRuntime:
         with self._arm_lock:
             planner = self._manual_arm_planner()
             if name == "home":
-                # Explicit user intent -> FORCE (works even when the tracked
-                # pose already claims home, e.g. right after server boot).
-                force = getattr(planner, "force_home", None)
-                (force or planner.home)()
+                # goto() asserts every channel, so this works even when the
+                # tracked pose already claims home (e.g. right after boot).
+                planner.goto("home")
+                planner.open_gripper()
                 self.arm._at_home = True
                 self.arm._force_next_home = False
             elif name == "bin":
-                planner.goto_named_pose("bin")
+                planner.dump_to_bin()       # release whatever is held
                 self.arm._at_home = False
             else:
                 raise ValueError(f"unknown pose '{name}' (home|bin)")
@@ -258,7 +258,13 @@ class RobotRuntime:
 
     def arm_gripper(self, action: str):
         with self._arm_lock:
-            self._manual_arm_planner().control_gripper(action)
+            planner = self._manual_arm_planner()
+            if action == "close":
+                planner.close_gripper()
+            elif action in ("open", "neutral", "stow"):
+                planner.open_gripper()
+            else:
+                raise ValueError(f"unknown gripper action '{action}'")
         self.log.info(f"manual gripper -> {action}")
 
     def arm_jog(self, channel: int, delta: float) -> float:

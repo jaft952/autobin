@@ -67,22 +67,21 @@ def _make_planner():
 
 def _grab(planner, x, y):
     """Open -> IK move to the tin waist -> close -> carry to bin -> home."""
-    from src.arm.kinematics import GRIPPER_DOWN, GRIPPER_LEVEL
     reach = math.hypot(x, y)
-    tool = GRIPPER_LEVEL if reach >= LEVEL_MIN_REACH else GRIPPER_DOWN
-    mode = "LEVEL" if tool is GRIPPER_LEVEL else "DOWN"
+    tool = "level" if reach >= LEVEL_MIN_REACH else "down"
+    mode = tool.upper()
     print(f"[grab] tin at ({x:+.3f}, {y:+.3f}) m, reach {reach:.3f} -> {mode} grasp "
           f"at z={TIN_WAIST_Z}")
     if planner is None:
         print("[grab] (no hardware — would move_to and close here)")
         return
-    planner.control_gripper("open")
-    if not planner.move_to([x, y, TIN_WAIST_Z], tool_direction=tool):
+    planner.open_gripper()
+    if not planner.ik_move([x, y, TIN_WAIST_Z], approach=tool):
         print(f"[grab] unreachable in {mode} mode — drive closer/farther and retry.")
         return
-    planner.control_gripper("close")
-    planner.dump_to_bin()    # carry to the chassis bin and release
-    planner.home()
+    planner.close_gripper()
+    planner.dump_to_bin()
+    planner.goto("home")
     print("[grab] done.")
 
 
@@ -192,7 +191,7 @@ def main():
                         _grab(planner, pred[0], pred[1])
 
             elif key == ord('h') and planner is not None:
-                planner.home()
+                planner.goto("home")
 
     except KeyboardInterrupt:
         print("\nstopped.")

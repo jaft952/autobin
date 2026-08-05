@@ -23,8 +23,12 @@ from src.hardware.sensors.ultrasonic_sensor import (
     UltrasonicPins,
 )
 
-EMERGENCY_STOP_CM = 25.0
-GRAB_CONFIRM_CM = 25.0
+# The arc_grasp grid is the authority on whether the arm can reach; these are
+# a coarse sanity bound around it (something really is in front, and it is not
+# so close we are about to hit it). Measured: solver says grabbable at ~29cm,
+# so a 25cm confirm window deadlocked the grab against the band stop.
+EMERGENCY_STOP_CM = 15.0
+GRAB_CONFIRM_CM = 35.0
 
 
 @dataclass
