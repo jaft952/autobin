@@ -23,11 +23,13 @@ from src.hardware.sensors.ultrasonic_sensor import (
     UltrasonicPins,
 )
 
-# The arc_grasp grid is the authority on whether the arm can reach; these are
-# a coarse sanity bound around it (something really is in front, and it is not
-# so close we are about to hit it). Measured: solver says grabbable at ~29cm,
-# so a 25cm confirm window deadlocked the grab against the band stop.
-EMERGENCY_STOP_CM = 15.0
+# Two independent signals, not a nested pair -- emergency_stop is a DRIVE-only
+# safety cutoff (stop/retreat the wheels so they don't ram into something);
+# grab_confirmed is the ARM's proximity gate. They must stay independent: the
+# tin can is EXPECTED to be this close at the correct grab position (measured:
+# solver says grabbable at ~29cm), so treating "close" as universally
+# dangerous would block a legitimate grab. See can_grab()/UltrasonicState.
+EMERGENCY_STOP_CM = 35.0
 GRAB_CONFIRM_CM = 35.0
 
 
@@ -82,11 +84,14 @@ class UltrasonicSafety:
         """
         Convenience method.
 
-        Grabbing is only allowed when the sensor is within the grab-confirm
-        range and no emergency stop condition is active.
+        Gated on proximity alone (within GRAB_CONFIRM_CM) -- NOT on
+        emergency_stop, which is a separate drive-only cutoff. At the
+        correct grab distance the tin can is expected to trip it too, so
+        ANDing the two would block a legitimate grab (see EMERGENCY_STOP_CM
+        above).
         """
         s = self.update()
-        return s.grab_confirmed and not s.emergency_stop
+        return s.grab_confirmed
 
     def close(self):
         self.sensor.close()
@@ -150,7 +155,17 @@ class UltrasonicWatchdog:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            state = self._safety.update()
+            try:
+                state = self._safety.update()
+            except Exception as exc:
+                # A transient GPIO error (e.g. timing contention with
+                # camera inference / PWM on the main thread) must not
+                # silently kill this daemon thread -- without a reading,
+                # .latest would stay frozen at "no reading" forever, with
+                # nothing left to recover it. Log and keep polling instead.
+                print(f"[ultrasonic] poll error: {exc}")
+                state = UltrasonicState(distance_cm=None, emergency_stop=False,
+                                         grab_confirmed=False)
             with self._lock:
                 self._latest = state
             if state.emergency_stop:
