@@ -6,10 +6,10 @@ Test both forward/backward arcs and stationary left/right turns.
 
 Keys:
   1-4               : select arc direction
-                      1 = ARC FORWARD-LEFT
-                      2 = ARC FORWARD-RIGHT
-                      3 = ARC BACKWARD-LEFT
-                      4 = ARC BACKWARD-RIGHT
+                      1 = ARC FORWARD-RIGHT
+                      2 = ARC FORWARD-LEFT
+                      3 = ARC BACKWARD-RIGHT
+                      4 = ARC BACKWARD-LEFT
   5/6               : stationary TURN LEFT / TURN RIGHT
 
   [/]               : fine tune angle (+/- 1°, arc modes only)
@@ -98,10 +98,10 @@ def main():
     speed = 0.50
     mode = 1  # 1=arc_forward_left, 2=arc_forward_right, 3=arc_backward_left, 4=arc_backward_right, 5=turn_left, 6=turn_right
     mode_names = {
-        1: "ARC FWD-LEFT",
-        2: "ARC FWD-RIGHT",
-        3: "ARC BACK-LEFT",
-        4: "ARC BACK-RIGHT",
+        1: "ARC FWD-RIGHT",
+        2: "ARC FWD-LEFT",
+        3: "ARC BACK-RIGHT",
+        4: "ARC BACK-LEFT",
         5: "TURN LEFT",
         6: "TURN RIGHT",
     }
@@ -123,13 +123,13 @@ def main():
     def get_current_command():
         """Get the current wheel command based on mode and angle."""
         if mode == 1:
-            return kin.arc_forward_left(angle, cal.arc_speed * speed)
-        elif mode == 2:
             return kin.arc_forward_right(angle, cal.arc_speed * speed)
+        elif mode == 2:
+            return kin.arc_forward_left(angle, cal.arc_speed * speed)
         elif mode == 3:
-            return kin.arc_backward_left(angle, cal.arc_speed * speed)
-        elif mode == 4:
             return kin.arc_backward_right(angle, cal.arc_speed * speed)
+        elif mode == 4:
+            return kin.arc_backward_left(angle, cal.arc_speed * speed)
         elif mode == 5:
             return kin.turn_left(cal.turn_speed * speed)
         else:  # mode == 6
