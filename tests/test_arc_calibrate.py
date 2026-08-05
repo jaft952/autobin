@@ -43,11 +43,43 @@ from src.motion.calibration import MotionCalibration
 if os.name == "nt":
     import msvcrt
 
+    def _wait_byte(deadline_s: float = 0.05):
+        """Poll msvcrt for one more buffered byte (arrow-key sequences land
+        in the input buffer in a single burst, so this rarely blocks)."""
+        t0 = time.time()
+        while time.time() - t0 < deadline_s:
+            if msvcrt.kbhit():
+                return msvcrt.getch()
+            time.sleep(0.005)
+        return None
+
     def get_key(timeout: float = 0.1):
+        """Returns a decoded character, or 'up'/'down'/'left'/'right' for
+        arrow keys. Arrow keys arrive as a multi-byte sequence — either the
+        classic Windows-console prefix (0x00/0xE0 + scan code) or an ANSI
+        escape sequence (ESC '[' letter) on terminals that emulate one
+        (e.g. Git Bash/mintty). Without consuming the whole sequence here,
+        the trailing byte leaks through as its own keypress on the next
+        poll — e.g. UP arrow's ANSI 'A' byte lowercases to 'a', which
+        collides with the continuous-run key."""
         t0 = time.time()
         while time.time() - t0 < timeout:
             if msvcrt.kbhit():
                 ch = msvcrt.getch()
+                if ch in (b"\x00", b"\xe0"):
+                    code = _wait_byte()
+                    if code is None:
+                        return None
+                    return {b"H": "up", b"P": "down",
+                            b"K": "left", b"M": "right"}.get(code)
+                if ch == b"\x1b":
+                    if _wait_byte() != b"[":
+                        return None
+                    code = _wait_byte()
+                    if code is None:
+                        return None
+                    return {b"A": "up", b"B": "down",
+                            b"C": "right", b"D": "left"}.get(code)
                 try:
                     return ch.decode()
                 except UnicodeDecodeError:
@@ -196,18 +228,6 @@ def main():
                 elif key == "]":
                     angle = min(180.0, angle + 1.0)
                 print_current()
-                continue
-
-            # Arrow keys for UP/DOWN (need special handling on Windows)
-            elif key == "\x00" or key == "\xe0":  # escape sequence start (Windows)
-                # Try to read the next key
-                key2 = get_key(timeout=0.05)
-                if key2 == "H" and mode in (1, 2, 3, 4):  # UP arrow
-                    angle = min(180.0, angle + 5.0)
-                    print_current()
-                elif key2 == "P" and mode in (1, 2, 3, 4):  # DOWN arrow
-                    angle = max(0.0, angle - 5.0)
-                    print_current()
                 continue
 
             # Speed adjustment
