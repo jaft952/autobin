@@ -88,12 +88,48 @@ class ScanAroundLayer(BaseLayer):
               Activates only while no target is detected.
     """
 
-    def __init__(self):
+    def __init__(self, forward_speed: float = FORWARD_SPEED,
+                 turn_speed: float = TURN_SPEED,
+                 turn_90_s: float = TURN_90_S,
+                 shift_s: float = SHIFT_S,
+                 max_lane_s: float = MAX_LANE_S):
         super().__init__(layer_id=1)
+        self.forward_speed = FORWARD_SPEED
+        self.turn_speed = TURN_SPEED
+        self.turn_90_s = TURN_90_S
+        self.shift_s = SHIFT_S
+        self.max_lane_s = MAX_LANE_S
+        self.set_speeds(forward_speed, turn_speed)
+        self.set_timing(turn_90_s, shift_s, max_lane_s)
         self._phase: Optional[_Phase] = None   # None = pattern not started
         self._phase_started: float = 0.0
         self._lane_started: float = 0.0
         self._turn_left: bool = True           # pivot side; alternates per wall
+
+    # ── Calibration knobs (the Pi tools drive these, see module docstring) ─
+
+    def set_timing(self, turn_90_s: Optional[float] = None,
+                   shift_s: Optional[float] = None,
+                   max_lane_s: Optional[float] = None) -> None:
+        if turn_90_s is not None:
+            self.turn_90_s = max(0.0, float(turn_90_s))
+        if shift_s is not None:
+            self.shift_s = max(0.0, float(shift_s))
+        if max_lane_s is not None:
+            self.max_lane_s = max(0.0, float(max_lane_s))
+
+    def set_speeds(self, forward_speed: Optional[float] = None,
+                   turn_speed: Optional[float] = None) -> None:
+        # Clamped to the 0..1 motion-fraction contract MotionExecutor expects.
+        if forward_speed is not None:
+            self.forward_speed = max(0.0, min(1.0, float(forward_speed)))
+        if turn_speed is not None:
+            self.turn_speed = max(0.0, min(1.0, float(turn_speed)))
+
+    def timing_summary(self) -> str:
+        return (f"turn_90={self.turn_90_s:.2f}s shift={self.shift_s:.2f}s "
+                f"max_lane={self.max_lane_s:.1f}s fwd={self.forward_speed:.2f} "
+                f"turn={self.turn_speed:.2f}")
 
     # ── Subsumption API ───────────────────────────────────────────────────
 
@@ -116,7 +152,7 @@ class ScanAroundLayer(BaseLayer):
             wall_seen = dist is not None and dist <= TURN_AT_CM
             if wall_seen and dist <= BACKOFF_AT_CM:
                 self._enter(_Phase.BACKOFF, now)
-            elif wall_seen or (now - self._lane_started) >= MAX_LANE_S:
+            elif wall_seen or (now - self._lane_started) >= self.max_lane_s:
                 self._enter(_Phase.TURN1, now)
 
         elif self._phase == _Phase.BACKOFF:
@@ -124,18 +160,18 @@ class ScanAroundLayer(BaseLayer):
                 self._enter(_Phase.TURN1, now)
 
         elif self._phase == _Phase.TURN1:
-            if self._elapsed(now) >= TURN_90_S:
+            if self._elapsed(now) >= self.turn_90_s:
                 self._enter(_Phase.SHIFT, now)
 
         elif self._phase == _Phase.SHIFT:
             # Corner case: wall ahead during the shift -> skip straight to
             # the second pivot instead of driving into it.
             wall_seen = dist is not None and dist <= TURN_AT_CM
-            if wall_seen or self._elapsed(now) >= SHIFT_S:
+            if wall_seen or self._elapsed(now) >= self.shift_s:
                 self._enter(_Phase.TURN2, now)
 
         elif self._phase == _Phase.TURN2:
-            if self._elapsed(now) >= TURN_90_S:
+            if self._elapsed(now) >= self.turn_90_s:
                 self._turn_left = not self._turn_left  # alternate -> zigzag
                 self._enter(_Phase.DRIVE, now)
                 self._lane_started = now
@@ -155,15 +191,15 @@ class ScanAroundLayer(BaseLayer):
 
     def _motion_for_phase(self):
         """(v_x, v_y, v_theta) for the current phase. v_theta > 0 = CCW/left."""
-        turn = TURN_SPEED if self._turn_left else -TURN_SPEED
+        turn = self.turn_speed if self._turn_left else -self.turn_speed
         if self._phase == _Phase.DRIVE:
-            return (FORWARD_SPEED, 0, 0), "lane"
+            return (self.forward_speed, 0, 0), "lane"
         if self._phase == _Phase.BACKOFF:
             return (-BACKOFF_SPEED, 0, 0), "backing off wall"
         if self._phase == _Phase.TURN1:
             return (0, 0, turn), f"turn 1 ({'left' if self._turn_left else 'right'})"
         if self._phase == _Phase.SHIFT:
-            return (FORWARD_SPEED, 0, 0), "shifting lane"
+            return (self.forward_speed, 0, 0), "shifting lane"
         if self._phase == _Phase.TURN2:
             return (0, 0, turn), f"turn 2 ({'left' if self._turn_left else 'right'})"
         return (0, 0, 0), "idle"

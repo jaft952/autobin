@@ -17,44 +17,37 @@ For a live run on the robot (real camera, optionally real motors/arm) use:
 Live flags (only read with --live):
   --drive              send commands to the wheels (default: look only)
   --arm                grab when reached (needs a calibrated arc_grasp)
-  --mode predictive|chase|cruise|step   pursuit style (default predictive):
-       predictive = receding-horizon planner: smooth slow-start / cruise /
-                    gradual stop, re-planned every frame (vision-only)
-       chase  = reactive: drive + steer continuously toward the can
-       cruise = reactive: continuous, speed tapers with distance (slower near)
-       step   = reactive: point-and-look bursts at close range (stale-frame safe)
-  --speed MAX[-MIN]    scale forward speed (0..1). MAX-MIN tapers with distance
-  --turn  MAX[-MIN]    scale steer speed. MAX-MIN tapers as the can nears center
 
 Without --drive the wheels never move — distance_error and reactive_controller
 still run every frame and their output shows on the overlay/console, so the
 planned steer/speed can be checked before it touches the motors. Keys while the
-window is focused: m = toggle drive, g = toggle arm, n = cycle mode, q = quit.
+window is focused: m = toggle drive, g = toggle arm, q = quit.
 
-This whole function is NOT executed by the test suite or by pytest — see
+The live demo is NOT executed by the test suite or by pytest — see
 run_live_demo() at the bottom.
 """
-import os
 import sys
 from pathlib import Path
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))   # for test_arc_grasp (--arm)
 
 from src.perception.detector import BoundingBox, DetectionResult
 from src.motion.calibration import MotionCalibration
-from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
-from src.visual_servoing.distance_error import compute_target_error, TargetError, STOP_DISTANCE_CM
+from src.motion.differential_kinematics import DifferentialKinematics
+from src.arm.arc_grasp import (
+    pose_and_angle, row_ny_at, NX_TOL_DEFAULT, BAND_TOO_CLOSE, BAND_TOO_FAR,
+    BAND_NX_OUTSIDE, BAND_NOT_CALIBRATED)
+from src.visual_servoing.distance_error import compute_target_error, TargetError
+import src.hardware.actuators.pwm_driver as pwm_driver
+import src.visual_servoing.reactive_controller as rc
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, is_final_approach, speed_tier,
-    MAX_SPEED, APPROACH_SPEED, BACKUP_SPEED, SCAN_SPEED, STEP_DURATION_S, STEP_SPEED, LOOK_PAUSE_S,
-    CRUISE_DISTANCE_CM,
+    MAX_SPEED, APPROACH_SPEED, STEP_SPEED, BACKUP_SPEED, STEP_DURATION_S, LOOK_PAUSE_S,
+    RETREAT_PULSE_S, ALIGN_TURN_SPEED, ALIGN_PULSE_S,
 )
-from src.visual_servoing.predictive_controller import (
-    compute_predictive_command, ControllerState,
-)
-from src.visual_servoing.ultrasonic_safety import UltrasonicSafety, UltrasonicWatchdog
+from src.visual_servoing.ultrasonic_safety import (
+    UltrasonicSafety, UltrasonicWatchdog, EMERGENCY_STOP_CM, GRAB_CONFIRM_CM)
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
@@ -142,18 +135,16 @@ def test_too_close_backs_away_even_when_off_center():
 # ── reactive_controller.compute_reactive_command ─────────────────────────────────
 
 def test_reactive_command_none_when_not_found():
-    ultrasonic = UltrasonicSafety()
     error = compute_target_error(DetectionResult())
-    assert compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin()) is None
+    assert compute_reactive_command(error, _kin()) is None
     print("PASS drive command is None when nothing is found")
 
 
 def test_reactive_command_none_when_reached():
-    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.5, bbox_height_px=300))
     assert error.reached
     assert not error.too_close, error
-    assert compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin()) is None
+    assert compute_reactive_command(error, _kin()) is None
     print("PASS drive command is None when reached (arm handoff)")
 
 
@@ -161,10 +152,9 @@ def test_reactive_command_backs_away_when_too_close():
     """too_close -> an active BACKWARD command (both wheels negative), not
     just a stop — recovers from an overshoot instead of sitting wedged
     against the can, even when off-center."""
-    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=360))
     assert error.too_close
-    cmd = compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin())
+    cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.left_speed < 0 and cmd.right_speed < 0, cmd
     assert abs(cmd.left_speed) <= BACKUP_SPEED + 1e-6, cmd
@@ -176,9 +166,8 @@ def test_reactive_command_when_can_is_left_of_center():
     slower than left) — hardware-verified mapping, see the sign-convention
     note in reactive_controller.py. Far away (>= CRUISE_DISTANCE_CM) ->
     speed at MAX_SPEED, the top hardcoded tier."""
-    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.3, bbox_height_px=40))
-    cmd = compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin())
+    cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.right_speed < cmd.left_speed, cmd
     assert cmd.left_speed >= 0.9 * MAX_SPEED, cmd   # brisk, not crawling
@@ -193,10 +182,9 @@ def test_reactive_command_when_can_is_right_of_center():
     stalling: STEP_SPEED keeps steering alive all the way to the grab
     point). frame_height oversized per the is_final_approach fixtures above
     to stay clear of CLOSE_BBOX_FRACTION at this bbox size."""
-    ultrasonic = UltrasonicSafety()
     error = compute_target_error(_make_detection(norm_x=0.7, bbox_height_px=1064, frame_height=5000))
     assert is_final_approach(error), error
-    cmd = compute_reactive_command(error, ultrasonic.sensor.get_distance_cm(), _kin())
+    cmd = compute_reactive_command(error, _kin())
     assert cmd is not None
     assert cmd.left_speed < cmd.right_speed, cmd
     assert abs(cmd.right_speed - STEP_SPEED) < 0.2 * STEP_SPEED, cmd   # right (outer) wheel ~= STEP_SPEED * trim
@@ -219,10 +207,9 @@ def test_reactive_command_speed_tiers_are_hardcoded():
     assert speed_tier(approach_error) == "approach", approach_error
     assert speed_tier(step_error) == "step", step_error
 
-    ultrasonic = UltrasonicSafety()
-    cruise = compute_reactive_command(cruise_error, ultrasonic.sensor.get_distance_cm(), _kin())
-    approach = compute_reactive_command(approach_error, ultrasonic.sensor.get_distance_cm(), _kin())
-    step = compute_reactive_command(step_error, ultrasonic.sensor.get_distance_cm(), _kin())
+    cruise = compute_reactive_command(cruise_error, _kin())
+    approach = compute_reactive_command(approach_error, _kin())
+    step = compute_reactive_command(step_error, _kin())
     assert cruise is not None and approach is not None and step is not None
     assert abs(cruise.right_speed - MAX_SPEED) < 0.2 * MAX_SPEED, cruise
     assert abs(approach.right_speed - APPROACH_SPEED) < 0.2 * APPROACH_SPEED, approach
@@ -346,17 +333,15 @@ def _run_all_tests():
 
 _GRAB_COOLDOWN_S = 4.0   # after a grab attempt (success or refusal), don't re-solve every frame
 
+# How long a "solver says grabbable" answer keeps the wheels stopped after
+# the solver stops saying it -- rides out single-frame detection jitter so a
+# blink doesn't restart the approach.
+GRABBABLE_LATCH_S = 2.0
 
-def _pose_and_angle(box):
-    """(pose, angle_deg_or_None) for arc_grasp, from the detection's
-    segmentation-based orientation — same convention as src/arm/arc_grasp.py
-    and the old ibvs_centering pipeline. No usable mask -> assume upright."""
-    o = box.orientation
-    if o is None or o.klass == "upright":
-        return "upright", None
-    if o.klass == "axial":
-        return "lying", None
-    return "lying", o.angle
+# Caller-side band value: nothing detected this frame. Distinct from
+# BAND_NOT_CALIBRATED (no solver at all) so the overlay can't blame a missing
+# grid for what is really an empty frame.
+BAND_NO_TARGET = "no_target"
 
 
 # Display-only: color per speed_tier() label, used by both the overlay and
@@ -377,7 +362,9 @@ TIER_COLOR = {
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
-                         tier: str = "none", recovered_nudge: bool = False) -> None:
+                         tier: str = "none",
+                         ultra=None, solved=None, grabbable: bool = False,
+                         band: str = BAND_NOT_CALIBRATED, applied=None) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -387,21 +374,23 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     active, so this overlay can't drift out of sync with
     compute_reactive_command's actual thresholds as they get re-tuned.
 
-    recovered_nudge: True for the one frame where the live loop fired the
-    "can was pushed closer while reached" backward nudge (see
-    run_live_demo) -- cmd is still None that frame (compute_reactive_command
-    doesn't know about the nudge), so without this flag the overlay would
-    misleadingly show a plain STOPPED.
-
     bbox_area_px is shown raw (not just the derived distance_cm) because
     CALIBRATION_CONSTANT_PX_CM starts as an unmeasured placeholder — this is
     the number you read off the screen with the can at a known distance to
-    calibrate it (see distance_error.py)."""
+    calibrate it (see distance_error.py).
+
+    ultra: the watchdog's latest UltrasonicState, or None if unavailable —
+    shown as its own line so a dead/miswired sensor (reading stays "--") is
+    distinguishable from a live one that simply isn't tripping yet.
+
+    solved: arc_grasp's live solution this frame (None = not in the band).
+    grabbable: the latched version that actually stops the wheels — shown
+    separately so a latch riding out a detection blink is visible as such."""
     import cv2
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    banner_h = 110
+    banner_h = 162
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, fh - banner_h), (fw, fh), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
@@ -419,16 +408,14 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.55, target_color, 2)
 
     if cmd is None:
-        if recovered_nudge:
-            reason = "reached, backed off (can moved closer)"
-        elif tier == "reached":
+        if tier == "reached":
             reason = "reached"
         elif tier == "none":
             reason = "no target"
         else:
             reason = "stopped"
         drive_line = f"DRIVE: STOPPED ({reason})"
-        drive_color = (0, 140, 255) if recovered_nudge else (170, 170, 170)
+        drive_color = (170, 170, 170)
     elif cmd.left_speed < 0 and cmd.right_speed < 0:
         drive_line = (f"DRIVE [BACKUP]: BACKING UP (too_close) "
                       f"L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}")
@@ -448,11 +435,63 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         drive_line = (f"DRIVE [{tier.upper()}]: L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f} "
                       f"(steer={steer})")
         drive_color = TIER_COLOR.get(tier, (0, 255, 0))
+    if applied is not None:
+        # Post-trim/floor/clamp duty actually sent to the motors -- the number
+        # that has to clear stiction, which the command above may not equal.
+        drive_line += f"  ->PWM L={applied[0]:+.1f} R={applied[1]:+.1f}"
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
-    mode_line = (f"[m] drive={'ON' if driving else 'OFF'}   [g] arm={'ARMED' if armed else 'OFF'}   "
-                 f"ctrl={controller_name}   [q] quit")
+    mode_line = (f"[m] drive={'ON' if driving else 'OFF'}  [g] arm={'ARMED' if armed else 'OFF'}  "
+                 f"[l] lines  [ [ ] ] floor={pwm_driver.MIN_MOVE_DUTY:.0f}  "
+                 f"[ - = ] step={rc.STEP_SPEED:.0f}  [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
+
+    if ultra is None or ultra.distance_cm is None:
+        ultra_line = "ULTRA: no reading (sensor dead/out of range?)"
+        ultra_color = (0, 0, 255)
+    else:
+        ultra_line = (f"ULTRA: {ultra.distance_cm:.1f}cm  "
+                      f"estop={ultra.emergency_stop} (<={EMERGENCY_STOP_CM:.0f})  "
+                      f"grab_ok={ultra.grab_confirmed} (<={GRAB_CONFIRM_CM:.0f})")
+        ultra_color = (0, 140, 255) if ultra.emergency_stop else \
+            ((0, 255, 0) if ultra.grab_confirmed else (200, 200, 200))
+    cv2.putText(frame, ultra_line, (16, fh - banner_h + 106), font, 0.55, ultra_color, 2)
+
+    if solved is not None:
+        # Solver says reachable -- say why the grab still is not firing, or a
+        # gate disagreeing with the band looks like the arm simply hanging.
+        if not armed:
+            blocked = "  BLOCKED: arm not armed [g]"
+        elif ultra is None or ultra.distance_cm is None:
+            blocked = "  BLOCKED: no ultrasonic reading"
+        elif ultra.emergency_stop:
+            blocked = f"  BLOCKED: estop ({ultra.distance_cm:.0f}<={EMERGENCY_STOP_CM:.0f})"
+        elif not ultra.grab_confirmed:
+            blocked = f"  BLOCKED: ultra {ultra.distance_cm:.0f}>{GRAB_CONFIRM_CM:.0f}"
+        else:
+            blocked = ""
+        grab_line = ("GRABBABLE: YES  arm=["
+                     + " ".join(f"{v:.0f}" for v in solved) + "]" + blocked)
+        grab_color = (0, 140, 255) if blocked else (0, 255, 0)
+    elif grabbable:
+        grab_line = "GRABBABLE: latched (solver blinked, holding stop)"
+        grab_color = (0, 255, 255)
+    else:
+        why = {
+            BAND_TOO_FAR: "too far -- keep approaching",
+            BAND_TOO_CLOSE: "OVERSHOT past nearest arc -- backing off",
+            BAND_NX_OUTSIDE: "nx off sampled span -- turning in place",
+            BAND_NOT_CALIBRATED: "NO SOLVER -- arc grid missing/uncalibrated",
+            BAND_NO_TARGET: "no tin detected",
+        }.get(band, band)
+        grab_line = f"GRABBABLE: no ({why})"
+        if band == BAND_NOT_CALIBRATED:
+            grab_color = (0, 0, 255)    # red: band logic is off entirely
+        elif band == BAND_TOO_CLOSE:
+            grab_color = (0, 140, 255)
+        else:
+            grab_color = (170, 170, 170)
+    cv2.putText(frame, grab_line, (16, fh - banner_h + 132), font, 0.55, grab_color, 2)
 
     dcol = (0, 255, 0) if driving else (0, 0, 255)
     cv2.putText(frame, "DRIVE ON" if driving else "DRIVE OFF", (fw - 190, 30), font, 0.65, (0, 0, 0), 3)
@@ -462,82 +501,132 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         cv2.putText(frame, "ARM ARMED", (fw - 190, 58), font, 0.65, (0, 255, 0), 1)
 
 
-def _attempt_grab(result: DetectionResult, solver, arm, actuator, state: dict) -> None:
-    """Solve an arc-grasp pose from the current detection and, if grabbable,
-    run the SAME grab -> dump -> home sequence tests/test_arc_grasp.py uses
-    (via the shared Arm class), so this is byte-for-byte the grab you tune
-    there. Cooldown-gated so a tin sitting in the band doesn't re-trigger
-    every single frame."""
+_BAND_MASK_CACHE: dict = {}
+
+
+def _band_mask(solver, pose: str, fw: int, fh: int, step: int = 8):
+    """Binary mask of every image point where solve() succeeds.
+
+    Built by probing the solver on a coarse grid, so the grabbable region is
+    something you LOOK at instead of infer from a text label -- a row whose
+    nx span is one sample shows up immediately as a sliver. Cached per
+    (pose, size); the grid only changes when the yaml is re-read, which the
+    live loop never does."""
+    import numpy as np
+    key = (pose, fw, fh, step)
+    hit = _BAND_MASK_CACHE.get(key)
+    if hit is not None:
+        return hit
+    mask = np.zeros((fh, fw), dtype=np.uint8)
+    for py in range(0, fh, step):
+        ny = (py + step * 0.5) / fh
+        for px in range(0, fw, step):
+            nx = (px + step * 0.5) / fw
+            if solver.solve(nx, ny, pose=pose) is not None:
+                mask[py:py + step, px:px + step] = 255
+    _BAND_MASK_CACHE[key] = mask
+    return mask
+
+
+def _draw_arc_lines(frame, solver, pose: str, point=None) -> None:
+    """Draw the arc_grasp grid: solvable region tinted, each row's curve, and
+    the sampled nx span that curve is actually usable over.
+
+    A row is drawn dim where solve() would refuse it for nx (outside the
+    sampled span +/- nx_tol) and bright where it is usable -- the gap between
+    those two is what silently returns BAND_NX_OUTSIDE.
+    """
+    import cv2
+    import numpy as np
+    rows = solver.rows_for(pose)
+    if not rows:
+        return
+    fh, fw = frame.shape[:2]
+
+    mask = _band_mask(solver, pose, fw, fh)
+    tint = np.full_like(frame, (0, 170, 0))
+    cv2.addWeighted(cv2.bitwise_and(tint, tint, mask=mask), 0.30, frame, 1.0, 0,
+                    dst=frame)
+
+    for i, r in enumerate(rows):
+        default_ny = float(r["ny"])
+        samples = sorted((float(s["nx"]), float(s.get("ny", default_ny)))
+                         for s in r["samples"])
+        tol = float(r.get("nx_tol", NX_TOL_DEFAULT))
+        lo_nx, hi_nx = samples[0][0] - tol, samples[-1][0] + tol
+
+        curve = [(px, int(row_ny_at(r, px / fw) * fh))
+                 for px in range(0, fw, 6)]
+        cv2.polylines(frame, [np.array(curve, np.int32)], False, (90, 90, 90), 1)
+        usable = [p for p in curve if lo_nx <= p[0] / fw <= hi_nx]
+        if len(usable) > 1:
+            cv2.polylines(frame, [np.array(usable, np.int32)], False,
+                          (0, 220, 220), 2)
+        elif usable:                       # single-sample row: no span at all
+            x0, y0 = usable[0]
+            cv2.line(frame, (x0 - 6, y0), (x0 + 6, y0), (0, 140, 255), 2)
+
+        for nx, ny in samples:
+            cv2.drawMarker(frame, (int(nx * fw), int(ny * fh)), (0, 255, 255),
+                           cv2.MARKER_DIAMOND, 10, 1)
+        lx, ly = int(samples[0][0] * fw), int(samples[0][1] * fh)
+        cv2.putText(frame, f"r{i} ny={default_ny:.3f} n={len(samples)}",
+                    (max(4, lx - 30), max(12, ly - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 220, 220), 1)
+
+    if point is not None:
+        cv2.drawMarker(frame, (int(point[0] * fw), int(point[1] * fh)),
+                       (255, 0, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
+
+
+def _solve_for_detection(result: DetectionResult, solver):
+    """(solved_CH1_5_or_None, tin_pose, point, band) for the current detection.
+
+    The single grabbability check: the live loop calls this every frame to
+    decide when to STOP driving, and the same answer runs the grab. Driving
+    used to stop on error.reached instead, which is a bbox-area threshold
+    against an uncalibrated constant and knows nothing about arc_grasp.yaml
+    -- so the robot drove past perfectly grabbable rows until the ultrasonic
+    tripped. band says WHY a None is None, so overshooting the nearest arc
+    can back off instead of closing in further."""
+    if solver is None:
+        return None, None, None, BAND_NOT_CALIBRATED
+    if result.best is None:
+        return None, None, None, BAND_NO_TARGET
+    pose, angle = pose_and_angle(result.best)
+    point = result.normalized_center() if pose == "lying" else result.normalized_base_center()
+    if point is None:
+        return None, pose, None, BAND_NO_TARGET
+    solved, band = solver.solve_with_band(point[0], point[1],
+                                          pose=pose, angle_deg=angle)
+    return solved, pose, point, band
+
+
+def _attempt_grab(solved, pose, point, arm, actuator, state: dict) -> None:
+    """Run the SAME collect (grab -> dump) -> home sequence the autonomous
+    stack runs, so this is byte-for-byte the grab you tune in the calibration
+    tool. solved/pose/point come from _solve_for_detection (already checked
+    non-None by the caller). Cooldown-gated so a tin sitting in the band
+    doesn't re-trigger every single frame."""
     import time as _time
     if _time.monotonic() < state["cooldown_until"]:
         return
-    best = result.best
-    if best is None:
-        return
-    pose, angle = _pose_and_angle(best)
-    point = result.normalized_center() if pose == "lying" else result.normalized_base_center()
-    if point is None:
-        return
-
-    solved = solver.solve(point[0], point[1], pose=pose, angle_deg=angle)
     state["cooldown_until"] = _time.monotonic() + _GRAB_COOLDOWN_S
-    if solved is None:
-        print(f"[arm] {pose} tin at nx={point[0]:.2f} ny={point[1]:.2f} "
-              f"— not in the calibrated grab band ({solver.status()})")
-        return
 
     print(f"[arm] GRAB ({pose}) @ nx={point[0]:.2f} ny={point[1]:.2f}")
     if not state["homed"]:
-        arm.force_home()   # tracked pose may be from a stale prior session
+        arm.goto("home")   # tracked pose may be from a stale prior session
         state["homed"] = True
-    arm.grab(solved, tin_pose=pose)   # brakes the wheels internally
-    arm.dump_to_bin()
-    arm.rest()
-    actuator.stop()
+    # Hold the base ourselves: the arm shakes the chassis, and coasting
+    # wheels would drift the robot off the solved spot mid-grab.
+    actuator.brake()
+    try:
+        arm.collect(solved, tin_pose=pose)   # grab + drop in the bin
+        arm.goto("home")
+        arm.release()
+    finally:
+        actuator.stop()
     print("[arm] grab sequence done.")
-
-
-def _parse_max_min(flag: str, default_max: float = 1.0):
-    """Read --speed / --turn as MAX or MAX-MIN (e.g. 0.6 or 0.6-0.3).
-    Returns (max, min); min == max when a single value is given."""
-    if flag not in sys.argv:
-        return default_max, default_max
-    raw = sys.argv[sys.argv.index(flag) + 1]
-    parts = raw.split("-")
-    hi = float(parts[0])
-    lo = float(parts[1]) if len(parts) > 1 else hi
-    if lo > hi:
-        sys.exit(f"{flag} MAX-MIN: max ({hi}) must be >= min ({lo})")
-    return hi, lo
-
-
-def _scale_wheel_command(cmd, speed_factor: float, turn_factor: float):
-    """Scale a WheelCommand's forward and turn components independently.
-    speed_factor multiplies the common (forward) part, turn_factor the
-    differential (steer) part — so --speed and --turn tune drive vs turning
-    separately, same knobs the old cascade controller exposed."""
-    if cmd is None:
-        return None
-    fwd = (cmd.left_speed + cmd.right_speed) / 2.0
-    turn = (cmd.left_speed - cmd.right_speed) / 2.0
-    fwd *= speed_factor
-    turn *= turn_factor
-    return WheelCommand(fwd + turn, fwd - turn, cmd.apply_trim, cmd.trim_set)
-
-
-def _approach_factors(error, speed_max, speed_min, turn_max, turn_min, taper_speed: bool):
-    """Per-frame (speed_factor, turn_factor). Speed tapers max->min with
-    distance (cruise); turn tapers max->min as the can nears center."""
-    if taper_speed and error.distance_cm is not None:
-        span = max(1e-6, CRUISE_DISTANCE_CM - STOP_DISTANCE_CM)
-        t = (error.distance_cm - STOP_DISTANCE_CM) / span
-        t = max(0.0, min(1.0, t))
-        speed_factor = speed_min + (speed_max - speed_min) * t
-    else:
-        speed_factor = speed_max
-    te = max(0.0, min(1.0, abs(error.lateral_error) / 0.5))
-    turn_factor = turn_min + (turn_max - turn_min) * te
-    return speed_factor, turn_factor
 
 
 def run_live_demo():
@@ -557,26 +646,10 @@ def run_live_demo():
     inference plus the step-and-look time.sleep() below can each take
     longer than a single ultrasonic poll, during which a same-thread check
     would have gone blind. The watchdog calls actuator.stop() itself the
-    instant it detects emergency_stop, UNCONDITIONALLY -- the ultrasonic
-    always gets to stop the robot first, before vision has any say (see
-    UltrasonicSafety.update()). This loop still reads its latest reading
-    every iteration and checks emergency_stop first, before issuing any new
-    drive command, so it can't immediately re-drive over the watchdog's
-    stop.
-
-    Only AFTER that stop does vision get consulted: each iteration hands the
-    watchdog this frame's vision-based distance (set_vision_distance()), and
-    once stopped this loop checks ultra.matches_vision -- did the ultrasonic
-    agree with what the camera measured for the tracked can? If so, it's
-    confirmed to be the same can we're deliberately closing in on, and this
-    loop falls straight through to the normal command dispatch below
-    (whatever compute_reactive_command decided this frame -- forward/arc
-    cruise or approach, the too_close backward nudge, a step-and-look nudge,
-    or nothing if reached/not found). If NOT -- no target found, or the
-    ultrasonic and vision distances disagree -- vision can't vouch for
-    whatever tripped the ultrasonic, so instead of driving toward it the
-    loop commands a slow SCAN_SPEED turn_right() in place to look for a new
-    can, every frame, until the reading clears or a target is confirmed.
+    instant it detects emergency_stop; this loop still reads its latest
+    reading every iteration and checks emergency_stop first, before issuing
+    any new drive command, so it can't immediately re-drive over the
+    watchdog's stop.
 
     reactive_controller.py looks up the commanded speed from hardcoded
     distance breakpoints (CRUISE_DISTANCE_CM / FAR_DISTANCE_CM -> MAX_SPEED /
@@ -613,60 +686,83 @@ def run_live_demo():
 
     driving = "--drive" in sys.argv
     want_arm = "--arm" in sys.argv
+    show_lines = "--line" in sys.argv
     controller_name = "reactive"
-
-    # Pursuit mode:
-    #   predictive = receding-horizon planner (smooth slow-start/cruise/gradual
-    #                stop, re-planned every frame) -- the default
-    #   chase      = reactive: drive + steer continuously, flat --speed scale
-    #   cruise     = reactive: continuous, --speed tapers max->min with distance
-    #   step       = reactive: point-and-look bursts at close range
-    mode = "predictive"
-    if "--mode" in sys.argv:
-        mode = sys.argv[sys.argv.index("--mode") + 1]
-        if mode not in ("predictive", "chase", "cruise", "step"):
-            sys.exit(f"--mode must be predictive|chase|cruise|step, got '{mode}'")
-    speed_max, speed_min = _parse_max_min("--speed")
-    turn_max, turn_min = _parse_max_min("--turn")
-    print(f"[live] mode={mode} speed={speed_max}-{speed_min} turn={turn_max}-{turn_min}")
 
     cal = MotionCalibration()
     kin = DifferentialKinematics(cal)
     actuator = PWMActuator(calibration=cal)
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
+
+    # Defined before the watchdog starts: _retreat_pulse reads it from its thread.
+    grab_state = {"cooldown_until": 0.0, "homed": False, "grabbing": False}
+
+    def _retreat_pulse() -> None:
+        """One bounded backward nudge, then stop. Stops before reversing per
+        the H-bridge rule in docs/hardware_safety_patterns.md; bounded so the
+        caller re-reads its sensor between pulses instead of reversing blind."""
+        if grab_state["grabbing"]:
+            # Only while the arm is mid-grab: the tin is then what the sensor
+            # sees, and reversing would drag the chassis out from under it.
+            return
+        actuator.stop()
+        time.sleep(0.05)
+        actuator.apply(kin.backward(speed=BACKUP_SPEED))
+        time.sleep(RETREAT_PULSE_S)
+        actuator.stop()
+
+    def _align_pulse(lateral_error: float) -> None:
+        """One bounded pivot-in-place to recover nx alignment, then stop.
+
+        Same sign convention as compute_reactive_command's arc_forward_*
+        choice -- that mapping is hardware-specific and has flipped once
+        before, so it is mirrored here rather than re-derived. Stops before
+        turning for the same H-bridge reason as _retreat_pulse."""
+        actuator.stop()
+        time.sleep(0.05)
+        actuator.apply(kin.turn_left(speed=ALIGN_TURN_SPEED) if lateral_error > 0
+                       else kin.turn_right(speed=ALIGN_TURN_SPEED))
+        time.sleep(ALIGN_PULSE_S)
+        actuator.stop()
+
     # Polls the sensor in its own thread instead of once per main-loop
-    # iteration, and calls actuator.stop() itself the instant it sees
-    # emergency_stop -- top priority, not delayed behind camera inference or
-    # a step-and-look time.sleep() below. See UltrasonicWatchdog's docstring.
-    ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=actuator.stop).start()
+    # iteration, and retreats itself the instant it sees emergency_stop --
+    # top priority, not delayed behind camera inference or a step-and-look
+    # time.sleep() below. See UltrasonicWatchdog's docstring.
+    ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=_retreat_pulse).start()
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
-    pred_state = ControllerState()      # receding-horizon ramp continuity (predictive mode)
-    # Track the previous camera-based distance to detect someone pushing the
-    # tin closer while we're already at the "reached" handoff point; if the
-    # can moves noticeably closer, command a short backward nudge.
-    last_distance_cm = None
+    grab_latch = {"on": False, "until": 0.0}
+    band = BAND_NOT_CALIBRATED   # last frame's band; gates the fast-path detect
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
                                      frame_width=1280, frame_height=720)
     detector.start()
 
     arm, solver, armed = None, None, False
-    grab_state = {"cooldown_until": 0.0, "homed": False}
-    if want_arm:
+
+    # A DRIVING dependency, not just an arm one -- it decides when to stop
+    # closing in. --arm gates only the arm below.
+    try:
+        from src.arm.arc_grasp import ArcGraspSolver
+        solver = ArcGraspSolver()
+        if not solver.ready_for("upright") and not solver.ready_for("lying"):
+            print(f"[arc] NOT calibrated ({solver.status()}) — band stop disabled.")
+            solver = None
+        else:
+            print(f"[arc] {solver.status()}")
+    except Exception as exc:
+        print(f"[arc] solver unavailable ({exc}); band stop disabled.")
+
+    if want_arm and solver is not None:
         try:
-            from src.arm.arc_grasp import ArcGraspSolver
-            from test_arc_grasp import Arm   # tests/ is on sys.path (see top of file)
-            solver = ArcGraspSolver()
-            if not solver.ready_for("upright") and not solver.ready_for("lying"):
-                print(f"[arm] arc_grasp not calibrated ({solver.status()}) — arm disabled.")
-            else:
-                # Share OUR actuator: Arm() building its own would GPIO.cleanup
-                # the shared motor pins and kill this loop's wheel control.
-                arm = Arm(wheels=actuator)
-                armed = True
-                print("[arm] ready — press 'g' to toggle grabbing on/off.")
+            from src.arm.grasp_planner import GraspPlanner
+            arm = GraspPlanner(release_on_start=True)
+            armed = True
+            print("[arm] ready — press 'g' to toggle grabbing on/off.")
         except Exception as exc:
             print(f"[arm] not available ({exc}); continuing without it.")
+    elif want_arm:
+        print("[arm] disabled — arc_grasp not calibrated.")
 
     print(f"[live] drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
           f"ctrl={controller_name} — m=toggle drive, g=toggle arm, q=quit")
@@ -674,100 +770,93 @@ def run_live_demo():
     show = True
     try:
         while True:
-            result = detector.detect()
-            error = compute_target_error(result)
-            # Hand the watchdog this frame's vision distance. This does NOT
-            # suppress emergency_stop -- the ultrasonic always stops first,
-            # unconditionally (see UltrasonicSafety.update()) -- it only
-            # populates matches_vision, which is consulted below AFTER the
-            # stop to decide what happens next.
-            ultra_watchdog.set_vision_distance(error.distance_cm if error.found else None)
+            # Orientation only matters once the tin is near the arc band, and
+            # it runs per detection per frame. Use LAST frame's band to skip
+            # it while still cruising -- one stale frame at the boundary costs
+            # nothing, since BAND_TOO_FAR can't solve a grab anyway.
+            result = detector.detect(fast=(band == BAND_TOO_FAR))
             ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
+            error = compute_target_error(result)
 
-            if mode == "predictive":
-                # Vision-only receding-horizon plan; ultrasonic still e-stops
-                # via the watchdog thread. Threads ControllerState for the
-                # speed/steer ramp continuity between frames.
-                cmd, pred_state = compute_predictive_command(error, kin, pred_state)
-            else:
-                cmd = compute_reactive_command(error, ultra.distance_cm, kin)
+            cmd = compute_reactive_command(error, kin)
             tier = speed_tier(error)   # single source of truth for driving AND display below
+
+            # Ask arc_grasp EVERY frame, and stop the moment it can solve --
+            # not when the uncalibrated distance_cm says "reached".
+            solved, tin_pose, point, band = _solve_for_detection(result, solver)
+            if solved is not None:
+                grab_latch["on"] = True
+                grab_latch["until"] = time.monotonic() + GRABBABLE_LATCH_S
+            elif grab_latch["on"] and time.monotonic() >= grab_latch["until"]:
+                grab_latch["on"] = False
+            # Latched: ny_tol_near is near-zero, so one frame of jitter drops
+            # the tin out of the band. Without the latch that instantly
+            # re-starts the approach -- straight back into the old loop.
+            grabbable = grab_latch["on"]
 
             bbox_width_px = result.best.width if result.best is not None else None
             bbox_height_px = result.best.height if result.best is not None else None
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
-            # Ultrasonic stopped us and vision can't confirm it's the can we're
-            # tracking -- don't drive toward it, turn to look for a new one.
-            scanning = ultra.emergency_stop and not ultra.matches_vision
-
-            recovered_nudge = False
-            print(f"[LOG] driving={driving}")
-            print(f"[LOG] tiers={tier}")
-            print(f"[LOG] cmd={cmd}")
-            print(f"[LOG] emergency={ultra.emergency_stop} matches_vision={ultra.matches_vision} scanning={scanning}")
             if driving:
-                if scanning:
-                    print("[SCAN] ultrasonic close, unconfirmed by vision -- turning right to scan")
-                    actuator.apply(kin.turn_right(speed=SCAN_SPEED))
+                if grabbable:
+                    # Ahead of emergency_stop: at grab range the ultrasonic is
+                    # looking at the TARGET, and stopping is safe either way.
+                    actuator.stop()
+
+                elif ultra.emergency_stop:
+                    pass   # watchdog thread owns retreat while this is true;
+                           # don't fight it with a stop() every frame here
+
+                elif band == BAND_TOO_CLOSE:
+                    # Overshot past the NEAREST calibrated arc. Nothing else
+                    # in the chain knows about the arc band, so without this
+                    # the loop just keeps driving forward until the vision
+                    # too_close guess or the ultrasonic catches it.
+                    _retreat_pulse()
+
+                elif band == BAND_NX_OUTSIDE and error.found:
+                    # Inside the band's ny range but off the sampled nx span:
+                    # a lateral miss. Arcing forward to fix it spends the
+                    # remaining distance and lands in BAND_TOO_CLOSE, so turn
+                    # in place instead and keep the distance we have.
+                    _align_pulse(error.lateral_error)
+
+                elif cmd is None:
+                    actuator.stop()
+
+                elif error.too_close:
+                    actuator.apply(kin.backward(speed=BACKUP_SPEED))
+
+                elif tier == "step":
+                    # Close range: a continuous command is already stale by
+                    # the time it reaches the wheels, and stale matters more
+                    # here. Nudge for one short step, then sit still long
+                    # enough for the next frame to be a fresh, unblurred
+                    # look before deciding the next step.
+                    now = time.monotonic()
+                    if now >= step_state["next_step_at"]:
+                        actuator.apply(cmd)
+                        time.sleep(STEP_DURATION_S)
+                        actuator.stop()
+                        step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
+                    else:
+                        actuator.stop()
 
                 else:
-                    if ultra.emergency_stop:
-                        # matches_vision True: ultrasonic and vision agree this
-                        # is the tracked can -- fall through to the normal
-                        # dispatch below exactly as if there were no ultrasonic
-                        # stop at all (too_close backup / step / cruise / none).
-                        print("[RESUME] ultrasonic confirmed by vision -- resuming normal motion")
+                    actuator.apply(cmd) # cruise/approach: continuous, full-rate driving
 
-                    if cmd is None:
-                        print("[STOP] STOPPED (no command)")
-                        actuator.stop()
-                        # If we were 'reached' (arm handoff) but the can has been
-                        # moved closer since the last frame, back off a bit even
-                        # though the controller would normally return None.
-                        if error.reached and error.distance_cm is not None and last_distance_cm is not None:
-                            if error.distance_cm + 1.0 < last_distance_cm:
-                                actuator.apply(kin.backward(speed=BACKUP_SPEED))
-                                time.sleep(0.15)
-                                actuator.stop()
-                                recovered_nudge = True
-                                print(f"[live] can moved closer (was {last_distance_cm:.1f}cm, "
-                                      f"now {error.distance_cm:.1f}cm) -- backed off")
-
-                    elif error.too_close:
-                        actuator.apply(kin.backward(speed=BACKUP_SPEED))
-
-                    else:
-                        # Apply the --speed/--turn scaling; cruise also tapers
-                        # speed with distance (slower as it nears the can).
-                        sf, tf = _approach_factors(
-                            error, speed_max, speed_min, turn_max, turn_min,
-                            taper_speed=(mode == "cruise"))
-                        scaled = _scale_wheel_command(cmd, sf, tf)
-                        if mode == "step" and tier == "step":
-                            # point-and-look: nudge, then pause for a fresh
-                            # frame — avoids overshoot on a stale close-range frame
-                            now = time.monotonic()
-                            if now >= step_state["next_step_at"]:
-                                print("[STEP] MOVING")
-                                actuator.apply(scaled) # type: ignore
-                                time.sleep(STEP_DURATION_S)
-                                actuator.stop()
-                                step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
-                            else:
-                                print("[STEP] PAUSED")
-                                actuator.stop()
-                        else:
-                            print(f"[{mode.upper()}] continuous  sf={sf:.2f} tf={tf:.2f}")
-                            actuator.apply(scaled) # type: ignore ; chase/cruise: drive every frame
-
-            # NOT "not ultra.emergency_stop" -- grab_confirmed and
-            # emergency_stop share the same threshold (both default 25cm),
-            # so they're always true together at grab range; the real gate
-            # is matches_vision, confirming the ultrasonic is reading the
-            # can itself and not something else that happens to be as close.
-            if armed and error.reached and ultra.grab_confirmed and ultra.matches_vision:
-                _attempt_grab(result, solver, arm, actuator, grab_state)
+            # solved is this frame's, not the latch: a stop may coast on a
+            # stale solution, a grab may not. Keeps UltrasonicSafety.can_grab's
+            # contract -- vision and ultrasonic stay two independent checks.
+            if (armed and solved is not None
+                    and ultra.grab_confirmed and not ultra.emergency_stop):
+                grab_state["grabbing"] = True
+                try:
+                    _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state)
+                finally:
+                    grab_state["grabbing"] = False
+                grab_latch["on"] = False   # can should be gone -- re-evaluate fresh
 
             if show:
                 try:
@@ -776,11 +865,19 @@ def run_live_demo():
                         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
                         cv2.putText(frame, "[waiting for first frame...]", (20, 360),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+                    if show_lines and solver is not None:
+                        # Under the status banner so the banner stays readable.
+                        _draw_arc_lines(frame, solver,
+                                        tin_pose or "upright", point)
                     _draw_status_overlay(frame, error, cmd, driving, armed,
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
-                                        tier=tier, recovered_nudge=recovered_nudge)
-                    cv2.imshow("IBVS centering  (m=drive g=arm n=mode q=quit)", frame)
+                                        tier=tier,
+                                        ultra=ultra, solved=solved, grabbable=grabbable,
+                                        band=band,
+                                        applied=getattr(actuator, "last_duty", None))
+                    cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor -==step q=quit)",
+                               frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
@@ -792,31 +889,33 @@ def run_live_demo():
                     if key == ord("g") and arm is not None:
                         armed = not armed
                         print(f"\n[mode] arm {'ARMED' if armed else 'OFF'}\n")
-                    if key == ord("n"):
-                        mode = {"predictive": "chase", "chase": "cruise",
-                                "cruise": "step", "step": "predictive"}[mode]
-                        pred_state = ControllerState()   # drop any stale journey
-                        print(f"\n[mode] pursuit -> {mode.upper()}\n")
+                    if key == ord("l"):
+                        show_lines = not show_lines
+                        print(f"\n[mode] arc lines {'ON' if show_lines else 'OFF'}\n")
+                    # Live tuning: both are read at call time (module globals),
+                    # so mutating them here takes effect on the next command.
+                    if key in (ord("["), ord("]")):
+                        pwm_driver.MIN_MOVE_DUTY = max(
+                            0.0, pwm_driver.MIN_MOVE_DUTY + (1.0 if key == ord("]") else -1.0))
+                        print(f"[tune] MIN_MOVE_DUTY={pwm_driver.MIN_MOVE_DUTY:.0f}")
+                    if key in (ord("-"), ord("=")):
+                        rc.STEP_SPEED = max(
+                            0.0, min(100.0, rc.STEP_SPEED + (1.0 if key == ord("=") else -1.0)))
+                        print(f"[tune] STEP_SPEED={rc.STEP_SPEED:.0f}")
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False
 
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
-                  f"dist_cm={error.distance_cm} last_dist_cm={last_distance_cm} "
+                  f"dist_cm={error.distance_cm} "
                   f"bbox_width_px={bbox_width_px if result.best is not None else None} "
                   f"bbox_height_px={bbox_height_px if result.best is not None else None} "
                   f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
-                  f"ultra_dist={ultra.distance_cm} matches_vision={ultra.matches_vision} "
+                  f"ultra_dist={ultra.distance_cm} "
                   f"reached={error.reached} too_close={error.too_close} "
                   f"tier={tier} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")
-
-            # Update AFTER this frame's decisions/log use the previous value
-            # -- see the "can moved closer" recovery above, which compares
-            # against what was last seen, not the current frame.
-            if error.distance_cm is not None:
-                last_distance_cm = error.distance_cm
     except KeyboardInterrupt:
         pass
     finally:

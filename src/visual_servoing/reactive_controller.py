@@ -7,6 +7,7 @@ hardware access here (Rule: hardware access only through src/hardware).
 Also exposes is_final_approach(), a pure predicate the live loop uses to
 decide WHEN to switch from driving compute_reactive_command's output
 continuously (cruising) to applying it in short step-then-look bursts
+instead (inside FAR_DISTANCE_CM) -- see that function's docstring. The
 timing itself (STEP_DURATION_S / LOOK_PAUSE_S) is the caller's job, same as
 the rest of hardware/timing.
 """
@@ -24,7 +25,7 @@ from src.motion.differential_kinematics import DifferentialKinematics, WheelComm
 # trustworthy than a few hardcoded checkpoints tuned by eye on hardware.
 CRUISE_DISTANCE_CM = 90.0    # distance at/beyond which speed is MAX_SPEED
 MAX_SPEED = 25.0             # TODO tune: hand-tested cruise speed at/beyond CRUISE_DISTANCE_CM
-APPROACH_SPEED = 25.0        # TODO tune: hand-tested speed between FAR_DISTANCE_CM and CRUISE_DISTANCE_CM
+APPROACH_SPEED = 20.0        # TODO tune: hand-tested speed between FAR_DISTANCE_CM and CRUISE_DISTANCE_CM
 FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estimated at all
 
 # Lowered from 24 (same as MAX_SPEED) -- on hardware that drove the
@@ -34,143 +35,87 @@ FALLBACK_SPEED = 20.0        # TODO tune: used only when distance can't be estim
 # guess pending another hardware pass -- watch for either "still backs up
 # too far" (lower further) or "doesn't clear too_close fast enough" (raise
 # it back up a bit).
-BACKUP_SPEED = 20.0          # TODO tune: gentle reverse to recover from an overshoot
+BACKUP_SPEED = 15.0          # TODO tune: gentle reverse to recover from an overshoot
 
-# Used by the live loop (not compute_reactive_command itself -- there's no
-# TargetError case that means "scan"): when the ultrasonic stops the robot
-# but vision doesn't confirm it's the tracked can (UltrasonicState.
-# matches_vision is False), the caller turns in place at this speed instead
-# of driving toward an unconfirmed obstacle, looking for a new target.
-# Deliberately slower than BACKUP_SPEED -- this is a search, not a recovery,
-# and a slow turn gives the camera a real chance to pick something up
-# instead of sweeping past it.
-SCAN_SPEED = 15.0            # TODO tune: slow in-place turn while scanning for a new can
+# Bounds one watchdog retreat pulse so it backs off a small step and stops
+# to let the sensor re-poll, instead of driving backward continuously for
+# as long as emergency_stop stays true (see _retreat_from_obstacle).
+RETREAT_PULSE_S = 0.12       # TODO tune: length of one backward retreat pulse
+
+# Pivot-in-place used when the tin is inside the arc band's ny range but off
+# the sampled nx span: that's a LATERAL miss, and arcing forward to fix it
+# eats the remaining distance and overshoots the band instead.
+ALIGN_TURN_SPEED = 20.0      # TODO tune: in-place turn to recover nx alignment
+ALIGN_PULSE_S = 0.15         # TODO tune: one align nudge, then re-look
 
 MAX_STEER_ANGLE_DEG = 80.0   # keep below 90 so it never fully spins in place
+FAR_DISTANCE_CM = 30.0       # distance at/below which is_final_approach() triggers step-and-look
 
-# Distance control is handled by ultrasonic sensor.
-# Vision is only responsible for horizontal alignment.
-TARGET_DISTANCE_CM = 25.0
-
-STEP_DURATION_S = 0.5        # how long to apply a step command before stopping to look again
-STEP_SPEED = 20.0            # TODO tune: hand-tested speed for a short step toward the target
-LOOK_PAUSE_S = 0.2           # how long to wait after stopping before looking
-
-# Deadband prevents oscillation around target distance.
-TOO_CLOSE_DISTANCE_CM = 23.0
-TOO_FAR_DISTANCE_CM = 27.0
-
-
-# When distance is correct, rotate instead of driving forward.
-ALIGN_TURN_SPEED = 15.0
-
-# Minimum camera error before considering aligned.
-ALIGNMENT_THRESHOLD = 0.05
+# Below FAR_DISTANCE_CM, continuous driving risks overshoot: by the time a
+# command reaches the wheels the frame it was computed from is already
+# stale, and this close, a stale frame's worth of travel is enough to blow
+# past the grab point or drift off-center. is_final_approach() flags this
+# zone; the caller (the live loop) is responsible for actually stepping
+# instead of driving continuously -- see STEP_DURATION_S / LOOK_PAUSE_S
+# below, used there, not here (this module stays hardware/time-free).
+STEP_SPEED = 17.0            # TODO tune: hand-tested fixed nudge speed for step-and-look
+STEP_DURATION_S = 0.15      # TODO tune: length of one forward/steer nudge
+LOOK_PAUSE_S = 0.6           # TODO tune: stopped time for a fresh, unblurred look
 
 
-def compute_reactive_command(
-    error: TargetError,
-    ultrasonic_distance: float | None,
-    kin: DifferentialKinematics
-) -> Optional[WheelCommand]:
+def compute_reactive_command(error: TargetError,
+                           kin: DifferentialKinematics) -> Optional[WheelCommand]:
+    """
+    Speed is a lookup against hardcoded distance breakpoints, not a
+    continuous formula (see the constants block above for why):
+        distance_cm >= CRUISE_DISTANCE_CM  (~90cm) -> MAX_SPEED
+        FAR_DISTANCE_CM < distance_cm < CRUISE_DISTANCE_CM (~60cm) -> APPROACH_SPEED
+        distance_cm <= FAR_DISTANCE_CM     (~30cm) -> STEP_SPEED
 
+    That last tier never reaches zero -- unlike the old zero-at-STOP_DISTANCE_CM
+    ramp this replaced, steering keeps working the whole way to the grab
+    point since dynamic_speed (which both forward speed AND steer angle scale
+    off, via DifferentialKinematics.arc_forward_*) never collapses to
+    nothing. The caller applies this tier as a short step-and-look nudge
+    rather than driving it continuously -- see is_final_approach().
+
+    Returns:
+        None              — no target found, or reached (arm handoff point;
+                            caller should stop).
+        backward command  — too_close (bbox fills the frame): back off a
+                            little regardless of the (possibly miscalibrated)
+                            distance_cm math, so a bad calibration can't wedge
+                            the robot against the can. Once backing off clears
+                            too_close, the tiers above re-approach and
+                            re-center on their own — no separate "recovery
+                            state" needed.
+        forward/arc command — otherwise, steered and speed-tiered toward the can.
+    """
     if not error.found:
         return None
 
-
-    # Emergency visual backup
     if error.too_close:
-        print("[STOP] TOO CLOSE")
         return kin.backward(speed=BACKUP_SPEED)
-
 
     if error.reached:
         return None
 
+    steer_angle = min(MAX_STEER_ANGLE_DEG,
+                       abs(error.lateral_error) * 2 * MAX_STEER_ANGLE_DEG)
 
-    # ------------------------------------------------
-    # Distance regulation using ultrasonic
-    # ------------------------------------------------
-
-    if ultrasonic_distance is not None:
-
-
-        # Too close
-        if ultrasonic_distance < TOO_CLOSE_DISTANCE_CM:
-
-            print("[CTRL] TOO CLOSE - BACKING")
-
-            if error.lateral_error > 0:
-                return kin.arc_backward_left(
-                    angle_deg=30,
-                    speed=BACKUP_SPEED
-                )
-
-            else:
-                return kin.arc_backward_right(
-                    angle_deg=30,
-                    speed=BACKUP_SPEED
-                )
-
-
-        # Too far
-        elif ultrasonic_distance > TOO_FAR_DISTANCE_CM:
-
-            print("[CTRL] APPROACH")
-
-            steer_angle = min(
-                MAX_STEER_ANGLE_DEG,
-                abs(error.lateral_error)
-                * 2
-                * MAX_STEER_ANGLE_DEG
-            )
-
-
-            if error.lateral_error > 0:
-
-                return kin.arc_forward_left(
-                    angle_deg=steer_angle,
-                    speed=APPROACH_SPEED
-                )
-
-            else:
-
-                return kin.arc_forward_right(
-                    angle_deg=steer_angle,
-                    speed=APPROACH_SPEED
-                )
-
-
-        # Correct distance
-        else:
-
-            print("[CTRL] ALIGNMENT MODE")
-
-            return compute_alignment_command(
-                error,
-                kin
-            )
-
-
-    # ------------------------------------------------
-    # Fallback if ultrasonic unavailable
-    # ------------------------------------------------
-
-    print("[CTRL] ULTRASONIC UNKNOWN")
+    if error.distance_cm is None:
+        dynamic_speed = FALLBACK_SPEED
+    elif error.distance_cm >= CRUISE_DISTANCE_CM:
+        dynamic_speed = MAX_SPEED
+    elif error.distance_cm > FAR_DISTANCE_CM:
+        dynamic_speed = APPROACH_SPEED
+    else:
+        dynamic_speed = STEP_SPEED # is_final_approach() zone
 
     if error.lateral_error > 0:
-
-        return kin.arc_forward_left(
-            angle_deg=30,
-            speed=FALLBACK_SPEED
-        )
-
+        return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
     else:
-
-        return kin.arc_forward_right(
-            angle_deg=30,
-            speed=FALLBACK_SPEED
-        )
+        return kin.arc_forward_right(angle_deg=steer_angle, speed=dynamic_speed)
 
 
 def speed_tier(error: TargetError) -> str:
@@ -194,31 +139,9 @@ def speed_tier(error: TargetError) -> str:
         return "fallback"
     if error.distance_cm >= CRUISE_DISTANCE_CM:
         return "cruise"
+    if error.distance_cm > FAR_DISTANCE_CM:
+        return "approach"
     return "step"
-
-
-def compute_alignment_command(
-    error: TargetError,
-    kin: DifferentialKinematics
-) -> WheelCommand:
-    """
-    At correct distance, only fix orientation.
-
-    No forward/backward motion.
-    Camera controls left/right rotation.
-    """
-
-    if abs(error.lateral_error) <= ALIGNMENT_THRESHOLD:
-        # Already centered
-        return kin.forward(speed=0)
-
-    if error.lateral_error > 0:
-        # Object appears left
-        return kin.turn_left(speed=ALIGN_TURN_SPEED)
-
-    else:
-        # Object appears right
-        return kin.turn_right(speed=ALIGN_TURN_SPEED)
 
 
 def is_final_approach(error: TargetError) -> bool:
@@ -238,4 +161,5 @@ def is_final_approach(error: TargetError) -> bool:
     out that continuous cruising is fine and faster.
     """
     return (error.found and not error.reached and not error.too_close
-            and error.distance_cm is not None)
+            and error.distance_cm is not None
+            and error.distance_cm <= FAR_DISTANCE_CM)

@@ -162,7 +162,7 @@ class AluminiumCanDetector:
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.60,       # keep = runtime CameraSensor
+        conf_threshold: float = 0.75,       # keep = runtime CameraSensor
         frame_width: int = 1920,
         frame_height: int = 1080,
         device=None,
@@ -250,12 +250,14 @@ class AluminiumCanDetector:
                 d.orientation = estimate_orientation(frame, d)
         return result
 
-    def detect(self) -> DetectionResult:
-        """Capture and infer in one call."""
+    def detect(self, fast: bool = False) -> DetectionResult:
+        """Capture and infer in one call. fast=True skips orientation
+        estimation (see infer) — only safe while the caller just needs
+        position, since every detection then reads as 'upright'."""
         frame = self.read_frame()
         if frame is None:
             return DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
-        return self.infer(frame)
+        return self.infer(frame, fast=fast)
 
     def get_annotated_frame(self, result: DetectionResult):
         """Render detections with segmentation masks, bbox, base_center, and orientation."""

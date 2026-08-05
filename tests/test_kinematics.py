@@ -4,7 +4,6 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.arm.grasp_planner import GraspPlanner
-from src.arm.kinematics import GRIPPER_DOWN, GRIPPER_UP, GRIPPER_LEVEL
 
 def print_menu():
     print("="*40)
@@ -42,7 +41,7 @@ def main():
     print_menu()
     # Default is FREE (position-only, no "always point down") so you can probe the
     # real reachable workspace. Type 'down' to re-enable the gripper-down constraint.
-    mode = {"tool": None, "name": "FREE", "comp": True}
+    mode = {"tool": "free", "name": "FREE", "comp": True}
 
     while True:
         try:
@@ -56,26 +55,27 @@ def main():
                 print("back to home position ...")
                 # force: responds even when the tracked pose already says
                 # home (no joint feedback — 'h' must always actually command)
-                planner.force_home()
+                planner.goto("home")
+                planner.open_gripper()
                 continue
 
             elif user_input == 'down':
-                mode["tool"], mode["name"] = GRIPPER_DOWN, "DOWN"
+                mode["tool"], mode["name"] = "down", "DOWN"
                 print("mode: gripper DOWN (constrained)")
                 continue
 
             elif user_input == 'up':
-                mode["tool"], mode["name"] = GRIPPER_UP, "UP"
+                mode["tool"], mode["name"] = "up", "UP"
                 print("mode: gripper UP (approach from below)")
                 continue
 
             elif user_input == 'level':
-                mode["tool"], mode["name"] = GRIPPER_LEVEL, "LEVEL"
+                mode["tool"], mode["name"] = "level", "LEVEL"
                 print("mode: gripper HORIZONTAL (side approach, e.g. tin middle)")
                 continue
 
             elif user_input == 'free':
-                mode["tool"], mode["name"] = None, "FREE"
+                mode["tool"], mode["name"] = "free", "FREE"
                 print("mode: POSITION-ONLY (no orientation constraint)")
                 continue
 
@@ -91,22 +91,22 @@ def main():
 
             elif user_input == 'g':
                 print("executing grasp command ...")
-                planner.control_gripper("close")
+                planner.close_gripper()
                 continue
 
             elif user_input == 'r':
                 print("executing release command ...")
-                planner.control_gripper("open")
+                planner.open_gripper()
                 continue
 
             elif user_input == 'bin':
                 print("moving to throw-to-bin pose ...")
-                planner.goto_named_pose("bin")
+                planner.dump_to_bin()
                 continue
 
             elif user_input in ('sweet', 's1', 'sweet1'):
                 print("moving to sweet point 1 ...")
-                planner.goto_named_pose("sweet1")
+                planner.goto("grab")
                 continue
 
             parts = user_input.split()
@@ -114,7 +114,7 @@ def main():
                 x, y, z = [float(p) for p in parts]
                 print(f"moving to position: X={x}, Y={y}, Z={z} ({mode['name']}) ...")
 
-                success = planner.move_to([x, y, z], tool_direction=mode["tool"],
+                success = planner.ik_move([x, y, z], approach=mode["tool"],
                                           compensate=mode["comp"])
                 if success:
                     print(f"✅ successfully reached target position! ({x}, {y}, {z})")
