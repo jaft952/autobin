@@ -155,7 +155,17 @@ class UltrasonicWatchdog:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            state = self._safety.update()
+            try:
+                state = self._safety.update()
+            except Exception as exc:
+                # A transient GPIO error (e.g. timing contention with
+                # camera inference / PWM on the main thread) must not
+                # silently kill this daemon thread -- without a reading,
+                # .latest would stay frozen at "no reading" forever, with
+                # nothing left to recover it. Log and keep polling instead.
+                print(f"[ultrasonic] poll error: {exc}")
+                state = UltrasonicState(distance_cm=None, emergency_stop=False,
+                                         grab_confirmed=False)
             with self._lock:
                 self._latest = state
             if state.emergency_stop:

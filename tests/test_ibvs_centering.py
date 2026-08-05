@@ -408,19 +408,29 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     if solved is not None:
         # Solver says reachable -- say why the grab still is not firing, or a
         # gate disagreeing with the band looks like the arm simply hanging.
-        # Mirrors run_live_demo's actual trigger: armed + solved + grab_confirmed
-        # -- emergency_stop is a drive-only cutoff, not a grab-blocking reason.
+        # Mirrors run_live_demo's actual trigger: armed + solved + ultra_ok,
+        # where ultra_ok falls back to vision-only when distance_cm is None
+        # (no reading at all) but still blocks a real "too far" reading.
+        ultra_dist = ultra.distance_cm if ultra is not None else None
+        ultra_confirmed = ultra.grab_confirmed if ultra is not None else False
+        ultra_missing = ultra_dist is None
+        ultra_ok = ultra_missing or ultra_confirmed
         if not armed:
             blocked = "  BLOCKED: arm not armed [g]"
-        elif ultra is None or ultra.distance_cm is None:
-            blocked = "  BLOCKED: no ultrasonic reading"
-        elif not ultra.grab_confirmed:
-            blocked = f"  BLOCKED: ultra {ultra.distance_cm:.0f}>{GRAB_CONFIRM_CM:.0f}"
+        elif not ultra_ok:
+            blocked = f"  BLOCKED: ultra {ultra_dist:.0f}>{GRAB_CONFIRM_CM:.0f}"
+        elif ultra_missing:
+            blocked = "  (no ultra reading -- grabbing on vision alone)"
         else:
             blocked = ""
         grab_line = ("GRABBABLE: YES  arm=["
                      + " ".join(f"{v:.0f}" for v in solved) + "]" + blocked)
-        grab_color = (0, 140, 255) if blocked else (0, 255, 0)
+        if blocked.strip().startswith("BLOCKED"):
+            grab_color = (0, 140, 255)
+        elif ultra_missing:
+            grab_color = (0, 200, 255)   # amber: proceeding without ultrasonic confirmation
+        else:
+            grab_color = (0, 255, 0)
     elif grabbable:
         grab_line = "GRABBABLE: latched (solver blinked, holding stop)"
         grab_color = (0, 255, 255)
@@ -766,13 +776,20 @@ def run_live_demo():
                     actuator.apply(cmd)   # cruise/approach/step: continuous, full-rate driving
 
             # solved is this frame's, not the latch: a stop may coast on a
-            # stale solution, a grab may not. Gated on grab_confirmed alone,
-            # NOT emergency_stop -- that's a drive-only cutoff, and the tin
-            # can is expected to trip it too at the correct grab distance
-            # (see EMERGENCY_STOP_CM in ultrasonic_safety.py). Vision
-            # (solved) and ultrasonic (grab_confirmed) stay the two
-            # independent checks that must agree.
-            if armed and solved is not None and ultra.grab_confirmed:
+            # stale solution, a grab may not. Gated on grab_confirmed, NOT
+            # emergency_stop -- that's a drive-only cutoff, and the tin can
+            # is expected to trip it too at the correct grab distance (see
+            # EMERGENCY_STOP_CM in ultrasonic_safety.py). Falls back to
+            # vision alone when the ultrasonic has NO reading at all
+            # (dead/miswired) -- a hardware fault on the secondary sensor
+            # must not permanently block every grab; a real reading that
+            # says "too far" (distance_cm set, grab_confirmed False) still
+            # blocks normally.
+            ultra_missing = ultra.distance_cm is None
+            ultra_ok = ultra_missing or ultra.grab_confirmed
+            if armed and solved is not None and ultra_ok:
+                if ultra_missing:
+                    print("[grab] WARNING: no ultrasonic reading -- grabbing on vision alone")
                 grab_state["grabbing"] = True
                 try:
                     _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state)
