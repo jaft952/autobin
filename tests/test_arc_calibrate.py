@@ -1,24 +1,30 @@
 """
-Interactive arc motion calibration tool.
+Interactive arc motion calibration tool — test real motions on the robot.
 
-Tune arc behavior by testing different angle values and seeing the resulting
-wheel speeds. Test both forward/backward arcs and stationary left/right turns.
+Tune arc behavior by testing different angle values and watching the robot.
+Test both forward/backward arcs and stationary left/right turns.
 
 Keys:
-  Arrow UP/DOWN     : increment/decrement angle (+/- 5°)
-  [/]               : fine tune angle (+/- 1°)
   1-4               : select arc direction
                       1 = ARC FORWARD-LEFT
                       2 = ARC FORWARD-RIGHT
                       3 = ARC BACKWARD-LEFT
                       4 = ARC BACKWARD-RIGHT
   5/6               : stationary TURN LEFT / TURN RIGHT
-  s/S               : change speed (0.05 steps)
-  p                 : print detailed wheel values
-  r                 : reset to 90° (sharp turn)
+
+  [/]               : fine tune angle (+/- 1°, arc modes only)
+  up/down           : adjust angle (+/- 5°, arc modes only)
+  r                 : reset to 90° (sharp turn, arc modes only)
+
+  +/-               : speed up/down (0.05 steps)
+
+  ENTER / SPACE     : run motion for 0.3s (tests it on the robot)
+  a                 : apply motion continuously (hold until key press or 10s max)
+
+  p                 : print detailed wheel values (console only)
   x                 : quit
 
-The angle controls the inner wheel ratio:
+The angle controls the inner wheel ratio (arc modes):
   0°   = straight (inner wheel at full speed)
   90°  = sharp turn (inner wheel at ~33%)
   180° = spin in place (inner wheel at 0)
@@ -80,6 +86,14 @@ def main():
         print(f"[!] calibration not available: {exc}")
         return
 
+    actuator = None
+    try:
+        from src.hardware.actuators.pwm_driver import PWMActuator
+        actuator = PWMActuator(calibration=cal)
+        print("[✓] motor driver ready")
+    except Exception as exc:
+        print(f"[!] motor driver not available ({exc}); console-only mode")
+
     angle = 90.0  # start at sharp turn
     speed = 0.50
     mode = 1  # 1=arc_forward_left, 2=arc_forward_right, 3=arc_backward_left, 4=arc_backward_right, 5=turn_left, 6=turn_right
@@ -91,6 +105,8 @@ def main():
         5: "TURN LEFT",
         6: "TURN RIGHT",
     }
+
+    jog_s = 0.30  # burst duration for ENTER/SPACE
 
     print(__doc__)
     print(f"\nCalibration:")
@@ -104,24 +120,40 @@ def main():
     print(f"  motor_b_backward_trim={cal.motor_b_backward_trim}")
     print()
 
+    def get_current_command():
+        """Get the current wheel command based on mode and angle."""
+        if mode == 1:
+            return kin.arc_forward_left(angle, cal.arc_speed * speed)
+        elif mode == 2:
+            return kin.arc_forward_right(angle, cal.arc_speed * speed)
+        elif mode == 3:
+            return kin.arc_backward_left(angle, cal.arc_speed * speed)
+        elif mode == 4:
+            return kin.arc_backward_right(angle, cal.arc_speed * speed)
+        elif mode == 5:
+            return kin.turn_left(cal.turn_speed * speed)
+        else:  # mode == 6
+            return kin.turn_right(cal.turn_speed * speed)
+
     def print_current():
         """Print current wheel command."""
+        cmd = get_current_command()
         if mode in (1, 2, 3, 4):
-            if mode == 1:
-                cmd = kin.arc_forward_left(angle, cal.arc_speed * speed)
-            elif mode == 2:
-                cmd = kin.arc_forward_right(angle, cal.arc_speed * speed)
-            elif mode == 3:
-                cmd = kin.arc_backward_left(angle, cal.arc_speed * speed)
-            else:
-                cmd = kin.arc_backward_right(angle, cal.arc_speed * speed)
             print(f"Angle: {angle:6.1f}° | {_format_wheel_output(mode_names[mode], cmd, speed)}")
         else:  # stationary turns
-            if mode == 5:
-                cmd = kin.turn_left(cal.turn_speed * speed)
-            else:
-                cmd = kin.turn_right(cal.turn_speed * speed)
             print(f"          | {_format_wheel_output(mode_names[mode], cmd, speed)}")
+
+    def run_motion(duration: float):
+        """Apply the current motion to the wheels for the given duration."""
+        if actuator is None:
+            print("[!] no motor driver — cannot run motion")
+            return
+        cmd = get_current_command()
+        print(f"[RUN {duration:.2f}s] {mode_names[mode]}" + (f" @ {angle:.1f}°" if mode in (1, 2, 3, 4) else ""))
+        actuator.apply(cmd)
+        time.sleep(duration)
+        actuator.stop()
+        print("[STOP]")
 
     print_current()
 
@@ -184,23 +216,36 @@ def main():
                 print_current()
                 continue
 
+            # Run motion (jog-style: short burst)
+            elif key in (" ", "\r", "\n"):  # SPACE or ENTER
+                run_motion(jog_s)
+                print_current()
+                continue
+
+            # Run motion (continuous: hold for up to 10 seconds)
+            elif key == "a":
+                if actuator is None:
+                    print("[!] no motor driver — cannot run motion")
+                    continue
+                cmd = get_current_command()
+                print(f"[RUN CONTINUOUS] {mode_names[mode]}" + (f" @ {angle:.1f}°" if mode in (1, 2, 3, 4) else ""))
+                print("  (press any key to stop, or auto-stops after 10s)")
+                actuator.apply(cmd)
+                t0 = time.time()
+                while time.time() - t0 < 10.0:
+                    if get_key(timeout=0.1) is not None:
+                        break
+                actuator.stop()
+                print("[STOP]")
+                print_current()
+                continue
+
             # Print detailed info
             elif key == "p":
+                cmd = get_current_command()
                 if mode in (1, 2, 3, 4):
-                    if mode == 1:
-                        cmd = kin.arc_forward_left(angle, cal.arc_speed * speed)
-                    elif mode == 2:
-                        cmd = kin.arc_forward_right(angle, cal.arc_speed * speed)
-                    elif mode == 3:
-                        cmd = kin.arc_backward_left(angle, cal.arc_speed * speed)
-                    else:
-                        cmd = kin.arc_backward_right(angle, cal.arc_speed * speed)
                     print(f"\nDetailed {mode_names[mode]} @ {angle:.1f}°:")
                 else:
-                    if mode == 5:
-                        cmd = kin.turn_left(cal.turn_speed * speed)
-                    else:
-                        cmd = kin.turn_right(cal.turn_speed * speed)
                     print(f"\nDetailed {mode_names[mode]}:")
                 print(f"  Speed multiplier: {speed:.2f}")
                 print(f"  Left speed:  {cmd.left_speed:+.3f}")
@@ -225,6 +270,13 @@ def main():
 
     except KeyboardInterrupt:
         print("\nstopped.")
+    finally:
+        if actuator is not None:
+            try:
+                actuator.stop()
+                actuator.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
