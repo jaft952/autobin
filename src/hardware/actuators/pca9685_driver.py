@@ -70,7 +70,7 @@ def load_last_pose():
     return None
 
 try:
-    from adafruit_servokit import ServoKit
+    from adafruit_servokit import ServoKit # type: ignore
 except ImportError:
     # Fallback for testing environments without real hardware
     print("WARNING: adafruit_servokit not found. Running in simulation mode.")
@@ -107,7 +107,7 @@ class ArmActuator:
 
             angle = clamp_channel_angle(i, angle)
 
-            self.kit.servo[i].angle = angle
+            self.kit.servo[i].angle = angle # type: ignore
             print(f"[Actuator] CH{i+1} hardware written angle: {angle:.1f}°")
 
     def set_channel_angle(self, ch: int, angle_deg: float):
@@ -116,7 +116,7 @@ class ArmActuator:
         a commanded channel must always receive its target angle, even when
         the software's tracked pose claims it's already there (there is no
         joint feedback — tracking can be wrong, e.g. right after boot)."""
-        self.kit.servo[ch].angle = clamp_channel_angle(ch, angle_deg)
+        self.kit.servo[ch].angle = clamp_channel_angle(ch, angle_deg) # type: ignore
 
     def set_gripper_angle(self, angle_deg: float):
         """
@@ -125,7 +125,7 @@ class ArmActuator:
         narrower than the linkage was designed for).
         """
         angle = clamp_channel_angle(5, angle_deg)
-        self.kit.servo[5].angle = angle
+        self.kit.servo[5].angle = angle # type: ignore
         print(f"[Actuator] CH6 (Gripper) hardware written angle: {angle:.1f}°")
 
     def release(self):

@@ -17,37 +17,15 @@ from typing import Optional
 
 from src.perception.detector import DetectionResult
 
-# ── Calibration (measure on hardware) ───────────────────────────────────
-CAN_HEIGHT_CM = 14.5 # TODO verify against the actual target tin can
+# calibration
+CAN_HEIGHT_CM = 14.5
+CALIBRATION_CONSTANT_PX_CM = 48258720
 
-# Monocular pinhole distance estimate: distance_cm = CONSTANT / bbox_height_px.
-# Measure bbox_height_px for the can placed at a known distance_cm, then set:
-#   CALIBRATION_CONSTANT_PX_CM = bbox_height_px * distance_cm
-# UNCALIBRATED — this default is a placeholder, not a measurement. Until it's
-# set correctly, distance_cm is meaningless: run
-# `python tests/test_ibvs_centering.py --live` and read the bbox_h_px value
-# printed each frame with the can at a known, tape-measured distance.
-CALIBRATION_CONSTANT_PX_CM = 48258720 # TODO calibrate on hardware
+STOP_DISTANCE_CM = 25.0
+CENTER_TOLERANCE = 0.06
 
-STOP_DISTANCE_CM = 25.0 # TODO tune: distance at which the arm can grasp
-CENTER_TOLERANCE = 0.06 # normalized lateral error considered "centered"
-
-# Failsafe independent of CALIBRATION_CONSTANT_PX_CM: a bbox this tall
-# relative to the frame means the can is filling most of the vertical view,
-# which is only possible at very close range REGARDLESS of the (possibly
-# wrong) monocular calibration above. Without this, a too-high calibration
-# constant makes distance_cm look far even when the can is right in front of
-# the camera, and the robot never stops closing in — this is a pure geometry
-# check (no calibration needed) that stops it anyway.
-#
-# Keep this comfortably ABOVE the bbox fraction implied by STOP_DISTANCE_CM
-# (with the current placeholders, ~0.56 in a typical frame) — it's meant to
-# catch an OVERSHOOT past the calibrated stop point, not to double-trigger
-# right at it. If they collide, "reached" and "too_close" both being true
-# lets too_close win (see reactive_controller.py), which would mean backing away
-# instead of ever reporting reached.
 CLOSE_BBOX_FRACTION = 0.75 # TODO tune: fraction of frame_height
-TOO_CLOSE_DISTANCE_CM = 10.0  # additional pure-distance failsafe (cm)
+TOO_CLOSE_DISTANCE_CM = 10.0
 
 
 @dataclass
@@ -87,12 +65,6 @@ def compute_target_error(detection: DetectionResult,
     too_close = (detection.frame_height > 0
                  and bbox_height_px / detection.frame_height >= CLOSE_BBOX_FRACTION)
 
-    # Also consider the pure-distance estimate as a failsafe: if the
-    # monocular math (when available) predicts an extremely small range
-    # we should treat that as "too close" regardless of calibration-derived
-    # STOP_DISTANCE_CM. This helps in live runs when someone nudges the
-    # tin closer than the grasp point — back off rather than attempting
-    # another grab.
     if distance_cm is not None:
         too_close = too_close or (distance_cm <= TOO_CLOSE_DISTANCE_CM)
 
