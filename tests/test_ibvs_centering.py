@@ -638,7 +638,16 @@ def run_live_demo():
     def _retreat_pulse() -> None:
         """One bounded backward nudge, then stop. Stops before reversing per
         the H-bridge rule in docs/hardware_safety_patterns.md; bounded so the
-        caller re-reads its sensor between pulses instead of reversing blind."""
+        caller re-reads its sensor between pulses instead of reversing blind.
+
+        This doubles as the ultrasonic watchdog's stop_callback, which polls
+        on its own background thread independent of `driving` (see
+        UltrasonicWatchdog's docstring) -- without this guard, an
+        emergency_stop reading pulses the wheels even in look-only mode
+        (--live without --drive), breaking this file's own "without --drive
+        the wheels never move" contract."""
+        if not driving:
+            return
         if grab_state["grabbing"]:
             # Only while the arm is mid-grab: the tin is then what the sensor
             # sees, and reversing would drag the chassis out from under it.
