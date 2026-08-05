@@ -256,7 +256,11 @@ def _run_all_tests():
 _GRAB_COOLDOWN_S = 3.0   # after a grab attempt (success or refusal), don't re-solve every frame
 
 # Bounded backward nudge for recovering from a BAND_TOO_CLOSE overshoot, and
-# the ultrasonic watchdog's own stop_callback -- see _retreat_pulse().
+# the ultrasonic watchdog's own stop_callback -- see _retreat_pulse(). Live-
+# tunable with , / . while --live is running (no cm/s calibration exists yet
+# to compute this from a target backup distance -- see calibration.py's
+# wheel_speed_cm_per_s_per_unit TODO), so dial it against the ULTRA reading
+# on the overlay until a trip reliably lands back inside GRAB_CONFIRM_CM.
 RETREAT_PULSE_S = 0.3
 
 # How long a "solver says grabbable" answer keeps the wheels stopped after
@@ -386,7 +390,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
     mode_line = (f"[m] drive={'ON' if driving else 'OFF'}  [g] arm={'ARMED' if armed else 'OFF'}  "
-                 f"[l] lines  [ [ ] ] floor={pwm_driver.MIN_MOVE_DUTY:.0f}  [q] quit")
+                 f"[l] lines  [ [ ] ] floor={pwm_driver.MIN_MOVE_DUTY:.0f}  "
+                 f"[ , . ] retreat={RETREAT_PULSE_S:.2f}s  [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
 
     if ultra is None or ultra.distance_cm is None:
@@ -403,19 +408,29 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     if solved is not None:
         # Solver says reachable -- say why the grab still is not firing, or a
         # gate disagreeing with the band looks like the arm simply hanging.
+        # Mirrors run_live_demo's actual trigger: armed + solved + ultra_ok,
+        # where ultra_ok falls back to vision-only when distance_cm is None
+        # (no reading at all) but still blocks a real "too far" reading.
+        ultra_dist = ultra.distance_cm if ultra is not None else None
+        ultra_confirmed = ultra.grab_confirmed if ultra is not None else False
+        ultra_missing = ultra_dist is None
+        ultra_ok = ultra_missing or ultra_confirmed
         if not armed:
             blocked = "  BLOCKED: arm not armed [g]"
-        elif ultra is None or ultra.distance_cm is None:
-            blocked = "  BLOCKED: no ultrasonic reading"
-        elif ultra.emergency_stop:
-            blocked = f"  BLOCKED: estop ({ultra.distance_cm:.0f}<={EMERGENCY_STOP_CM:.0f})"
-        elif not ultra.grab_confirmed:
-            blocked = f"  BLOCKED: ultra {ultra.distance_cm:.0f}>{GRAB_CONFIRM_CM:.0f}"
+        elif not ultra_ok:
+            blocked = f"  BLOCKED: ultra {ultra_dist:.0f}>{GRAB_CONFIRM_CM:.0f}"
+        elif ultra_missing:
+            blocked = "  (no ultra reading -- grabbing on vision alone)"
         else:
             blocked = ""
         grab_line = ("GRABBABLE: YES  arm=["
                      + " ".join(f"{v:.0f}" for v in solved) + "]" + blocked)
-        grab_color = (0, 140, 255) if blocked else (0, 255, 0)
+        if blocked.strip().startswith("BLOCKED"):
+            grab_color = (0, 140, 255)
+        elif ultra_missing:
+            grab_color = (0, 200, 255)   # amber: proceeding without ultrasonic confirmation
+        else:
+            grab_color = (0, 255, 0)
     elif grabbable:
         grab_line = "GRABBABLE: latched (solver blinked, holding stop)"
         grab_color = (0, 255, 255)
@@ -622,6 +637,8 @@ def run_live_demo():
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
     from src.hardware.actuators.pwm_driver import PWMActuator
 
+    global RETREAT_PULSE_S
+
     driving = "--drive" in sys.argv
     want_arm = "--arm" in sys.argv
     show_lines = "--line" in sys.argv
@@ -638,7 +655,16 @@ def run_live_demo():
     def _retreat_pulse() -> None:
         """One bounded backward nudge, then stop. Stops before reversing per
         the H-bridge rule in docs/hardware_safety_patterns.md; bounded so the
-        caller re-reads its sensor between pulses instead of reversing blind."""
+        caller re-reads its sensor between pulses instead of reversing blind.
+
+        This doubles as the ultrasonic watchdog's stop_callback, which polls
+        on its own background thread independent of `driving` (see
+        UltrasonicWatchdog's docstring) -- without this guard, an
+        emergency_stop reading pulses the wheels even in look-only mode
+        (--live without --drive), breaking this file's own "without --drive
+        the wheels never move" contract."""
+        if not driving:
+            return
         if grab_state["grabbing"]:
             # Only while the arm is mid-grab: the tin is then what the sensor
             # sees, and reversing would drag the chassis out from under it.
@@ -750,10 +776,20 @@ def run_live_demo():
                     actuator.apply(cmd)   # cruise/approach/step: continuous, full-rate driving
 
             # solved is this frame's, not the latch: a stop may coast on a
-            # stale solution, a grab may not. Keeps UltrasonicSafety.can_grab's
-            # contract -- vision and ultrasonic stay two independent checks.
-            if (armed and solved is not None
-                    and ultra.grab_confirmed and not ultra.emergency_stop):
+            # stale solution, a grab may not. Gated on grab_confirmed, NOT
+            # emergency_stop -- that's a drive-only cutoff, and the tin can
+            # is expected to trip it too at the correct grab distance (see
+            # EMERGENCY_STOP_CM in ultrasonic_safety.py). Falls back to
+            # vision alone when the ultrasonic has NO reading at all
+            # (dead/miswired) -- a hardware fault on the secondary sensor
+            # must not permanently block every grab; a real reading that
+            # says "too far" (distance_cm set, grab_confirmed False) still
+            # blocks normally.
+            ultra_missing = ultra.distance_cm is None
+            ultra_ok = ultra_missing or ultra.grab_confirmed
+            if armed and solved is not None and ultra_ok:
+                if ultra_missing:
+                    print("[grab] WARNING: no ultrasonic reading -- grabbing on vision alone")
                 grab_state["grabbing"] = True
                 try:
                     _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state)
@@ -779,7 +815,7 @@ def run_live_demo():
                                         ultra=ultra, solved=solved, grabbable=grabbable,
                                         band=band,
                                         applied=getattr(actuator, "last_duty", None))
-                    cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor q=quit)", frame)
+                    cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor ,.=retreat q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
@@ -800,6 +836,14 @@ def run_live_demo():
                         pwm_driver.MIN_MOVE_DUTY = max(
                             0.0, pwm_driver.MIN_MOVE_DUTY + (1.0 if key == ord("]") else -1.0))
                         print(f"[tune] MIN_MOVE_DUTY={pwm_driver.MIN_MOVE_DUTY:.0f}")
+                    if key in (ord(","), ord(".")):
+                        # How far the retreat pulse backs up -- wheel speed
+                        # isn't calibrated to cm/s yet (see calibration.py),
+                        # so this is dialed in live against the overlay/ultra
+                        # reading instead of computed.
+                        RETREAT_PULSE_S = max(
+                            0.05, min(2.0, RETREAT_PULSE_S + (0.05 if key == ord(".") else -0.05)))
+                        print(f"[tune] RETREAT_PULSE_S={RETREAT_PULSE_S:.2f}")
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False
