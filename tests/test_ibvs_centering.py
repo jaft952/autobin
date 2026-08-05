@@ -362,7 +362,7 @@ TIER_COLOR = {
 
 def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
-                         tier: str = "none", recovered_nudge: bool = False,
+                         tier: str = "none",
                          ultra=None, solved=None, grabbable: bool = False,
                          band: str = BAND_NOT_CALIBRATED, applied=None) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
@@ -373,12 +373,6 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     the single source of truth for which hardcoded speed constant is
     active, so this overlay can't drift out of sync with
     compute_reactive_command's actual thresholds as they get re-tuned.
-
-    recovered_nudge: True for the one frame where the live loop fired the
-    "can was pushed closer while reached" backward nudge (see
-    run_live_demo) -- cmd is still None that frame (compute_reactive_command
-    doesn't know about the nudge), so without this flag the overlay would
-    misleadingly show a plain STOPPED.
 
     bbox_area_px is shown raw (not just the derived distance_cm) because
     CALIBRATION_CONSTANT_PX_CM starts as an unmeasured placeholder — this is
@@ -414,16 +408,14 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.55, target_color, 2)
 
     if cmd is None:
-        if recovered_nudge:
-            reason = "reached, backed off (can moved closer)"
-        elif tier == "reached":
+        if tier == "reached":
             reason = "reached"
         elif tier == "none":
             reason = "no target"
         else:
             reason = "stopped"
         drive_line = f"DRIVE: STOPPED ({reason})"
-        drive_color = (0, 140, 255) if recovered_nudge else (170, 170, 170)
+        drive_color = (170, 170, 170)
     elif cmd.left_speed < 0 and cmd.right_speed < 0:
         drive_line = (f"DRIVE [BACKUP]: BACKING UP (too_close) "
                       f"L={cmd.left_speed:+.1f} R={cmd.right_speed:+.1f}")
@@ -741,10 +733,6 @@ def run_live_demo():
     step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
     grab_latch = {"on": False, "until": 0.0}
     band = BAND_NOT_CALIBRATED   # last frame's band; gates the fast-path detect
-    # Track the previous camera-based distance to detect someone pushing the
-    # tin closer while we're already at the "reached" handoff point; if the
-    # can moves noticeably closer, command a short backward nudge.
-    last_distance_cm = None
 
     detector = AluminiumCanDetector(device="cpu", model_path=RUNTIME_MODEL_PATH,
                                      frame_width=1280, frame_height=720)
@@ -810,7 +798,6 @@ def run_live_demo():
             bbox_height_px = result.best.height if result.best is not None else None
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
-            recovered_nudge = False
             if driving:
                 if grabbable:
                     # Ahead of emergency_stop: at grab range the ultrasonic is
@@ -837,17 +824,6 @@ def run_live_demo():
 
                 elif cmd is None:
                     actuator.stop()
-                    # If we were 'reached' (arm handoff) but the can has been
-                    # moved closer since the last frame, back off a bit even
-                    # though the controller would normally return None.
-                    if error.reached and error.distance_cm is not None and last_distance_cm is not None:
-                        if error.distance_cm + 1.0 < last_distance_cm:
-                            actuator.apply(kin.backward(speed=BACKUP_SPEED))
-                            time.sleep(0.15)
-                            actuator.stop()
-                            recovered_nudge = True
-                            print(f"[live] can moved closer (was {last_distance_cm:.1f}cm, "
-                                  f"now {error.distance_cm:.1f}cm) -- backed off")
 
                 elif error.too_close:
                     actuator.apply(kin.backward(speed=BACKUP_SPEED))
@@ -896,7 +872,7 @@ def run_live_demo():
                     _draw_status_overlay(frame, error, cmd, driving, armed,
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
-                                        tier=tier, recovered_nudge=recovered_nudge,
+                                        tier=tier,
                                         ultra=ultra, solved=solved, grabbable=grabbable,
                                         band=band,
                                         applied=getattr(actuator, "last_duty", None))
@@ -931,7 +907,7 @@ def run_live_demo():
                     show = False
 
             print(f"[live] found={error.found} lateral={error.lateral_error:+.2f} "
-                  f"dist_cm={error.distance_cm} last_dist_cm={last_distance_cm} "
+                  f"dist_cm={error.distance_cm} "
                   f"bbox_width_px={bbox_width_px if result.best is not None else None} "
                   f"bbox_height_px={bbox_height_px if result.best is not None else None} "
                   f"bbox_area_px={bbox_area_px if bbox_width_px is not None and bbox_height_px is not None else None} "
@@ -940,12 +916,6 @@ def run_live_demo():
                   f"tier={tier} "
                   f"drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} "
                   f"ctrl={controller_name}")
-
-            # Update AFTER this frame's decisions/log use the previous value
-            # -- see the "can moved closer" recovery above, which compares
-            # against what was last seen, not the current frame.
-            if error.distance_cm is not None:
-                last_distance_cm = error.distance_cm
     except KeyboardInterrupt:
         pass
     finally:
