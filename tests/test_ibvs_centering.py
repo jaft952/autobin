@@ -40,7 +40,6 @@ from src.arm.arc_grasp import (
     BAND_NX_OUTSIDE, BAND_NOT_CALIBRATED)
 from src.visual_servoing.distance_error import compute_target_error, TargetError
 import src.hardware.actuators.pwm_driver as pwm_driver
-import src.visual_servoing.reactive_controller as rc
 from src.visual_servoing.reactive_controller import (
     compute_reactive_command, speed_tier,
     FORWARD_HIGH_SPEED, FORWARD_MID_SPEED, FORWARD_LOW_SPEED, BACKUP_SPEED,
@@ -256,43 +255,10 @@ def _run_all_tests():
 
 _GRAB_COOLDOWN_S = 3.0   # after a grab attempt (success or refusal), don't re-solve every frame
 
-# TODO: reactive_controller.py dropped STEP_DURATION_S / LOOK_PAUSE_S (its own
-# docstring says step-and-look timing is "the caller's job... not here") but
-# doesn't export replacements -- these are the old values migrated here as a
-# placeholder purely so run_live_demo()'s step-and-look branch doesn't throw
-# NameError. Tune or move these wherever you decide they belong.
-STEP_DURATION_S = 0.25
-LOOK_PAUSE_S = 0.6
+# Bounded backward nudge for recovering from a BAND_TOO_CLOSE overshoot, and
+# the ultrasonic watchdog's own stop_callback -- see _retreat_pulse().
+RETREAT_PULSE_S = 0.3
 
-# Cruise tier (FORWARD_HIGH_SPEED, far away) needs the same step-and-look
-# treatment -- FORWARD_HIGH_SPEED is fast enough now that driving it
-# continuously overshoots straight over the can before the next frame's
-# detection can react. Longer step / shorter pause than the close-range
-# "step" tier above since cruise starts much farther out and can afford a
-# bigger nudge between looks.
-CRUISE_STEP_DURATION_S = 0.7
-CRUISE_LOOK_PAUSE_S = 0.1
-
-# TODO: reactive_controller.py dropped STEP_DURATION_S / LOOK_PAUSE_S (its own
-# docstring says step-and-look timing is "the caller's job... not here") but
-# doesn't export replacements -- these are the old values migrated here as a
-# placeholder purely so run_live_demo()'s step-and-look branch doesn't throw
-# NameError. Tune or move these wherever you decide they belong.
-STEP_DURATION_S = 0.25
-LOOK_PAUSE_S = 0.6
-
-# Cruise tier (FORWARD_HIGH_SPEED, far away) needs the same step-and-look
-# treatment -- FORWARD_HIGH_SPEED is fast enough now that driving it
-# continuously overshoots straight over the can before the next frame's
-# detection can react. Longer step / shorter pause than the close-range
-# "step" tier above since cruise starts much farther out and can afford a
-# bigger nudge between looks.
-CRUISE_STEP_DURATION_S = 0.7
-CRUISE_LOOK_PAUSE_S = 0.1
-
-# How long a "solver says grabbable" answer keeps the wheels stopped after
-# the solver stops saying it -- rides out single-frame detection jitter so a
-# blink doesn't restart the approach.
 # How long a "solver says grabbable" answer keeps the wheels stopped after
 # the solver stops saying it -- rides out single-frame detection jitter so a
 # blink doesn't restart the approach.
@@ -306,7 +272,7 @@ BAND_NO_TARGET = "no_target"
 TIER_COLOR = {
     "cruise": (0, 255, 0),      # green      -- brisk, FORWARD_HIGH_SPEED
     "approach": (0, 220, 170),  # teal       -- FORWARD_MID_SPEED
-    "step": (0, 200, 255),      # orange     -- FORWARD_LOW_SPEED, step-and-look nudge
+    "step": (0, 200, 255),      # orange     -- FORWARD_LOW_SPEED, close range
     "backup": (0, 140, 255),    # red-orange -- BACKUP_SPEED, too_close
     "reached": (0, 255, 0),     # green      -- arm handoff point
     "fallback": (0, 165, 255),  # amber      -- FORWARD_LOW_SPEED, distance unknown
@@ -385,13 +351,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
             ((0, 140, 255) if error.too_close else (0, 255, 255))
     cv2.putText(frame, target_line, (16, fh - banner_h + 26), font, 0.55, target_color, 2)
 
-    if ultra_emergency:
-        drive_line = "DRIVE: [ULTRASONIC] EMERGENCY STOP"
-        drive_color = (0, 0, 255) # red
-    elif cmd is None:
-        if recovered_nudge:
-            reason = "reached, backed off (can moved closer)"
-        elif tier == "reached":
+    if cmd is None:
+        if tier == "reached":
             reason = "reached"
         elif tier == "none":
             reason = "no target"
@@ -425,8 +386,7 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
     mode_line = (f"[m] drive={'ON' if driving else 'OFF'}  [g] arm={'ARMED' if armed else 'OFF'}  "
-                 f"[l] lines  [ [ ] ] floor={pwm_driver.MIN_MOVE_DUTY:.0f}  "
-                 f"[ - = ] step={rc.STEP_SPEED:.0f}  [q] quit")
+                 f"[l] lines  [ [ ] ] floor={pwm_driver.MIN_MOVE_DUTY:.0f}  [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
 
     if ultra is None or ultra.distance_cm is None:
@@ -463,7 +423,7 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         why = {
             BAND_TOO_FAR: "too far -- keep approaching",
             BAND_TOO_CLOSE: "OVERSHOT past nearest arc -- backing off",
-            BAND_NX_OUTSIDE: "nx off sampled span -- turning in place",
+            BAND_NX_OUTSIDE: "nx off sampled span",
             BAND_NOT_CALIBRATED: "NO SOLVER -- arc grid missing/uncalibrated",
             BAND_NO_TARGET: "no tin detected",
         }.get(band, band)
@@ -626,7 +586,7 @@ def run_live_demo():
     The ultrasonic sensor is polled on its own background thread
     (UltrasonicWatchdog, see ultrasonic_safety.py), not once per iteration
     of this loop -- it's the top-priority safety check, and camera
-    inference plus the step-and-look time.sleep() below can each take
+    inference plus a retreat pulse's time.sleep() below can each take
     longer than a single ultrasonic poll, during which a same-thread check
     would have gone blind. The watchdog calls actuator.stop() itself the
     instant it detects emergency_stop; this loop still reads its latest
@@ -636,33 +596,22 @@ def run_live_demo():
 
     reactive_controller.py looks up the commanded speed from hardcoded
     distance breakpoints (FAR_DISTANCE_CM / LOW_DISTANCE_CM -> FORWARD_HIGH_SPEED /
-    FORWARD_MID_SPEED / FORWARD_LOW_SPEED — see that module) rather than a continuous
-    formula — same command either way, but HOW it's applied switches with
-    distance: at "approach" it's driven every frame like any other command,
-    while both "cruise" (far, FORWARD_HIGH_SPEED) and "step" (inside
-    LOW_DISTANCE_CM) use a step-and-look pattern instead -- a continuous
-    command at either extreme is already stale by the time it reaches the
-    wheels, and FORWARD_HIGH_SPEED is fast enough to overshoot straight over
-    the can before the next detection can react. "cruise" nudges for
-    CRUISE_STEP_DURATION_S then pauses CRUISE_LOOK_PAUSE_S; "step" nudges for
-    STEP_DURATION_S then pauses LOOK_PAUSE_S (TODO: reactive_controller.py no
-    longer defines either STEP_DURATION_S or LOOK_PAUSE_S -- see the
-    placeholders defined near _GRAB_COOLDOWN_S below), so the camera gets a
-    fresh, unblurred frame to re-aim from before the next nudge, walking the
-    robot toward the can instead of risking an overshoot on a stale frame.
-    The overlay's DRIVE line and the console log both show
-    reactive_controller.speed_tier()'s label (CRUISE / APPROACH / STEP /
-    BACKUP / REACHED / FALLBACK / NONE) directly, so what's on screen can't
-    drift out of sync with which constant is actually driving the wheels.
+    FORWARD_MID_SPEED / FORWARD_LOW_SPEED — see that module) rather than a
+    continuous formula, and it's driven every frame via actuator.apply(cmd)
+    at every tier -- no step-and-look pacing. The overlay's DRIVE line and
+    the console log both show reactive_controller.speed_tier()'s label
+    (CRUISE / APPROACH / STEP / BACKUP / REACHED / FALLBACK / NONE)
+    directly, so what's on screen can't drift out of sync with which
+    constant is actually driving the wheels.
 
     If the can ends up too_close (bbox fills the frame), the command is a
     gentle BACKWARD nudge (BACKUP_SPEED) instead of a stop, so a bad
     distance calibration can't wedge the robot against the can; once
     backing off clears too_close, the tiers above re-approach and re-center
-    on their own. Separately, if the can gets pushed closer while already
-    at the "reached" handoff point, a short one-off backward nudge fires
-    too (see last_distance_cm below) — the overlay flags that frame
-    specifically instead of just showing a plain STOPPED.
+    on their own. Separately, overshooting the nearest CALIBRATED arc
+    (band == BAND_TOO_CLOSE) fires a bounded backward _retreat_pulse()
+    instead -- the same pulse the ultrasonic watchdog uses for its own
+    emergency retreat.
 
     Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
     Ctrl+C also stops.
@@ -700,26 +649,11 @@ def run_live_demo():
         time.sleep(RETREAT_PULSE_S)
         actuator.stop()
 
-    def _align_pulse(lateral_error: float) -> None:
-        """One bounded pivot-in-place to recover nx alignment, then stop.
-
-        Same sign convention as compute_reactive_command's arc_forward_*
-        choice -- that mapping is hardware-specific and has flipped once
-        before, so it is mirrored here rather than re-derived. Stops before
-        turning for the same H-bridge reason as _retreat_pulse."""
-        actuator.stop()
-        time.sleep(0.05)
-        actuator.apply(kin.turn_left(speed=ALIGN_TURN_SPEED) if lateral_error > 0
-                       else kin.turn_right(speed=ALIGN_TURN_SPEED))
-        time.sleep(ALIGN_PULSE_S)
-        actuator.stop()
-
     # Polls the sensor in its own thread instead of once per main-loop
     # iteration, and retreats itself the instant it sees emergency_stop --
-    # top priority, not delayed behind camera inference or a step-and-look
+    # top priority, not delayed behind camera inference or a retreat pulse's
     # time.sleep() below. See UltrasonicWatchdog's docstring.
     ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=_retreat_pulse).start()
-    step_state = {"next_step_at": 0.0} # only consulted in reactive final-approach
     grab_latch = {"on": False, "until": 0.0}
     band = BAND_NOT_CALIBRATED   # last frame's band; gates the fast-path detect
 
@@ -794,7 +728,6 @@ def run_live_demo():
                     # Ahead of emergency_stop: at grab range the ultrasonic is
                     # looking at the TARGET, and stopping is safe either way.
                     actuator.stop()
-                    print(f"  [SAFETY] Ultrasonic emergency stop triggered at {ultra.distance_cm}cm!")
 
                 elif ultra.emergency_stop:
                     pass   # watchdog thread owns retreat while this is true;
@@ -806,68 +739,15 @@ def run_live_demo():
                     # the loop just keeps driving forward until the vision
                     # too_close guess or the ultrasonic catches it.
                     _retreat_pulse()
-
-                elif band == BAND_NX_OUTSIDE and error.found:
-                    # Inside the band's ny range but off the sampled nx span:
-                    # a lateral miss. Arcing forward to fix it spends the
-                    # remaining distance and lands in BAND_TOO_CLOSE, so turn
-                    # in place instead and keep the distance we have.
-                    _align_pulse(error.lateral_error)
-
-                elif ultra.emergency_stop:
-                    pass   # watchdog thread owns retreat while this is true;
-                           # don't fight it with a stop() every frame here
-
-                elif band == BAND_TOO_CLOSE:
-                    # Overshot past the NEAREST calibrated arc. Nothing else
-                    # in the chain knows about the arc band, so without this
-                    # the loop just keeps driving forward until the vision
-                    # too_close guess or the ultrasonic catches it.
-                    _retreat_pulse()
-
-                elif band == BAND_NX_OUTSIDE and error.found:
-                    # Inside the band's ny range but off the sampled nx span:
-                    # a lateral miss. Arcing forward to fix it spends the
-                    # remaining distance and lands in BAND_TOO_CLOSE, so turn
-                    # in place instead and keep the distance we have.
-                    _align_pulse(error.lateral_error)
 
                 elif cmd is None:
                     actuator.stop()
-                    if error.reached and error.distance_cm is not None and last_distance_cm is not None:
-                        if error.distance_cm + 1.0 < last_distance_cm:
-                            actuator.apply(kin.backward(speed=BACKUP_SPEED))
-                            time.sleep(0.15)
-                            actuator.stop()
-                            recovered_nudge = True
-                            print(f"[live] can moved closer (was {last_distance_cm:.1f}cm, "
-                                  f"now {error.distance_cm:.1f}cm) -- backed off")
 
                 elif error.too_close:
                     actuator.apply(kin.backward(speed=BACKUP_SPEED))
 
-                # elif tier == "cruise":
-                #     now = time.monotonic()
-                #     if now >= cruise_step_state["next_step_at"]:
-                #         actuator.apply(cmd)
-                #         time.sleep(CRUISE_STEP_DURATION_S)
-                #         actuator.stop()
-                #         cruise_step_state["next_step_at"] = time.monotonic() + CRUISE_LOOK_PAUSE_S
-                #     else:
-                #         actuator.stop()
-
-                # elif tier == "step":
-                #     now = time.monotonic()
-                #     if now >= step_state["next_step_at"]:
-                #         actuator.apply(cmd)
-                #         time.sleep(STEP_DURATION_S)
-                #         actuator.stop()
-                #         step_state["next_step_at"] = time.monotonic() + LOOK_PAUSE_S
-                #     else:
-                #         actuator.stop()
-
                 else:
-                    actuator.apply(cmd)
+                    actuator.apply(cmd)   # cruise/approach/step: continuous, full-rate driving
 
             # solved is this frame's, not the latch: a stop may coast on a
             # stale solution, a grab may not. Keeps UltrasonicSafety.can_grab's
@@ -895,9 +775,11 @@ def run_live_demo():
                     _draw_status_overlay(frame, error, cmd, driving, armed,
                                         bbox_area_px=bbox_area_px,
                                         controller_name=controller_name,
-                                        tier=tier, recovered_nudge=recovered_nudge,
-                                        ultra_emergency=ultra.emergency_stop)
-                    cv2.imshow("IBVS centering  (m=drive g=arm q=quit)", frame)
+                                        tier=tier,
+                                        ultra=ultra, solved=solved, grabbable=grabbable,
+                                        band=band,
+                                        applied=getattr(actuator, "last_duty", None))
+                    cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
@@ -918,10 +800,6 @@ def run_live_demo():
                         pwm_driver.MIN_MOVE_DUTY = max(
                             0.0, pwm_driver.MIN_MOVE_DUTY + (1.0 if key == ord("]") else -1.0))
                         print(f"[tune] MIN_MOVE_DUTY={pwm_driver.MIN_MOVE_DUTY:.0f}")
-                    if key in (ord("-"), ord("=")):
-                        rc.STEP_SPEED = max(
-                            0.0, min(100.0, rc.STEP_SPEED + (1.0 if key == ord("=") else -1.0)))
-                        print(f"[tune] STEP_SPEED={rc.STEP_SPEED:.0f}")
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False
@@ -938,12 +816,6 @@ def run_live_demo():
             print(f"[TARGET] {target_status}")
             print(f"[BBOX] {bbox_info}")
             print(f"[MODE] {mode_status}")
-
-            # Update AFTER this frame's decisions/log use the previous value
-            # -- see the "can moved closer" recovery above, which compares
-            # against what was last seen, not the current frame.
-            if error.distance_cm is not None:
-                last_distance_cm = error.distance_cm
 
             now = time.monotonic()
             loop_time_ms = (now - last_tick) * 1000
