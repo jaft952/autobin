@@ -6,10 +6,10 @@ Test both forward/backward arcs and stationary left/right turns.
 
 Keys:
   1-4               : select arc direction
-                      1 = ARC FORWARD-RIGHT
-                      2 = ARC FORWARD-LEFT
-                      3 = ARC BACKWARD-RIGHT
-                      4 = ARC BACKWARD-LEFT
+                      1 = ARC FORWARD-LEFT
+                      2 = ARC FORWARD-RIGHT
+                      3 = ARC BACKWARD-LEFT
+                      4 = ARC BACKWARD-RIGHT
   5/6               : stationary TURN LEFT / TURN RIGHT
 
   [/]               : fine tune angle (+/- 1°, arc modes only)
@@ -98,10 +98,10 @@ def main():
     speed = 0.50
     mode = 1  # 1=arc_forward_left, 2=arc_forward_right, 3=arc_backward_left, 4=arc_backward_right, 5=turn_left, 6=turn_right
     mode_names = {
-        1: "ARC FWD-RIGHT",
-        2: "ARC FWD-LEFT",
-        3: "ARC BACK-RIGHT",
-        4: "ARC BACK-LEFT",
+        1: "ARC FWD-LEFT",
+        2: "ARC FWD-RIGHT",
+        3: "ARC BACK-LEFT",
+        4: "ARC BACK-RIGHT",
         5: "TURN LEFT",
         6: "TURN RIGHT",
     }
@@ -121,7 +121,13 @@ def main():
     print()
 
     def get_current_command():
-        """Get the current wheel command based on mode and angle."""
+        """Get the current wheel command based on mode and angle.
+
+        NOTE: mode 1/2 and 3/4 call the OPPOSITE-named kinematics function
+        on purpose — on this robot's wiring, arc_forward_left() actually
+        drives a rightward arc (and vice versa). differential_kinematics.py
+        is shared by other modules so it's left as-is; this swap lives only
+        here so the on-screen label matches what the robot actually does."""
         if mode == 1:
             return kin.arc_forward_right(angle, cal.arc_speed * speed)
         elif mode == 2:
