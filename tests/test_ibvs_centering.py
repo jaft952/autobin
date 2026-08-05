@@ -256,7 +256,11 @@ def _run_all_tests():
 _GRAB_COOLDOWN_S = 3.0   # after a grab attempt (success or refusal), don't re-solve every frame
 
 # Bounded backward nudge for recovering from a BAND_TOO_CLOSE overshoot, and
-# the ultrasonic watchdog's own stop_callback -- see _retreat_pulse().
+# the ultrasonic watchdog's own stop_callback -- see _retreat_pulse(). Live-
+# tunable with , / . while --live is running (no cm/s calibration exists yet
+# to compute this from a target backup distance -- see calibration.py's
+# wheel_speed_cm_per_s_per_unit TODO), so dial it against the ULTRA reading
+# on the overlay until a trip reliably lands back inside GRAB_CONFIRM_CM.
 RETREAT_PULSE_S = 0.3
 
 # How long a "solver says grabbable" answer keeps the wheels stopped after
@@ -386,7 +390,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     cv2.putText(frame, drive_line, (16, fh - banner_h + 54), font, 0.6, drive_color, 2)
 
     mode_line = (f"[m] drive={'ON' if driving else 'OFF'}  [g] arm={'ARMED' if armed else 'OFF'}  "
-                 f"[l] lines  [ [ ] ] floor={pwm_driver.MIN_MOVE_DUTY:.0f}  [q] quit")
+                 f"[l] lines  [ [ ] ] floor={pwm_driver.MIN_MOVE_DUTY:.0f}  "
+                 f"[ , . ] retreat={RETREAT_PULSE_S:.2f}s  [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
 
     if ultra is None or ultra.distance_cm is None:
@@ -622,6 +627,8 @@ def run_live_demo():
     from src.perception.detector import AluminiumCanDetector, RUNTIME_MODEL_PATH
     from src.hardware.actuators.pwm_driver import PWMActuator
 
+    global RETREAT_PULSE_S
+
     driving = "--drive" in sys.argv
     want_arm = "--arm" in sys.argv
     show_lines = "--line" in sys.argv
@@ -788,7 +795,7 @@ def run_live_demo():
                                         ultra=ultra, solved=solved, grabbable=grabbable,
                                         band=band,
                                         applied=getattr(actuator, "last_duty", None))
-                    cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor q=quit)", frame)
+                    cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor ,.=retreat q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
@@ -809,6 +816,14 @@ def run_live_demo():
                         pwm_driver.MIN_MOVE_DUTY = max(
                             0.0, pwm_driver.MIN_MOVE_DUTY + (1.0 if key == ord("]") else -1.0))
                         print(f"[tune] MIN_MOVE_DUTY={pwm_driver.MIN_MOVE_DUTY:.0f}")
+                    if key in (ord(","), ord(".")):
+                        # How far the retreat pulse backs up -- wheel speed
+                        # isn't calibrated to cm/s yet (see calibration.py),
+                        # so this is dialed in live against the overlay/ultra
+                        # reading instead of computed.
+                        RETREAT_PULSE_S = max(
+                            0.05, min(2.0, RETREAT_PULSE_S + (0.05 if key == ord(".") else -0.05)))
+                        print(f"[tune] RETREAT_PULSE_S={RETREAT_PULSE_S:.2f}")
                 except cv2.error:
                     print("[!] no display available — continuing text-only")
                     show = False
