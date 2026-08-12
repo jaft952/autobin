@@ -394,11 +394,13 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                  f"[ , . ] retreat={RETREAT_PULSE_S:.2f}s  [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
 
-    if ultra is None or ultra.distance_cm is None:
+    if ultra is None or (ultra.distance_top_cm is None and ultra.distance_bottom_cm is None):
         ultra_line = "ULTRA: no reading (sensor dead/out of range?)"
         ultra_color = (0, 0, 255)
     else:
-        ultra_line = (f"ULTRA: {ultra.distance_cm:.1f}cm  "
+        top_txt = f"{ultra.distance_top_cm:.1f}" if ultra.distance_top_cm is not None else "--"
+        bottom_txt = f"{ultra.distance_bottom_cm:.1f}" if ultra.distance_bottom_cm is not None else "--"
+        ultra_line = (f"ULTRA: top={top_txt}cm bottom={bottom_txt}cm  "
                       f"estop={ultra.emergency_stop} (<={EMERGENCY_STOP_CM:.0f})  "
                       f"grab_ok={ultra.grab_confirmed} (<={GRAB_CONFIRM_CM:.0f})")
         ultra_color = (0, 140, 255) if ultra.emergency_stop else \
@@ -409,16 +411,20 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         # Solver says reachable -- say why the grab still is not firing, or a
         # gate disagreeing with the band looks like the arm simply hanging.
         # Mirrors run_live_demo's actual trigger: armed + solved + ultra_ok,
-        # where ultra_ok falls back to vision-only when distance_cm is None
-        # (no reading at all) but still blocks a real "too far" reading.
-        ultra_dist = ultra.distance_cm if ultra is not None else None
+        # where ultra_ok falls back to vision-only when NEITHER sensor has a
+        # reading (no reading at all) but still blocks a real "too far" one.
         ultra_confirmed = ultra.grab_confirmed if ultra is not None else False
-        ultra_missing = ultra_dist is None
+        ultra_missing = ultra is None or (ultra.distance_top_cm is None and
+                                           ultra.distance_bottom_cm is None)
         ultra_ok = ultra_missing or ultra_confirmed
+        ultra_readings = [d for d in (getattr(ultra, "distance_top_cm", None),
+                                       getattr(ultra, "distance_bottom_cm", None))
+                          if d is not None]
+        ultra_nearest = min(ultra_readings) if ultra_readings else None
         if not armed:
             blocked = "  BLOCKED: arm not armed [g]"
         elif not ultra_ok:
-            blocked = f"  BLOCKED: ultra {ultra_dist:.0f}>{GRAB_CONFIRM_CM:.0f}"
+            blocked = f"  BLOCKED: ultra {ultra_nearest:.0f}>{GRAB_CONFIRM_CM:.0f}"
         elif ultra_missing:
             blocked = "  (no ultra reading -- grabbing on vision alone)"
         else:
@@ -783,9 +789,9 @@ def run_live_demo():
             # vision alone when the ultrasonic has NO reading at all
             # (dead/miswired) -- a hardware fault on the secondary sensor
             # must not permanently block every grab; a real reading that
-            # says "too far" (distance_cm set, grab_confirmed False) still
+            # says "too far" (a distance is set, grab_confirmed False) still
             # blocks normally.
-            ultra_missing = ultra.distance_cm is None
+            ultra_missing = ultra.distance_top_cm is None and ultra.distance_bottom_cm is None
             ultra_ok = ultra_missing or ultra.grab_confirmed
             if armed and solved is not None and ultra_ok:
                 if ultra_missing:
@@ -849,7 +855,8 @@ def run_live_demo():
                     show = False
 
             motion_plan = _format_motion_plan(cmd, error, tier, ultra.emergency_stop)
-            ultra_status = f"ULTRASONIC: {ultra.distance_cm}cm | emergency={ultra.emergency_stop} grab_ok={ultra.grab_confirmed}"
+            ultra_status = (f"ULTRASONIC: top={ultra.distance_top_cm}cm bottom={ultra.distance_bottom_cm}cm "
+                            f"| emergency={ultra.emergency_stop} grab_ok={ultra.grab_confirmed}")
             target_status = f"TARGET: found={error.found} lateral={error.lateral_error:+.2f} dist={error.distance_cm}cm reached={error.reached} too_close={error.too_close}"
             bbox_info = f"BBOX: w={bbox_width_px} h={bbox_height_px} area={bbox_area_px}px" if bbox_area_px else "BBOX: none"
             mode_status = f"MODE: drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} ctrl={controller_name}"

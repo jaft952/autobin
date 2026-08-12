@@ -1,9 +1,9 @@
 """
-High-level safety logic for the front ultrasonic sensor.
+High-level safety logic for the front ultrasonic sensors (top + bottom).
 
 Responsibilities
 ----------------
-1. Poll the HC-SR04.
+1. Poll both HC-SR04s.
 2. Decide whether emergency stop is required.
 3. Decide whether the arm is allowed to grab.
 4. Never contains GPIO code other than calling UltrasonicSensor.
@@ -33,9 +33,14 @@ EMERGENCY_STOP_CM = 30.0
 GRAB_CONFIRM_CM = 35.0
 
 
+def _within(d: Optional[float], threshold_cm: float) -> bool:
+    return d is not None and d <= threshold_cm
+
+
 @dataclass
 class UltrasonicState:
-    distance_cm: Optional[float]
+    distance_top_cm: Optional[float]
+    distance_bottom_cm: Optional[float]
     emergency_stop: bool
     grab_confirmed: bool
 
@@ -46,31 +51,38 @@ class UltrasonicSafety:
         self,
         trig: int = 23,
         echo: int = 24,
+        trig2: int = 27,
+        echo2: int = 22,
     ):
-        self.sensor = UltrasonicSensor(
+        self.sensor_top = UltrasonicSensor(
             UltrasonicPins(trig=trig, echo=echo)
+        )
+        self.sensor_bottom = UltrasonicSensor(
+            UltrasonicPins(trig=trig2, echo=echo2)
         )
 
     def update(self) -> UltrasonicState:
         """
-        Poll the sensor once and return the current safety state.
+        Poll both sensors once and return the current safety state.
+
+        Either sensor alone is enough to trip a signal (top OR bottom):
+        each threshold is checked against both readings independently, so a
+        close obstacle at either sensor height reacts the same way.
         """
 
-        self.sensor.update()
+        self.sensor_top.update()
+        self.sensor_bottom.update()
 
-        d = self.sensor.get_distance_cm()
-
-        if d is None:
-            return UltrasonicState(
-                distance_cm=None,
-                emergency_stop=False,
-                grab_confirmed=False,
-            )
+        d_top = self.sensor_top.get_distance_cm()
+        d_bottom = self.sensor_bottom.get_distance_cm()
 
         return UltrasonicState(
-            distance_cm=d,
-            emergency_stop=d <= EMERGENCY_STOP_CM,
-            grab_confirmed=d <= GRAB_CONFIRM_CM,
+            distance_top_cm=d_top,
+            distance_bottom_cm=d_bottom,
+            emergency_stop=(_within(d_top, EMERGENCY_STOP_CM) or
+                             _within(d_bottom, EMERGENCY_STOP_CM)),
+            grab_confirmed=(_within(d_top, GRAB_CONFIRM_CM) or
+                             _within(d_bottom, GRAB_CONFIRM_CM)),
         )
 
     def should_stop(self) -> bool:
@@ -94,7 +106,8 @@ class UltrasonicSafety:
         return s.grab_confirmed
 
     def close(self):
-        self.sensor.close()
+        self.sensor_top.close()
+        self.sensor_bottom.close()
 
 
 # HC-SR04 datasheets recommend at least ~60ms between trigger pulses so an
@@ -137,7 +150,8 @@ class UltrasonicWatchdog:
         self._stop_callback = stop_callback
         self._interval_s = 1.0 / poll_hz
         self._lock = threading.Lock()
-        self._latest = UltrasonicState(distance_cm=None, emergency_stop=False, grab_confirmed=False)
+        self._latest = UltrasonicState(distance_top_cm=None, distance_bottom_cm=None,
+                                        emergency_stop=False, grab_confirmed=False)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ultrasonic-watchdog", daemon=True)
 
@@ -164,8 +178,8 @@ class UltrasonicWatchdog:
                 # .latest would stay frozen at "no reading" forever, with
                 # nothing left to recover it. Log and keep polling instead.
                 print(f"[ultrasonic] poll error: {exc}")
-                state = UltrasonicState(distance_cm=None, emergency_stop=False,
-                                         grab_confirmed=False)
+                state = UltrasonicState(distance_top_cm=None, distance_bottom_cm=None,
+                                         emergency_stop=False, grab_confirmed=False)
             with self._lock:
                 self._latest = state
             if state.emergency_stop:

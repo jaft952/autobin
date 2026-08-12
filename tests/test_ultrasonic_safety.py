@@ -18,9 +18,10 @@ class FakeUltrasonicSensor:
         return None
 
 
-def _safety(distance_cm):
+def _safety(distance_cm, distance_bottom_cm=None):
     safety = UltrasonicSafety.__new__(UltrasonicSafety)
-    safety.sensor = FakeUltrasonicSensor(distance_cm)  # type: ignore
+    safety.sensor_top = FakeUltrasonicSensor(distance_cm)  # type: ignore
+    safety.sensor_bottom = FakeUltrasonicSensor(distance_bottom_cm)  # type: ignore
     return safety
 
 
