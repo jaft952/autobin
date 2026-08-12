@@ -41,7 +41,7 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.hardware.actuators.print_actuator import PrintActuator
-from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor
+from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicPins
 from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
 from src.subsumption.motion_executor import MotionExecutor
@@ -55,7 +55,7 @@ def build_sensors(with_camera: bool) -> SensorHub:
     if with_camera:
         from src.hardware.sensors.camera_sensor import CameraSensor
         camera = CameraSensor()
-    return SensorHub(ultrasonic=UltrasonicSensor(), camera=camera)
+    return SensorHub(ultrasonic=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)), camera=camera)
 
 
 def main():
@@ -83,7 +83,7 @@ def main():
     scan.set_speeds(args.speed, args.turn_speed)
     layers = [SystemIdleLayer(), scan, EmergencyStopLayer()]
     arbitrator = Arbitrator()
-    executor = MotionExecutor(actuator=PrintActuator() if args.no_motors else None)
+    executor = MotionExecutor(actuator=PrintActuator() if args.no_motors else None) # type: ignore
 
     period = 1.0 / args.hz
     mode = "PRINT-ONLY" if args.no_motors else "WHEELS LIVE"
