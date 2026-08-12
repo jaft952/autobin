@@ -29,7 +29,7 @@ from src.hardware.sensors.ultrasonic_sensor import (
 # tin can is EXPECTED to be this close at the correct grab position (measured:
 # solver says grabbable at ~29cm), so treating "close" as universally
 # dangerous would block a legitimate grab. See can_grab()/UltrasonicState.
-EMERGENCY_STOP_CM = 35.0
+EMERGENCY_STOP_CM = 30.0
 GRAB_CONFIRM_CM = 35.0
 
 
