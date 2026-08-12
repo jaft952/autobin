@@ -24,7 +24,7 @@ from src.hardware.sensors.ultrasonic_sensor import (
 )
 
 EMERGENCY_STOP_CM = 30.0
-GRAB_CONFIRM_CM = 33.0
+GRAB_CONFIRM_CM = 35.0
 
 
 def _within(d: Optional[float], threshold_cm: float) -> bool:
