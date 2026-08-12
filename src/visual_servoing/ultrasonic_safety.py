@@ -23,12 +23,6 @@ from src.hardware.sensors.ultrasonic_sensor import (
     UltrasonicPins,
 )
 
-# Two independent signals, not a nested pair -- emergency_stop is a DRIVE-only
-# safety cutoff (stop/retreat the wheels so they don't ram into something);
-# grab_confirmed is the ARM's proximity gate. They must stay independent: the
-# tin can is EXPECTED to be this close at the correct grab position (measured:
-# solver says grabbable at ~29cm), so treating "close" as universally
-# dangerous would block a legitimate grab. See can_grab()/UltrasonicState.
 EMERGENCY_STOP_CM = 30.0
 GRAB_CONFIRM_CM = 35.0
 
@@ -76,6 +70,13 @@ class UltrasonicSafety:
         """
 
         self.sensor_top.update()
+        # Brief settling gap before the second sensor pings -- firing it
+        # immediately after the top sensor's echo returns risks the top
+        # transducer still ringing down / a stray reflection crossing over,
+        # which reads as a bogus near-zero distance (see MIN_VALID_DISTANCE_CM
+        # in ultrasonic_sensor.py, which now also guards against exactly that
+        # as a second line of defense).
+        time.sleep(0.01)
         self.sensor_bottom.update()
 
         d_top = self.sensor_top.get_distance_cm()

@@ -27,6 +27,7 @@ except ImportError:
 
 
 SPEED_OF_SOUND_CM_PER_S = 34300.0
+MIN_VALID_DISTANCE_CM = 2.0
 
 
 @dataclass(frozen=True)
@@ -87,9 +88,8 @@ class UltrasonicSensor:
 
         pulse_duration = pulse_end - pulse_start
 
-        self._distance_cm = (
-            pulse_duration * SPEED_OF_SOUND_CM_PER_S / 2.0
-        )
+        distance_cm = pulse_duration * SPEED_OF_SOUND_CM_PER_S / 2.0
+        self._distance_cm = distance_cm if distance_cm >= MIN_VALID_DISTANCE_CM else None
 
     def get_distance_cm(self) -> Optional[float]:
         """
