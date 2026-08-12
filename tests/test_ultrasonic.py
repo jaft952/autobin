@@ -64,14 +64,25 @@ def main():
           f"bottom TRIG=GPIO{args.trig2} ECHO=GPIO{args.echo2} "
           f"@ {args.hz:.0f} Hz — Ctrl+C to quit")
 
+    first = True
     try:
         while True:
             tick = time.monotonic()
             sensor_top.update()
             sensor_bottom.update()
-            line = (_reading_str("top", sensor_top.get_distance_cm()) + "    " +
-                    _reading_str("bottom", sensor_bottom.get_distance_cm()))
-            print("\r" + line, end="", flush=True)
+            line_top = _reading_str("top", sensor_top.get_distance_cm())
+            line_bottom = _reading_str("bottom", sensor_bottom.get_distance_cm())
+
+            if first:
+                # First frame: just lay down both lines, cursor ends on line 2.
+                print(line_top)
+                print(line_bottom, end="", flush=True)
+                first = False
+            else:
+                # Move up to line 1 and rewrite both lines in place (fixed-width
+                # fields mean no leftover characters from the previous frame).
+                print("\x1b[1A\r" + line_top)
+                print("\r" + line_bottom, end="", flush=True)
 
             sleep_left = period - (time.monotonic() - tick)
             if sleep_left > 0:
