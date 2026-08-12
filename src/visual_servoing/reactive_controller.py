@@ -18,7 +18,7 @@ FORWARD_HIGH_SPEED = 42.0       # hand-tested cruise speed at/beyond FAR_DISTANC
 FORWARD_MID_SPEED = 40.0        # hand-tested speed between FAR_DISTANCE_CM and MID_DISTANCE_CM
 FORWARD_LOW_SPEED = 38.0        # used only when distance can't be estimated at all
 
-BACKUP_SPEED = 15.0             # gentle reverse to recover from an overshoot
+BACKUP_SPEED = 40.0             # gentle reverse to recover from an overshoot
 MAX_STEER_ANGLE_DEG = 90.0      # keep below 90 so it never fully spins in place
 
 
