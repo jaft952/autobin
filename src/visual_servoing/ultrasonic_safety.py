@@ -67,6 +67,18 @@ class UltrasonicSafety:
         the bottom sensor in here would fire the arm on a close bottom
         reading (floor, wheel well, ground clutter) that has nothing to do
         with the tin actually being in grab position.
+
+        grab_confirmed is also True when the top sensor has NO reading at
+        all (echo timeout, d_top is None) -- not just when it's within
+        range. The HC-SR04's beam is narrow; a tin sitting off-center (which
+        is a perfectly normal, calibrated arc_grasp position, not an edge
+        case) can sit outside that cone entirely, so the echo has nothing to
+        bounce off and times out even though the tin is really there. vision
+        + the arc solver's own per-row calibration (solve_with_band) already
+        confirm the tin's actual position independently of this sensor, so a
+        missing top reading must not be able to block a real grab -- same
+        reasoning as the existing "hardware fault" fallback, just triggered
+        by geometry instead of a dead sensor.
         """
 
         self.sensor_top.update()
@@ -87,7 +99,7 @@ class UltrasonicSafety:
             distance_bottom_cm=d_bottom,
             emergency_stop=(_within(d_top, EMERGENCY_STOP_CM) or
                              _within(d_bottom, EMERGENCY_STOP_CM)),
-            grab_confirmed=_within(d_top, GRAB_CONFIRM_CM),
+            grab_confirmed=(_within(d_top, GRAB_CONFIRM_CM) or d_top is None),
         )
 
     def should_stop(self) -> bool:
