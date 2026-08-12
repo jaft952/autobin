@@ -268,6 +268,15 @@ RETREAT_PULSE_S = 0.3
 # blink doesn't restart the approach.
 GRABBABLE_LATCH_S = 2.0
 
+# How long the full grab-trigger condition (armed + solver band + ultrasonic
+# confirm) must hold CONTINUOUSLY before the arm actually fires -- distinct
+# from GRABBABLE_LATCH_S above, which only keeps the WHEELS stopped through a
+# blink. Camera inference can mis-estimate distance for a beat (motion blur,
+# a partial/occluded detection), so one good frame isn't enough evidence the
+# tin is really in position; this rides that out. Any drop in the condition
+# -- solved going None, ultra_ok flipping False -- resets the clock to zero.
+GRAB_STABLE_S = 3.0
+
 # Caller-side band value: nothing detected this frame. Distinct from
 # BAND_NOT_CALIBRATED (no solver at all) so the overlay can't blame a missing
 # grid for what is really an empty frame.
@@ -312,7 +321,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
                          tier: str = "none",
                          ultra=None, solved=None, grabbable: bool = False,
-                         band: str = BAND_NOT_CALIBRATED, applied=None) -> None:
+                         band: str = BAND_NOT_CALIBRATED, applied=None,
+                         grab_stable_s: float = 0.0) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -333,7 +343,11 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
 
     solved: arc_grasp's live solution this frame (None = not in the band).
     grabbable: the latched version that actually stops the wheels — shown
-    separately so a latch riding out a detection blink is visible as such."""
+    separately so a latch riding out a detection blink is visible as such.
+
+    grab_stable_s: how long the grab-trigger condition has held CONTINUOUSLY
+    this run (see GRAB_STABLE_S) — 0.0 means it isn't currently satisfied at
+    all (already covered by another BLOCKED reason below)."""
     import cv2
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -427,6 +441,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         elif not ultra_ok:
             top_txt = f"{ultra_top:.0f}" if ultra_top is not None else "--"
             blocked = f"  BLOCKED: ultra top={top_txt}>{GRAB_CONFIRM_CM:.0f}"
+        elif grab_stable_s < GRAB_STABLE_S:
+            blocked = f"  stabilizing {grab_stable_s:.1f}s/{GRAB_STABLE_S:.0f}s"
         elif ultra_missing:
             blocked = "  (no ultra reading -- grabbing on vision alone)"
         else:
@@ -435,8 +451,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                      + " ".join(f"{v:.0f}" for v in solved) + "]" + blocked)
         if blocked.strip().startswith("BLOCKED"):
             grab_color = (0, 140, 255)
-        elif ultra_missing:
-            grab_color = (0, 200, 255)   # amber: proceeding without ultrasonic confirmation
+        elif "stabilizing" in blocked or ultra_missing:
+            grab_color = (0, 200, 255)   # amber: not firing yet, but on track to
         else:
             grab_color = (0, 255, 0)
     elif grabbable:
@@ -658,7 +674,10 @@ def run_live_demo():
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
 
     # Defined before the watchdog starts: _retreat_pulse reads it from its thread.
-    grab_state = {"cooldown_until": 0.0, "homed": False, "grabbing": False}
+    # ready_since: monotonic() timestamp the grab-trigger condition last went
+    # continuously true, or None while it's false -- see GRAB_STABLE_S.
+    grab_state = {"cooldown_until": 0.0, "homed": False, "grabbing": False,
+                  "ready_since": None}
 
     def _retreat_pulse() -> None:
         """One bounded backward nudge, then stop. Stops before reversing per
@@ -795,7 +814,23 @@ def run_live_demo():
             # blocks normally.
             ultra_missing = ultra.distance_top_cm is None and ultra.distance_bottom_cm is None
             ultra_ok = ultra_missing or ultra.grab_confirmed
-            if armed and solved is not None and ultra_ok:
+
+            # GRAB_STABLE_S: the trigger condition has to hold TRUE for a
+            # continuous stretch, not just one lucky frame -- a single-frame
+            # camera hiccup (motion blur, a half-occluded detection) can make
+            # distance/band look right for an instant when it isn't. Any
+            # frame where the condition drops resets the clock to zero, so
+            # only a genuinely settled reading ever reaches GRAB_STABLE_S.
+            grab_ready_now = armed and solved is not None and ultra_ok
+            if grab_ready_now:
+                if grab_state["ready_since"] is None:
+                    grab_state["ready_since"] = time.monotonic()
+                grab_stable_s = time.monotonic() - grab_state["ready_since"]
+            else:
+                grab_state["ready_since"] = None
+                grab_stable_s = 0.0
+
+            if grab_ready_now and grab_stable_s >= GRAB_STABLE_S:
                 if ultra_missing:
                     print("[grab] WARNING: no ultrasonic reading -- grabbing on vision alone")
                 grab_state["grabbing"] = True
@@ -804,6 +839,7 @@ def run_live_demo():
                 finally:
                     grab_state["grabbing"] = False
                 grab_latch["on"] = False   # can should be gone -- re-evaluate fresh
+                grab_state["ready_since"] = None   # start fresh for the next tin
 
             if show:
                 try:
@@ -822,7 +858,8 @@ def run_live_demo():
                                         tier=tier,
                                         ultra=ultra, solved=solved, grabbable=grabbable,
                                         band=band,
-                                        applied=getattr(actuator, "last_duty", None))
+                                        applied=getattr(actuator, "last_duty", None),
+                                        grab_stable_s=grab_stable_s)
                     cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor ,.=retreat q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -862,6 +899,7 @@ def run_live_demo():
             target_status = f"TARGET: found={error.found} lateral={error.lateral_error:+.2f} dist={error.distance_cm}cm reached={error.reached} too_close={error.too_close}"
             bbox_info = f"BBOX: w={bbox_width_px} h={bbox_height_px} area={bbox_area_px}px" if bbox_area_px else "BBOX: none"
             mode_status = f"MODE: drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} ctrl={controller_name}"
+            grab_status = f"GRAB: ready={grab_ready_now} stable={grab_stable_s:.1f}s/{GRAB_STABLE_S:.0f}s"
 
             print("\n" + "-" * 80)
             print(f"[MOTION] {motion_plan}")
@@ -869,6 +907,7 @@ def run_live_demo():
             print(f"[TARGET] {target_status}")
             print(f"[BBOX] {bbox_info}")
             print(f"[MODE] {mode_status}")
+            print(f"[GRAB] {grab_status}")
 
             now = time.monotonic()
             loop_time_ms = (now - last_tick) * 1000
