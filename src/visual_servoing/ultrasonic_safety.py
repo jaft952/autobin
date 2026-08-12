@@ -65,9 +65,14 @@ class UltrasonicSafety:
         """
         Poll both sensors once and return the current safety state.
 
-        Either sensor alone is enough to trip a signal (top OR bottom):
-        each threshold is checked against both readings independently, so a
-        close obstacle at either sensor height reacts the same way.
+        emergency_stop is top OR bottom -- a close reading on EITHER sensor
+        is reason enough to cut the wheels, regardless of what's calibrated
+        where. grab_confirmed stays TOP-ONLY: it's gated against the arm
+        solver's known ~29cm grasp distance, which only the top sensor's
+        mounting was calibrated against (see GRAB_CONFIRM_CM above); ORing
+        the bottom sensor in here would fire the arm on a close bottom
+        reading (floor, wheel well, ground clutter) that has nothing to do
+        with the tin actually being in grab position.
         """
 
         self.sensor_top.update()
@@ -81,8 +86,7 @@ class UltrasonicSafety:
             distance_bottom_cm=d_bottom,
             emergency_stop=(_within(d_top, EMERGENCY_STOP_CM) or
                              _within(d_bottom, EMERGENCY_STOP_CM)),
-            grab_confirmed=(_within(d_top, GRAB_CONFIRM_CM) or
-                             _within(d_bottom, GRAB_CONFIRM_CM)),
+            grab_confirmed=_within(d_top, GRAB_CONFIRM_CM),
         )
 
     def should_stop(self) -> bool:
