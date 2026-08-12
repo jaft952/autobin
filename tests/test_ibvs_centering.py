@@ -275,7 +275,7 @@ GRABBABLE_LATCH_S = 2.0
 # a partial/occluded detection), so one good frame isn't enough evidence the
 # tin is really in position; this rides that out. Any drop in the condition
 # -- solved going None, ultra_ok flipping False -- resets the clock to zero.
-GRAB_STABLE_S = 3.0
+GRAB_STABLE_S = 1.0
 
 # Caller-side band value: nothing detected this frame. Distinct from
 # BAND_NOT_CALIBRATED (no solver at all) so the overlay can't blame a missing
