@@ -417,14 +417,16 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
         ultra_missing = ultra is None or (ultra.distance_top_cm is None and
                                            ultra.distance_bottom_cm is None)
         ultra_ok = ultra_missing or ultra_confirmed
-        ultra_readings = [d for d in (getattr(ultra, "distance_top_cm", None),
-                                       getattr(ultra, "distance_bottom_cm", None))
-                          if d is not None]
-        ultra_nearest = min(ultra_readings) if ultra_readings else None
+        # grab_confirmed is TOP-ONLY (see ultrasonic_safety.py), so the
+        # "why blocked" number has to be the top reading -- showing the
+        # nearest-of-both here was misleading (a bottom reading well inside
+        # the threshold made "BLOCKED: ultra 31>35" look self-contradictory).
+        ultra_top = ultra.distance_top_cm if ultra is not None else None
         if not armed:
             blocked = "  BLOCKED: arm not armed [g]"
         elif not ultra_ok:
-            blocked = f"  BLOCKED: ultra {ultra_nearest:.0f}>{GRAB_CONFIRM_CM:.0f}"
+            top_txt = f"{ultra_top:.0f}" if ultra_top is not None else "--"
+            blocked = f"  BLOCKED: ultra top={top_txt}>{GRAB_CONFIRM_CM:.0f}"
         elif ultra_missing:
             blocked = "  (no ultra reading -- grabbing on vision alone)"
         else:
