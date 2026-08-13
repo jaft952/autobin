@@ -268,6 +268,15 @@ RETREAT_PULSE_S = 0.3
 # blink doesn't restart the approach.
 GRABBABLE_LATCH_S = 2.0
 
+# How long the full grab-trigger condition (armed + solver band + ultrasonic
+# confirm) must hold CONTINUOUSLY before the arm actually fires -- distinct
+# from GRABBABLE_LATCH_S above, which only keeps the WHEELS stopped through a
+# blink. Camera inference can mis-estimate distance for a beat (motion blur,
+# a partial/occluded detection), so one good frame isn't enough evidence the
+# tin is really in position; this rides that out. Any drop in the condition
+# -- solved going None, ultra_ok flipping False -- resets the clock to zero.
+GRAB_STABLE_S = 1.0
+
 # Caller-side band value: nothing detected this frame. Distinct from
 # BAND_NOT_CALIBRATED (no solver at all) so the overlay can't blame a missing
 # grid for what is really an empty frame.
@@ -312,7 +321,8 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                          bbox_area_px=None, controller_name: str = "reactive",
                          tier: str = "none",
                          ultra=None, solved=None, grabbable: bool = False,
-                         band: str = BAND_NOT_CALIBRATED, applied=None) -> None:
+                         band: str = BAND_NOT_CALIBRATED, applied=None,
+                         grab_stable_s: float = 0.0) -> None:
     """Burn the distance_error / drive-command readout onto the frame so the
     planned IK output (steer + dynamic speed) is visible without reading the
     console, and so a bad estimate is obvious immediately.
@@ -333,7 +343,11 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
 
     solved: arc_grasp's live solution this frame (None = not in the band).
     grabbable: the latched version that actually stops the wheels — shown
-    separately so a latch riding out a detection blink is visible as such."""
+    separately so a latch riding out a detection blink is visible as such.
+
+    grab_stable_s: how long the grab-trigger condition has held CONTINUOUSLY
+    this run (see GRAB_STABLE_S) — 0.0 means it isn't currently satisfied at
+    all (already covered by another BLOCKED reason below)."""
     import cv2
     fh, fw = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -394,11 +408,13 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
                  f"[ , . ] retreat={RETREAT_PULSE_S:.2f}s  [q] quit")
     cv2.putText(frame, mode_line, (16, fh - banner_h + 80), font, 0.5, (200, 200, 200), 1)
 
-    if ultra is None or ultra.distance_cm is None:
+    if ultra is None or (ultra.distance_top_cm is None and ultra.distance_bottom_cm is None):
         ultra_line = "ULTRA: no reading (sensor dead/out of range?)"
         ultra_color = (0, 0, 255)
     else:
-        ultra_line = (f"ULTRA: {ultra.distance_cm:.1f}cm  "
+        top_txt = f"{ultra.distance_top_cm:.1f}" if ultra.distance_top_cm is not None else "--"
+        bottom_txt = f"{ultra.distance_bottom_cm:.1f}" if ultra.distance_bottom_cm is not None else "--"
+        ultra_line = (f"ULTRA: top={top_txt}cm bottom={bottom_txt}cm  "
                       f"estop={ultra.emergency_stop} (<={EMERGENCY_STOP_CM:.0f})  "
                       f"grab_ok={ultra.grab_confirmed} (<={GRAB_CONFIRM_CM:.0f})")
         ultra_color = (0, 140, 255) if ultra.emergency_stop else \
@@ -408,27 +424,35 @@ def _draw_status_overlay(frame, error, cmd, driving: bool, armed: bool,
     if solved is not None:
         # Solver says reachable -- say why the grab still is not firing, or a
         # gate disagreeing with the band looks like the arm simply hanging.
-        # Mirrors run_live_demo's actual trigger: armed + solved + ultra_ok,
-        # where ultra_ok falls back to vision-only when distance_cm is None
-        # (no reading at all) but still blocks a real "too far" reading.
-        ultra_dist = ultra.distance_cm if ultra is not None else None
-        ultra_confirmed = ultra.grab_confirmed if ultra is not None else False
-        ultra_missing = ultra_dist is None
-        ultra_ok = ultra_missing or ultra_confirmed
+        # Mirrors run_live_demo's actual trigger: armed + solved + grab_confirmed.
+        # grab_confirmed (ultrasonic_safety.py) already falls back to True
+        # when the TOP sensor alone has no reading -- an off-center tin (a
+        # normal calibrated position, not an edge case) can sit outside the
+        # sensor's narrow beam entirely, so no echo is not the same as "too
+        # far". A real too-far reading still blocks normally.
+        ultra_confirmed = ultra.grab_confirmed if ultra is not None else True
+        top_missing = ultra is None or ultra.distance_top_cm is None
+        # the "why blocked" number has to be the top reading -- showing the
+        # nearest-of-both here was misleading (a bottom reading well inside
+        # the threshold made "BLOCKED: ultra 31>35" look self-contradictory).
+        ultra_top = ultra.distance_top_cm if ultra is not None else None
         if not armed:
             blocked = "  BLOCKED: arm not armed [g]"
-        elif not ultra_ok:
-            blocked = f"  BLOCKED: ultra {ultra_dist:.0f}>{GRAB_CONFIRM_CM:.0f}"
-        elif ultra_missing:
-            blocked = "  (no ultra reading -- grabbing on vision alone)"
+        elif not ultra_confirmed:
+            top_txt = f"{ultra_top:.0f}" if ultra_top is not None else "--"
+            blocked = f"  BLOCKED: ultra top={top_txt}>{GRAB_CONFIRM_CM:.0f}"
+        elif grab_stable_s < GRAB_STABLE_S:
+            blocked = f"  stabilizing {grab_stable_s:.1f}s/{GRAB_STABLE_S:.0f}s"
+        elif top_missing:
+            blocked = "  (no top ultra reading -- grabbing on vision alone)"
         else:
             blocked = ""
         grab_line = ("GRABBABLE: YES  arm=["
                      + " ".join(f"{v:.0f}" for v in solved) + "]" + blocked)
         if blocked.strip().startswith("BLOCKED"):
             grab_color = (0, 140, 255)
-        elif ultra_missing:
-            grab_color = (0, 200, 255)   # amber: proceeding without ultrasonic confirmation
+        elif "stabilizing" in blocked or top_missing:
+            grab_color = (0, 200, 255)   # amber: not firing yet, but on track to
         else:
             grab_color = (0, 255, 0)
     elif grabbable:
@@ -650,7 +674,10 @@ def run_live_demo():
     ultrasonic = UltrasonicSafety(trig=23, echo=24)
 
     # Defined before the watchdog starts: _retreat_pulse reads it from its thread.
-    grab_state = {"cooldown_until": 0.0, "homed": False, "grabbing": False}
+    # ready_since: monotonic() timestamp the grab-trigger condition last went
+    # continuously true, or None while it's false -- see GRAB_STABLE_S.
+    grab_state = {"cooldown_until": 0.0, "homed": False, "grabbing": False,
+                  "ready_since": None}
 
     def _retreat_pulse() -> None:
         """One bounded backward nudge, then stop. Stops before reversing per
@@ -779,23 +806,42 @@ def run_live_demo():
             # stale solution, a grab may not. Gated on grab_confirmed, NOT
             # emergency_stop -- that's a drive-only cutoff, and the tin can
             # is expected to trip it too at the correct grab distance (see
-            # EMERGENCY_STOP_CM in ultrasonic_safety.py). Falls back to
-            # vision alone when the ultrasonic has NO reading at all
-            # (dead/miswired) -- a hardware fault on the secondary sensor
-            # must not permanently block every grab; a real reading that
-            # says "too far" (distance_cm set, grab_confirmed False) still
-            # blocks normally.
-            ultra_missing = ultra.distance_cm is None
-            ultra_ok = ultra_missing or ultra.grab_confirmed
-            if armed and solved is not None and ultra_ok:
-                if ultra_missing:
-                    print("[grab] WARNING: no ultrasonic reading -- grabbing on vision alone")
+            # EMERGENCY_STOP_CM in ultrasonic_safety.py). grab_confirmed
+            # (ultrasonic_safety.py) already falls back to True when the TOP
+            # sensor alone has no reading -- either a dead/miswired sensor,
+            # or an off-center tin (a normal calibrated position) sitting
+            # outside its narrow beam entirely; no echo isn't the same as
+            # "too far", and vision + the arc solver already confirmed the
+            # position independently. A real too-far reading still blocks
+            # normally.
+            top_missing = ultra.distance_top_cm is None
+            ultra_ok = ultra.grab_confirmed
+
+            # GRAB_STABLE_S: the trigger condition has to hold TRUE for a
+            # continuous stretch, not just one lucky frame -- a single-frame
+            # camera hiccup (motion blur, a half-occluded detection) can make
+            # distance/band look right for an instant when it isn't. Any
+            # frame where the condition drops resets the clock to zero, so
+            # only a genuinely settled reading ever reaches GRAB_STABLE_S.
+            grab_ready_now = armed and solved is not None and ultra_ok
+            if grab_ready_now:
+                if grab_state["ready_since"] is None:
+                    grab_state["ready_since"] = time.monotonic()
+                grab_stable_s = time.monotonic() - grab_state["ready_since"]
+            else:
+                grab_state["ready_since"] = None
+                grab_stable_s = 0.0
+
+            if grab_ready_now and grab_stable_s >= GRAB_STABLE_S:
+                if top_missing:
+                    print("[grab] WARNING: no top ultrasonic reading -- grabbing on vision alone")
                 grab_state["grabbing"] = True
                 try:
                     _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state)
                 finally:
                     grab_state["grabbing"] = False
                 grab_latch["on"] = False   # can should be gone -- re-evaluate fresh
+                grab_state["ready_since"] = None   # start fresh for the next tin
 
             if show:
                 try:
@@ -814,7 +860,8 @@ def run_live_demo():
                                         tier=tier,
                                         ultra=ultra, solved=solved, grabbable=grabbable,
                                         band=band,
-                                        applied=getattr(actuator, "last_duty", None))
+                                        applied=getattr(actuator, "last_duty", None),
+                                        grab_stable_s=grab_stable_s)
                     cv2.imshow("IBVS centering  (m=drive g=arm l=lines []=floor ,.=retreat q=quit)", frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -849,10 +896,12 @@ def run_live_demo():
                     show = False
 
             motion_plan = _format_motion_plan(cmd, error, tier, ultra.emergency_stop)
-            ultra_status = f"ULTRASONIC: {ultra.distance_cm}cm | emergency={ultra.emergency_stop} grab_ok={ultra.grab_confirmed}"
+            ultra_status = (f"ULTRASONIC: top={ultra.distance_top_cm}cm bottom={ultra.distance_bottom_cm}cm "
+                            f"| emergency={ultra.emergency_stop} grab_ok={ultra.grab_confirmed}")
             target_status = f"TARGET: found={error.found} lateral={error.lateral_error:+.2f} dist={error.distance_cm}cm reached={error.reached} too_close={error.too_close}"
             bbox_info = f"BBOX: w={bbox_width_px} h={bbox_height_px} area={bbox_area_px}px" if bbox_area_px else "BBOX: none"
             mode_status = f"MODE: drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} ctrl={controller_name}"
+            grab_status = f"GRAB: ready={grab_ready_now} stable={grab_stable_s:.1f}s/{GRAB_STABLE_S:.0f}s"
 
             print("\n" + "-" * 80)
             print(f"[MOTION] {motion_plan}")
@@ -860,6 +909,7 @@ def run_live_demo():
             print(f"[TARGET] {target_status}")
             print(f"[BBOX] {bbox_info}")
             print(f"[MODE] {mode_status}")
+            print(f"[GRAB] {grab_status}")
 
             now = time.monotonic()
             loop_time_ms = (now - last_tick) * 1000

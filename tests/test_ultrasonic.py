@@ -1,28 +1,37 @@
 """
 tests/test_ultrasonic.py
 
-HC-SR04 wiring check. Run this FIRST, before test_floor_scan.py.
+HC-SR04 wiring check — TOP + BOTTOM sensors. Run this FIRST, before
+test_floor_scan.py.
 
 Usage (Pi):
-    python tests/test_ultrasonic.py                 # default pins TRIG=BCM5 ECHO=BCM6
-    python tests/test_ultrasonic.py --trig 5 --echo 6 --hz 10
+    python tests/test_ultrasonic.py                 # default pins, see below
+    python tests/test_ultrasonic.py --trig2 27 --echo2 22 --hz 10
 
 Wiring (BCM numbering):
-    VCC  -> 5V   (physical pin 2)
-    GND  -> GND  (physical pin 6)
-    TRIG -> GPIO 23 (physical pin 16)
-    ECHO -> GPIO 24 (physical pin 18)
-            ECHO outputs 5V, Pi GPIO tolerates only 3.3V!
+    TOP sensor:
+        VCC  -> 5V   (physical pin 2)
+        GND  -> GND  (physical pin 6)
+        TRIG -> GPIO 23 (physical pin 16)
+        ECHO -> GPIO 24 (physical pin 18)
+    BOTTOM sensor:
+        VCC  -> 5V   (physical pin 4)
+        GND  -> GND  (physical pin 9)
+        TRIG -> GPIO 27 (physical pin 13)
+        ECHO -> GPIO 22 (physical pin 15)
+                ECHO outputs 5V, Pi GPIO tolerates only 3.3V!
 
 What you should see:
-    A distance readout ~10x/s with a bar that shrinks as you move your hand
-    toward the sensor. "--" means no echo (nothing in range, wiring fault,
-    or not running on the Pi). Check it reads sensibly at 10/30/100 cm.
+    Two distance readouts side by side (top/bottom) ~10x/s, each with a bar
+    that shrinks as you move your hand toward that sensor. "--" means no
+    echo (nothing in range, wiring fault, or not running on the Pi). Check
+    both read sensibly at 10/30/100 cm.
 """
 import argparse
 import os
 import sys
 import time
+from typing import Optional
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,28 +41,48 @@ BAR_FULL_CM = 100.0  # bar spans 0..1 m
 BAR_WIDTH = 40
 
 
+def _reading_str(label: str, dist: Optional[float]) -> str:
+    val = f"{'--':>9s}" if dist is None else f"{dist:6.1f} cm"
+    filled = 0 if dist is None else int(min(dist, BAR_FULL_CM) / BAR_FULL_CM * BAR_WIDTH)
+    bar = "#" * filled + " " * (BAR_WIDTH - filled)
+    return f"{label:<6s} {val} |{bar}|"
+
+
 def main():
-    ap = argparse.ArgumentParser(description="HC-SR04 wiring check")
-    ap.add_argument("--trig", type=int, default=23, help="TRIG pin (GPIO)")
-    ap.add_argument("--echo", type=int, default=24, help="ECHO pin (GPIO)")
+    ap = argparse.ArgumentParser(description="HC-SR04 wiring check (top + bottom)")
+    ap.add_argument("--trig", type=int, default=23, help="top sensor TRIG pin (GPIO)")
+    ap.add_argument("--echo", type=int, default=24, help="top sensor ECHO pin (GPIO)")
+    ap.add_argument("--trig2", type=int, default=27, help="bottom sensor TRIG pin (GPIO)")
+    ap.add_argument("--echo2", type=int, default=22, help="bottom sensor ECHO pin (GPIO)")
     ap.add_argument("--hz", type=float, default=10.0, help="poll rate")
     args = ap.parse_args()
 
-    sensor = UltrasonicSensor(UltrasonicPins(trig=args.trig, echo=args.echo))
+    sensor_top = UltrasonicSensor(UltrasonicPins(trig=args.trig, echo=args.echo))
+    sensor_bottom = UltrasonicSensor(UltrasonicPins(trig=args.trig2, echo=args.echo2))
     period = 1.0 / args.hz
-    print(f"TRIG=GPIO{args.trig} ECHO=GPIO{args.echo} @ {args.hz:.0f} Hz — Ctrl+C to quit")
+    print(f"top TRIG=GPIO{args.trig} ECHO=GPIO{args.echo}  |  "
+          f"bottom TRIG=GPIO{args.trig2} ECHO=GPIO{args.echo2} "
+          f"@ {args.hz:.0f} Hz — Ctrl+C to quit")
 
+    first = True
     try:
         while True:
             tick = time.monotonic()
-            sensor.update()
-            dist = sensor.get_distance_cm()
-            if dist is None:
-                line = "dist   --      |" + " " * BAR_WIDTH + "|"
+            sensor_top.update()
+            sensor_bottom.update()
+            line_top = _reading_str("top", sensor_top.get_distance_cm())
+            line_bottom = _reading_str("bottom", sensor_bottom.get_distance_cm())
+
+            if first:
+                # First frame: just lay down both lines, cursor ends on line 2.
+                print(line_top)
+                print(line_bottom, end="", flush=True)
+                first = False
             else:
-                filled = int(min(dist, BAR_FULL_CM) / BAR_FULL_CM * BAR_WIDTH)
-                line = f"dist {dist:6.1f} cm |" + "#" * filled + " " * (BAR_WIDTH - filled) + "|"
-            print("\r" + line, end="", flush=True)
+                # Move up to line 1 and rewrite both lines in place (fixed-width
+                # fields mean no leftover characters from the previous frame).
+                print("\x1b[1A\r" + line_top)
+                print("\r" + line_bottom, end="", flush=True)
 
             sleep_left = period - (time.monotonic() - tick)
             if sleep_left > 0:
@@ -61,7 +90,8 @@ def main():
     except KeyboardInterrupt:
         print("\nbye")
     finally:
-        sensor.close()
+        sensor_top.close()
+        sensor_bottom.close()
 
 
 if __name__ == "__main__":

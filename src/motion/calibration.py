@@ -25,7 +25,7 @@ class MotionCalibration:
     arc_speed: float = 90.0
 
     motor_a_forward_trim: float = 1.0 # right
-    motor_b_forward_trim: float = 0.95 # left
+    motor_b_forward_trim: float = 0.75 # left
     motor_a_backward_trim: float = 1.0 # right
     motor_b_backward_trim: float = 0.95 # left
     motor_a_turn_trim: float = 1.0

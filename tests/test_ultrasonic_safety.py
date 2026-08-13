@@ -18,9 +18,10 @@ class FakeUltrasonicSensor:
         return None
 
 
-def _safety(distance_cm):
+def _safety(distance_cm, distance_bottom_cm=None):
     safety = UltrasonicSafety.__new__(UltrasonicSafety)
-    safety.sensor = FakeUltrasonicSensor(distance_cm)  # type: ignore
+    safety.sensor_top = FakeUltrasonicSensor(distance_cm)  # type: ignore
+    safety.sensor_bottom = FakeUltrasonicSensor(distance_bottom_cm)  # type: ignore
     return safety
 
 
@@ -45,6 +46,21 @@ def test_can_grab_false_when_too_far():
 
     assert state.grab_confirmed is False
     assert safety.can_grab() is False
+
+
+def test_can_grab_true_when_top_sensor_has_no_reading():
+    """A tin sitting off-center is a normal, calibrated arc_grasp position --
+    not an edge case -- but the HC-SR04's beam is narrow enough that it can
+    sit entirely outside it, so the top sensor gets no echo (None) even
+    though the tin is really there. Missing != too far, so this must not
+    block a grab the way a real 'too far' reading would (see
+    test_can_grab_false_when_too_far)."""
+    safety = _safety(distance_cm=None, distance_bottom_cm=50.0)
+
+    state = safety.update()
+
+    assert state.grab_confirmed is True
+    assert safety.can_grab() is True
 
 
 def test_can_grab_matches_grab_confirmed_independent_of_emergency_stop():

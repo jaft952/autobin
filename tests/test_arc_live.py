@@ -45,7 +45,7 @@ def _classify(solver, nx, ny, pose, angle_deg):
         return None, f"{pose} arc NOT calibrated - test_arc_grasp.py " \
                      f"({'lie' if pose == 'lying' else 'stand'} mode)"
     rs = solver.rows_for(pose)
-    heights = sorted((row_ny_at(r, nx), r) for r in rs)
+    heights = sorted(((row_ny_at(r, nx), r) for r in rs), key=lambda p: p[0])
     lo = heights[0][0] - float(heights[0][1].get("ny_tol", NY_TOL_DEFAULT))
     hi = heights[-1][0] + float(heights[-1][1].get("ny_tol_near",
                                                    NY_TOL_NEAR_DEFAULT))
