@@ -36,6 +36,11 @@ SETTLE_S = 0.15
 # Diagonals within this much of each other carry no steering information.
 TIE_MARGIN_CM = 5.0
 
+# Past this range a diagonal is "open", however far it actually reads. A wall
+# 60cm off one side is not a reason to steer away from it, but comparing raw
+# distances made it outrank a side reading nothing at all.
+ROOMY_CM = 40.0
+
 _FAR = 1e6
 
 
@@ -159,14 +164,17 @@ class EmergencyStopLayer(BaseLayer):
         return self._command((0, 0, 0), "EMERGENCY settling before turn")
 
     def _pick_direction(self, left: float, right: float) -> float:
-        """Turn toward the roomier diagonal. Both sensors reading nothing (an
-        open field of view gives no echo) is a tie, not a reason to always
-        pick the same side -- alternate, so a side that failed last time is
-        not retried forever."""
-        if abs(left - right) < TIE_MARGIN_CM:
+        """Turn toward the roomier diagonal, judged on obstruction rather than
+        raw range: anything past ROOMY_CM counts as equally open, so a distant
+        wall on one side no longer loses to a side that simply got no echo.
+        A genuine tie alternates, so a side that failed last time is not
+        retried forever."""
+        near_left = min(left, ROOMY_CM)
+        near_right = min(right, ROOMY_CM)
+        if abs(near_left - near_right) < TIE_MARGIN_CM:
             self._tie_dir = -self._tie_dir
             return self._tie_dir
-        return 1.0 if right < left else -1.0
+        return 1.0 if near_right < near_left else -1.0
 
     def _turn_command(self, front, left, right, trigger_cm) -> ActionCommand:
         if left >= trigger_cm and right >= trigger_cm:

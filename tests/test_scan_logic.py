@@ -592,6 +592,21 @@ def test_tied_diagonals_alternate_instead_of_always_turning_right():
     print("PASS tied diagonals alternate instead of always turning right")
 
 
+def test_a_distant_wall_does_not_steer_the_escape():
+    """Live log: the robot escaped right every time. front_left saw a harmless
+    wall ~60cm off, front_right got no echo at all, and comparing raw ranges
+    made 'no echo' win outright -- neither side is actually obstructed."""
+    layer = EmergencyStopLayer()
+    dirs = [layer._pick_direction(60.0, emergency_mod._FAR) for _ in range(4)]
+    assert len(set(dirs)) == 2, f"a far wall still biased the escape: {dirs}"
+
+    # A genuinely close obstacle must still pin the direction away from it.
+    layer = EmergencyStopLayer()
+    assert all(layer._pick_direction(10.0, emergency_mod._FAR) < 0 for _ in range(4))
+    assert all(layer._pick_direction(emergency_mod._FAR, 10.0) > 0 for _ in range(4))
+    print("PASS a distant wall does not steer the escape")
+
+
 def test_boxed_in_halts():
     """Blocked ahead on both diagonals with no room behind -> nothing to do."""
     layer = EmergencyStopLayer()
@@ -675,6 +690,7 @@ ALL_TESTS = [
     test_avoid_gives_up_when_wedged,
     test_rear_obstacle_only_halts,
     test_boxed_in_halts,
+    test_a_distant_wall_does_not_steer_the_escape,
     test_tied_diagonals_alternate_instead_of_always_turning_right,
     test_wedged_stays_latched_instead_of_restarting_the_turn,
     test_scan_sees_the_diagonals,
