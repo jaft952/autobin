@@ -10,7 +10,10 @@ then return the interface defaults, which lets tests run e.g. the zigzag scan
 without the camera attached.
 
 Up to 4 ultrasonics: front / back / front_left / front_right (the last two
-are diagonals).
+are diagonals). They are pinged ROUND-ROBIN, one per tick: firing them
+back-to-back let each receiver hear its neighbour's outgoing burst directly
+through the air, which decodes as a phantom obstacle a few cm away. One tick
+apart clears the HC-SR04 datasheet's ~60ms between-measurement minimum.
 
 Obstacle semantics — two thresholds on purpose:
     get_obstacle_distance_cm()  FRONT sensor only. Layer 1 (scan) turns its
@@ -22,12 +25,9 @@ robot patrol without constantly tripping the emergency halt.
 """
 from __future__ import annotations
 
-import time
 from typing import Optional
 
 from src.hardware.sensors.interfaces import SensorInterface
-
-PING_SETTLE_S = 0.01
 
 
 class SensorHub(SensorInterface):
@@ -43,6 +43,7 @@ class SensorHub(SensorInterface):
         self._front_right = front_right
         self._camera = camera
         self._ultrasonics = [s for s in (front, back, front_left, front_right) if s is not None]
+        self._next_ping = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -64,13 +65,9 @@ class SensorHub(SensorInterface):
         """Poll every fitted sensor. Called once per tick by the main loop."""
         if self._camera is not None:
             self._camera.update()
-        for i, sensor in enumerate(self._ultrasonics):
-            # Settling gap between pings: firing the next sensor while the
-            # previous transducer is still ringing down lets a stray
-            # reflection cross over and read back as a bogus near-zero.
-            if i:
-                time.sleep(PING_SETTLE_S)
-            sensor.update()
+        if self._ultrasonics:
+            self._ultrasonics[self._next_ping].update()
+            self._next_ping = (self._next_ping + 1) % len(self._ultrasonics)
 
     def get_obstacle_distance_cm(self) -> Optional[float]:
         if self._front is None:

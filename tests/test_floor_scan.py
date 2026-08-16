@@ -102,7 +102,10 @@ def main():
                     help="print wheel commands instead of driving")
     ap.add_argument("--camera", action="store_true",
                     help="also run YOLO litter detection (scan yields to it)")
-    ap.add_argument("--hz", type=float, default=10.0, help="control loop rate")
+    # 20Hz: the hub pings one ultrasonic per tick (round-robin, see
+    # SensorHub.update), so the loop rate divided by 4 is each sensor's
+    # refresh rate.
+    ap.add_argument("--hz", type=float, default=20.0, help="control loop rate")
     ap.add_argument("--turn-90", type=float, default=None,
                     help="seconds per ~90 deg pivot (calibration)")
     ap.add_argument("--shift", type=float, default=None,
