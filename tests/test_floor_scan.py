@@ -75,9 +75,10 @@ def build_sensors(with_camera: bool) -> SensorHub:
     )
 
 
-def _speed_input_loop(scan: ScanAroundLayer) -> None:
+def _speed_input_loop(scan: ScanAroundLayer, emergency: EmergencyStopLayer) -> None:
     """Background thread: 's <val>' sets lane speed, 't <val>' sets turn
-    speed. Runs until stdin closes (EOF on Ctrl+C exit)."""
+    speed on both layers (layer 5 outvotes the scan pivot, so they must
+    match). Runs until stdin closes."""
     for line in sys.stdin:
         parts = line.split()
         if len(parts) != 2 or parts[0] not in ("s", "t"):
@@ -91,7 +92,8 @@ def _speed_input_loop(scan: ScanAroundLayer) -> None:
             print(f"[speed] lane speed -> {value}")
         else:
             scan.set_speeds(turn_speed=value)
-            print(f"[speed] turn speed -> {value}")
+            emergency.set_turn_speed(value)
+            print(f"[speed] turn speed -> {value} (scan + emergency)")
 
 
 def main():
@@ -117,7 +119,9 @@ def main():
     scan = ScanAroundLayer()
     scan.set_timing(args.turn_90, args.shift, args.max_lane)
     scan.set_speeds(args.speed, args.turn_speed)
-    layers = [SystemIdleLayer(), scan, EmergencyStopLayer()]
+    emergency = EmergencyStopLayer()
+    emergency.set_turn_speed(args.turn_speed)
+    layers = [SystemIdleLayer(), scan, emergency]
     arbitrator = Arbitrator()
     executor = MotionExecutor(actuator=PrintActuator() if args.no_motors else None) # type: ignore
 
@@ -127,7 +131,7 @@ def main():
     print(f"scan: {scan.timing_summary()}")
     print("live speed control: type 's <0..1>' or 't <0..1>' + Enter")
 
-    threading.Thread(target=_speed_input_loop, args=(scan,), daemon=True).start()
+    threading.Thread(target=_speed_input_loop, args=(scan, emergency), daemon=True).start()
 
     sensors.start()
     last_msg = None

@@ -33,7 +33,7 @@ sys.path.append(str(project_root))
 import src.subsumption.layers.layer1_scan as scan_mod
 from src.subsumption.layers.layer1_scan import (
     ScanAroundLayer,
-    FORWARD_SPEED, TURN_SPEED, BACKOFF_SPEED,
+    FORWARD_SPEED, TURN_SPEED,
     TURN_AT_CM, BACKOFF_AT_CM,
     TURN_90_S, SHIFT_S, BACKOFF_S, MAX_LANE_S,
 )
@@ -188,7 +188,7 @@ def test_backoff_when_wall_seen_late():
 
         sensors.dist = BACKOFF_AT_CM - 5
         cmd = layer.evaluate(sensors)
-        assert cmd.motion_vector == (-BACKOFF_SPEED, 0, 0), cmd.message
+        assert cmd.motion_vector == (-FORWARD_SPEED, 0, 0), cmd.message
 
         # Backoff is timed; afterwards the normal pivot starts.
         clock.tick(BACKOFF_S + 0.01)
@@ -281,22 +281,25 @@ def test_executor_mixing():
     act = CaptureActuator()
     ex = MotionExecutor(actuator=act)
 
+    # Derived from the calibration so re-tuning the base can't stale the test.
+    duty = ex.cal.forward_speed
+
     # Straight lane: both wheels equal, forward trim.
     ex.execute(ActionCommand(1, True, (0.6, 0, 0), None, ""))
-    assert act.last == (60.0, 60.0, "forward"), act.last
+    assert act.last == (round(0.6 * duty, 1), round(0.6 * duty, 1), "forward"), act.last
 
     # Positive v_theta = CCW/left = left wheel back, right wheel forward —
     # must match DifferentialKinematics.turn_left() = (-speed, +speed).
     ex.execute(ActionCommand(1, True, (0, 0, TURN_SPEED), None, ""))
-    assert act.last == (-55.0, 55.0, "turn"), act.last
+    assert act.last == (round(-TURN_SPEED * duty, 1), round(TURN_SPEED * duty, 1), "turn"), act.last
 
     # Backoff: both wheels reverse with backward trim.
     ex.execute(ActionCommand(1, True, (-0.5, 0, 0), None, ""))
-    assert act.last == (-50.0, -50.0, "backward"), act.last
+    assert act.last == (round(-0.5 * duty, 1), round(-0.5 * duty, 1), "backward"), act.last
 
     # Saturating arc renormalizes (keeps the curve RATIO) instead of clipping.
     ex.execute(ActionCommand(1, True, (1.0, 0, 0.5), None, ""))
-    assert act.last == (33.3, 100.0, "forward"), act.last
+    assert act.last == (round(duty / 3, 1), round(duty, 1), "forward"), act.last
 
     # Zero vector and inactive/idle commands must stop (coast) the base.
     ex.execute(ActionCommand(1, True, (0, 0, 0), None, ""))
@@ -372,9 +375,7 @@ def test_arbitration_with_real_hub():
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message
 
-        # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything. front-only
-        # close (no back/front_left/front_right fitted here) steers away
-        # rather than sitting dead -- see layer5_emergency.py.
+        # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything and steers away.
         ultra.dist = SensorHub.EMERGENCY_STOP_CM - 2
         win = _vote(arb, hub)
         assert win.layer_id == 5, win.message

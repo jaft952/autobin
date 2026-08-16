@@ -9,23 +9,14 @@ poll semantic getters (Rule 3). Any sensor can be omitted (None): its getters
 then return the interface defaults, which lets tests run e.g. the zigzag scan
 without the camera attached.
 
-Up to 4 ultrasonics: front / back / front_left (diagonal) / front_right
-(diagonal). front is the only one Layer 1 (scan) reads today, via
-get_obstacle_distance_cm() -- back/front_left/front_right exist for
-all-round emergency coverage (has_obstacle()) and are otherwise exposed
-read-only for future layers to use.
+Up to 4 ultrasonics: front / back / front_left / front_right (the last two
+are diagonals).
 
 Obstacle semantics — two thresholds on purpose:
-    get_obstacle_distance_cm()  raw filtered range, FRONT sensor only. Layer 1
-                                (scan) uses this to trigger its zigzag
-                                lane-turn EARLY (~35 cm).
-    has_obstacle()              True when ANY fitted ultrasonic (front, back,
-                                front_left, front_right) is INSIDE
-                                EMERGENCY_STOP_CM. This is what Layer 5
-                                (emergency stop) polls, so it only fires if
-                                the scan layer failed to turn away in time --
-                                and now also catches a rear or off-angle
-                                collision the front sensor can't see.
+    get_obstacle_distance_cm()  FRONT sensor only. Layer 1 (scan) turns its
+                                zigzag lane EARLY on this (~35 cm).
+    has_obstacle()              True when ANY fitted ultrasonic is inside
+                                EMERGENCY_STOP_CM. Layer 5 polls this.
 Keeping the scan threshold well above the emergency threshold is what lets the
 robot patrol without constantly tripping the emergency halt.
 """
@@ -42,15 +33,7 @@ class SensorHub(SensorInterface):
     EMERGENCY_STOP_CM = 15.0
 
     def __init__(self, front=None, back=None, front_left=None, front_right=None, camera=None):
-        """
-        Args:
-            front, back, front_left, front_right: UltrasonicSensor instances,
-                                       or None if not fitted. front_left/
-                                       front_right are the two diagonal
-                                       sensors angled off the front.
-            camera:                   CameraSensor instance, or None if not
-                                       fitted.
-        """
+        """Any sensor may be None if not fitted."""
         self._front = front
         self._back = back
         self._front_left = front_left

@@ -4,9 +4,9 @@ from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
 from src.hardware.sensors.sensor_hub import SensorHub
 
-# Pivot fraction while steering away from a close obstacle -- independent of
-# layer1_scan's TURN_SPEED on purpose (Rule 3: no cross-layer knowledge).
-EMERGENCY_TURN_SPEED = 0.5
+# Keep in step with layer1_scan's TURN_SPEED: this layer outvotes it, so a
+# higher value here makes the robot speed up as it nears an obstacle.
+EMERGENCY_TURN_SPEED = 0.3
 
 
 def _is_close(dist: Optional[float]) -> bool:
@@ -18,17 +18,19 @@ class EmergencyStopLayer(BaseLayer):
     Layer 5: Emergency Stop
     Priority: 5 (High)
     Behavior: Suppresses all lower priority layers whenever any ultrasonic is
-              inside EMERGENCY_STOP_CM. Steers away from whichever
-              front-facing sensor tripped instead of just halting, so the
-              robot doesn't sit dead until Layer 1 re-triggers a fresh scan
-              cycle -- pure stop is reserved for cases with no safe steering
-              direction: a rear obstacle (only relevant while backing up, and
-              turning doesn't help you back up straight), or both front
-              diagonals close at once (squeezed on both sides -- no direction
-              is clearly safer).
+              inside EMERGENCY_STOP_CM. Steers away from the sensor that
+              tripped; halts only when no direction is safer (rear obstacle,
+              or both front diagonals blocked).
     """
-    def __init__(self):
+    def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED):
         super().__init__(layer_id=5)
+        self.turn_speed = EMERGENCY_TURN_SPEED
+        self.set_turn_speed(turn_speed)
+
+    def set_turn_speed(self, turn_speed: Optional[float] = None) -> None:
+        """Pivot fraction 0..1, same contract as ScanAroundLayer.set_speeds."""
+        if turn_speed is not None:
+            self.turn_speed = max(0.0, min(1.0, float(turn_speed)))
 
     def evaluate(self, sensors: Any) -> ActionCommand:
         if not sensors.has_obstacle():
@@ -42,11 +44,11 @@ class EmergencyStopLayer(BaseLayer):
         if close_back or (close_left and close_right):
             motion, message = (0, 0, 0), "EMERGENCY STOP"
         elif close_left:
-            motion, message = (0, 0, -EMERGENCY_TURN_SPEED), "EMERGENCY TURN right (front_left blocked)"
+            motion, message = (0, 0, -self.turn_speed), "EMERGENCY TURN right (front_left blocked)"
         elif close_right:
-            motion, message = (0, 0, EMERGENCY_TURN_SPEED), "EMERGENCY TURN left (front_right blocked)"
+            motion, message = (0, 0, self.turn_speed), "EMERGENCY TURN left (front_right blocked)"
         elif close_front:
-            motion, message = (0, 0, -EMERGENCY_TURN_SPEED), "EMERGENCY TURN right (front blocked)"
+            motion, message = (0, 0, -self.turn_speed), "EMERGENCY TURN right (front blocked)"
         else:
             motion, message = (0, 0, 0), "EMERGENCY STOP"
 

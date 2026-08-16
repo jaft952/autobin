@@ -58,7 +58,8 @@ from src.subsumption.arbitrator import ActionCommand
 # Motion fractions (scaled by MotionExecutor / MotionCalibration duty).
 FORWARD_SPEED = 0.25   # lane cruising speed
 TURN_SPEED    = 0.3 # pivot speed (below this the base tends to stall)
-BACKOFF_SPEED = 0.25   # gentle reverse away from a close wall
+# Backing off reuses the live lane speed; a constant here would override
+# every speed calibration.
 
 # Ultrasonic thresholds (cm).
 TURN_AT_CM    = 35.0  # end the lane and start the zigzag turn
@@ -195,7 +196,7 @@ class ScanAroundLayer(BaseLayer):
         if self._phase == _Phase.DRIVE:
             return (self.forward_speed, 0, 0), "lane"
         if self._phase == _Phase.BACKOFF:
-            return (-BACKOFF_SPEED, 0, 0), "backing off wall"
+            return (-self.forward_speed, 0, 0), "backing off wall"
         if self._phase == _Phase.TURN1:
             return (0, 0, turn), f"turn 1 ({'left' if self._turn_left else 'right'})"
         if self._phase == _Phase.SHIFT:
