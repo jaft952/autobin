@@ -575,6 +575,23 @@ def test_scan_sees_the_diagonals():
     print("PASS scan reacts to the diagonal sensors, not just the front one")
 
 
+def test_tied_diagonals_alternate_instead_of_always_turning_right():
+    """Live log: both diagonals read nothing (open space = no echo), which the
+    old tie-break resolved as 'right' every single time."""
+    dirs = []
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        open_ahead = FakeDirectionalSensors(front=8, front_left=None, front_right=None)
+        for _ in range(4):
+            cmd = _advance_to_pivot(layer, open_ahead, clock)
+            dirs.append(cmd.motion_vector[2] > 0)
+            clock.tick(emergency_mod.MAX_TURN_S + 0.1)   # time out
+            layer.evaluate(open_ahead)                    # -> WEDGED
+            layer._phase = None                           # simulate a fresh escape
+    assert len(set(dirs)) == 2, f"never tried the other side: {dirs}"
+    print("PASS tied diagonals alternate instead of always turning right")
+
+
 def test_boxed_in_halts():
     """Blocked ahead on both diagonals with no room behind -> nothing to do."""
     layer = EmergencyStopLayer()
@@ -613,6 +630,30 @@ def test_scan_timers_pause_while_suppressed():
     print("PASS scan timers pause while suppressed")
 
 
+def test_median_filter_absorbs_a_dropped_ping():
+    """Live log: a wall read 16cm, then 38cm, then 16cm again within a few
+    ticks -- one dropped echo per sensor was swinging every threshold."""
+    from collections import deque
+    from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, MEDIAN_WINDOW
+
+    sensor = UltrasonicSensor.__new__(UltrasonicSensor)
+    sensor._history = deque(maxlen=MEDIAN_WINDOW)
+
+    for raw in (16.0, 16.0):
+        sensor._record(raw)
+    sensor._record(38.0)                    # one bad ping must not move it
+    assert sensor.get_distance_cm() == 16.0, sensor.get_distance_cm()
+
+    for raw in (90.0, 90.0, 90.0):          # a real move is still followed
+        sensor._record(raw)
+    assert sensor.get_distance_cm() == 90.0, sensor.get_distance_cm()
+
+    for raw in (None, None, None):          # a genuinely empty view reads None
+        sensor._record(raw)
+    assert sensor.get_distance_cm() is None, sensor.get_distance_cm()
+    print("PASS median filter absorbs a dropped ping")
+
+
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -634,8 +675,10 @@ ALL_TESTS = [
     test_avoid_gives_up_when_wedged,
     test_rear_obstacle_only_halts,
     test_boxed_in_halts,
+    test_tied_diagonals_alternate_instead_of_always_turning_right,
     test_wedged_stays_latched_instead_of_restarting_the_turn,
     test_scan_sees_the_diagonals,
+    test_median_filter_absorbs_a_dropped_ping,
     test_scan_timers_pause_while_suppressed,
 ]
 

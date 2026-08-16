@@ -33,6 +33,9 @@ BACKOFF_CLEARANCE_CM = 30.0
 # current spikes that stall the driver and brown out the rail).
 SETTLE_S = 0.15
 
+# Diagonals within this much of each other carry no steering information.
+TIE_MARGIN_CM = 5.0
+
 _FAR = 1e6
 
 
@@ -70,6 +73,7 @@ class EmergencyStopLayer(BaseLayer):
         self._phase: Optional[_Phase] = None
         self._phase_started: float = 0.0
         self._turn_dir: float = -1.0             # +1 = left/CCW, -1 = right
+        self._tie_dir: float = -1.0              # side to try when neither diagonal is nearer
 
     def set_turn_speed(self, turn_speed: Optional[float] = None) -> None:
         """Pivot fraction 0..1, same contract as ScanAroundLayer.set_speeds.
@@ -105,7 +109,7 @@ class EmergencyStopLayer(BaseLayer):
 
         if self._phase == _Phase.SETTLE_TURN:
             if elapsed >= SETTLE_S:
-                self._turn_dir = 1.0 if right < left else -1.0
+                self._turn_dir = self._pick_direction(left, right)
                 self._enter(_Phase.TURN, now)
                 return self._turn_command(front, left, right, trigger_cm)
             return self._command((0, 0, 0), "EMERGENCY settling before turn")
@@ -153,6 +157,16 @@ class EmergencyStopLayer(BaseLayer):
 
         self._enter(_Phase.SETTLE_TURN, now)
         return self._command((0, 0, 0), "EMERGENCY settling before turn")
+
+    def _pick_direction(self, left: float, right: float) -> float:
+        """Turn toward the roomier diagonal. Both sensors reading nothing (an
+        open field of view gives no echo) is a tie, not a reason to always
+        pick the same side -- alternate, so a side that failed last time is
+        not retried forever."""
+        if abs(left - right) < TIE_MARGIN_CM:
+            self._tie_dir = -self._tie_dir
+            return self._tie_dir
+        return 1.0 if right < left else -1.0
 
     def _turn_command(self, front, left, right, trigger_cm) -> ActionCommand:
         if left >= trigger_cm and right >= trigger_cm:
