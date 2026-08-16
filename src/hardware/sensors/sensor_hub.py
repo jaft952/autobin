@@ -22,9 +22,12 @@ robot patrol without constantly tripping the emergency halt.
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from src.hardware.sensors.interfaces import SensorInterface
+
+PING_SETTLE_S = 0.01
 
 
 class SensorHub(SensorInterface):
@@ -61,7 +64,12 @@ class SensorHub(SensorInterface):
         """Poll every fitted sensor. Called once per tick by the main loop."""
         if self._camera is not None:
             self._camera.update()
-        for sensor in self._ultrasonics:
+        for i, sensor in enumerate(self._ultrasonics):
+            # Settling gap between pings: firing the next sensor while the
+            # previous transducer is still ringing down lets a stray
+            # reflection cross over and read back as a bogus near-zero.
+            if i:
+                time.sleep(PING_SETTLE_S)
             sensor.update()
 
     def get_obstacle_distance_cm(self) -> Optional[float]:

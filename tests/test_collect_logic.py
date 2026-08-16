@@ -676,11 +676,16 @@ def test_arbitration_stack():
         assert winner().layer_id == 5
 
         # No litter, no obstacle -> scan patrols, but only once layer 5 has
-        # finished steering clear (it holds the turn past MIN_TURN_S).
+        # finished its escape (settle -> backoff -> settle -> pivot, and the
+        # pivot itself is held for MIN_TURN_S).
         sensors.center = sensors.ground = None
         sensors.dist = None
-        clock.tick(emergency_mod.MIN_TURN_S + 0.1)
-        assert winner().layer_id == 1
+        for _ in range(40):
+            if winner().layer_id == 1:
+                break
+            clock.tick(0.2)
+        else:
+            raise AssertionError("layer 5 never handed back to scan")
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 

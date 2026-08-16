@@ -229,6 +229,16 @@ class ScanAroundLayer(BaseLayer):
 
     @staticmethod
     def _obstacle_distance_cm(sensors: Any) -> Optional[float]:
-        """Tolerate sensor objects predating get_obstacle_distance_cm()."""
-        getter = getattr(sensors, "get_obstacle_distance_cm", None)
-        return getter() if getter is not None else None
+        """Nearest of the three forward sensors. Reading the front one alone
+        left the diagonals invisible here, so a wall off to one side was
+        never seen at TURN_AT_CM and the pattern only ever gave way to the
+        layer 5 escape. Missing getters tolerate older sensor objects."""
+        readings = []
+        for name in ("get_obstacle_distance_cm",
+                     "get_obstacle_distance_front_left_cm",
+                     "get_obstacle_distance_front_right_cm"):
+            getter = getattr(sensors, name, None)
+            value = getter() if getter is not None else None
+            if value is not None:
+                readings.append(value)
+        return min(readings) if readings else None

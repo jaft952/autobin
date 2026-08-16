@@ -376,11 +376,11 @@ def test_arbitration_with_real_hub():
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message
 
-        # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything and steers away.
+        # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything. What it then
+        # does (settle/backoff/pivot) is covered by the avoid tests below.
         ultra.dist = SensorHub.EMERGENCY_STOP_CM - 2
         win = _vote(arb, hub)
         assert win.layer_id == 5, win.message
-        assert win.motion_vector == (0, 0, -EMERGENCY_TURN_SPEED), win.message
     print("PASS arbitration: scan > idle, emergency > scan")
 
 
@@ -392,6 +392,13 @@ class FakeDirectionalSensors:
     def __init__(self, front=None, back=None, front_left=None, front_right=None):
         self.front, self.back = front, back
         self.front_left, self.front_right = front_left, front_right
+        self.litter = None
+
+    def get_litter_position(self):
+        return self.litter
+
+    def get_aerial_trash_position(self):
+        return None
 
     def _near(self, d):
         return d is not None and d < SensorHub.EMERGENCY_STOP_CM
@@ -424,15 +431,63 @@ def fake_emergency_clock():
         emergency_mod.time.monotonic = real
 
 
+def _advance_to_pivot(layer, sensors, clock, limit=40):
+    """Step the layer through settle -> backoff -> settle until it pivots."""
+    cmd = layer.evaluate(sensors)
+    for _ in range(limit):
+        if cmd.motion_vector[2] != 0:
+            return cmd
+        clock.tick(0.1)
+        cmd = layer.evaluate(sensors)
+    raise AssertionError(f"never reached the pivot: {cmd.message}")
+
+
+def test_avoid_backs_off_before_pivoting_when_the_rear_is_clear():
+    """A rectangular base sweeps its corners wider than its front face, so it
+    reverses for turning room before pivoting."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        sensors = FakeDirectionalSensors(front=8, front_left=90, front_right=90, back=None)
+
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector == (0, 0, 0), "must settle before flipping direction"
+
+        clock.tick(emergency_mod.SETTLE_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] < 0, f"expected reverse: {cmd.message}"
+
+        cmd = _advance_to_pivot(layer, sensors, clock)
+        assert cmd.motion_vector[2] != 0, cmd.message
+    print("PASS avoid backs off before pivoting when the rear is clear")
+
+
+def test_avoid_skips_the_backoff_when_the_rear_is_tight():
+    """No room behind -> pivot straight away rather than reverse into it."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        sensors = FakeDirectionalSensors(front=8, front_left=90, front_right=90,
+                                          back=emergency_mod.BACKOFF_CLEARANCE_CM - 1)
+        cmd = _advance_to_pivot(layer, sensors, clock)
+        for _ in range(int(emergency_mod.BACKOFF_S / 0.1) + 2):
+            assert cmd.motion_vector[0] >= 0, f"reversed into a tight rear: {cmd.message}"
+            clock.tick(0.1)
+            cmd = layer.evaluate(sensors)
+    print("PASS avoid skips the backoff when the rear is tight")
+
+
 def test_avoid_turns_toward_the_roomier_side():
     """Obstacle on the right must turn LEFT (+ve v_theta), and vice versa."""
-    layer = EmergencyStopLayer()
-    cmd = layer.evaluate(FakeDirectionalSensors(front=10, front_right=8, front_left=90))
-    assert cmd.motion_vector[2] > 0, cmd.message
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        cmd = _advance_to_pivot(
+            layer, FakeDirectionalSensors(front=10, front_right=8, front_left=90), clock)
+        assert cmd.motion_vector[2] > 0, cmd.message
 
-    layer = EmergencyStopLayer()
-    cmd = layer.evaluate(FakeDirectionalSensors(front=10, front_left=8, front_right=90))
-    assert cmd.motion_vector[2] < 0, cmd.message
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        cmd = _advance_to_pivot(
+            layer, FakeDirectionalSensors(front=10, front_left=8, front_right=90), clock)
+        assert cmd.motion_vector[2] < 0, cmd.message
     print("PASS avoid turns toward the roomier side")
 
 
@@ -441,7 +496,8 @@ def test_avoid_does_not_oscillate():
     into the front cone -> a fresh decision turned back right, forever."""
     with fake_emergency_clock() as clock:
         layer = EmergencyStopLayer()
-        first = layer.evaluate(FakeDirectionalSensors(front=20, front_right=8, front_left=90))
+        first = _advance_to_pivot(
+            layer, FakeDirectionalSensors(front=20, front_right=8, front_left=90), clock)
         assert first.motion_vector[2] > 0, first.message
 
         # Same obstacle, now seen by the front sensor instead of the diagonal.
@@ -457,7 +513,8 @@ def test_avoid_keeps_turning_until_clear_of_the_margin():
     leaves the robot juddering on the threshold."""
     with fake_emergency_clock() as clock:
         layer = EmergencyStopLayer()
-        layer.evaluate(FakeDirectionalSensors(front=8, front_left=90, front_right=90))
+        _advance_to_pivot(
+            layer, FakeDirectionalSensors(front=8, front_left=90, front_right=90), clock)
         clock.tick(emergency_mod.MIN_TURN_S + 0.1)
 
         just_outside = SensorHub.EMERGENCY_STOP_CM + 1
@@ -475,11 +532,55 @@ def test_avoid_gives_up_when_wedged():
     with fake_emergency_clock() as clock:
         layer = EmergencyStopLayer()
         blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
-        layer.evaluate(blocked)
+        _advance_to_pivot(layer, blocked, clock)
         clock.tick(emergency_mod.MAX_TURN_S + 0.1)
         cmd = layer.evaluate(blocked)
         assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
     print("PASS avoid halts instead of spinning forever when wedged")
+
+
+def test_wedged_stays_latched_instead_of_restarting_the_turn():
+    """Live log: the turn timed out, then the very next tick started the same
+    doomed turn again, forever. It must stay put until something changes."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
+        _advance_to_pivot(layer, blocked, clock)
+        clock.tick(emergency_mod.MAX_TURN_S + 0.1)
+
+        for _ in range(10):
+            cmd = layer.evaluate(blocked)
+            assert cmd.motion_vector == (0, 0, 0), f"restarted the turn: {cmd.message}"
+            clock.tick(0.5)
+
+        clear = SensorHub.EMERGENCY_STOP_CM * emergency_mod.CLEAR_MARGIN + 1
+        cmd = layer.evaluate(FakeDirectionalSensors(front=clear, front_left=clear,
+                                                     front_right=clear))
+        assert not cmd.active, cmd.message
+    print("PASS wedged stays latched until the readings genuinely change")
+
+
+def test_scan_sees_the_diagonals():
+    """A wall off to one side must end the lane at TURN_AT_CM, not stay
+    invisible until layer 5 trips -- reading the front sensor alone is why
+    the zigzag never actually ran on the robot."""
+    with fake_clock():
+        layer = ScanAroundLayer()
+        sensors = FakeDirectionalSensors(front=None, front_left=None,
+                                          front_right=TURN_AT_CM - 5)
+        sensors.litter = None
+        layer.evaluate(sensors)                 # enter DRIVE
+        cmd = layer.evaluate(sensors)
+        assert "turn 1" in cmd.message, cmd.message
+    print("PASS scan reacts to the diagonal sensors, not just the front one")
+
+
+def test_boxed_in_halts():
+    """Blocked ahead on both diagonals with no room behind -> nothing to do."""
+    layer = EmergencyStopLayer()
+    cmd = layer.evaluate(FakeDirectionalSensors(front=8, front_left=8, front_right=8, back=8))
+    assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
+    print("PASS boxed in halts")
 
 
 def test_rear_obstacle_only_halts():
@@ -525,11 +626,16 @@ ALL_TESTS = [
     test_executor_brakes_during_grab,
     test_executor_brake_falls_back_to_stop,
     test_arbitration_with_real_hub,
+    test_avoid_backs_off_before_pivoting_when_the_rear_is_clear,
+    test_avoid_skips_the_backoff_when_the_rear_is_tight,
     test_avoid_turns_toward_the_roomier_side,
     test_avoid_does_not_oscillate,
     test_avoid_keeps_turning_until_clear_of_the_margin,
     test_avoid_gives_up_when_wedged,
     test_rear_obstacle_only_halts,
+    test_boxed_in_halts,
+    test_wedged_stays_latched_instead_of_restarting_the_turn,
+    test_scan_sees_the_diagonals,
     test_scan_timers_pause_while_suppressed,
 ]
 
