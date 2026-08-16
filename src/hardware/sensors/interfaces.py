@@ -17,7 +17,19 @@ class SensorInterface:
         unknown/out of range. None must be treated as 'no information',
         never as an obstacle at 0 cm."""
         return None
-        
+
+    def get_obstacle_distance_left_cm(self):
+        """Same contract as get_obstacle_distance_cm(), left-facing sensor."""
+        return None
+
+    def get_obstacle_distance_right_cm(self):
+        """Same contract as get_obstacle_distance_cm(), right-facing sensor."""
+        return None
+
+    def get_obstacle_distance_back_cm(self):
+        """Same contract as get_obstacle_distance_cm(), rear-facing sensor."""
+        return None
+
     def get_litter_position(self) -> tuple:
         """Returns (x, y) coordinates of ground litter relative to robot, or None"""
         return None

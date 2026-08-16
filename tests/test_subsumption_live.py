@@ -41,7 +41,7 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.hardware.actuators.print_actuator import PrintActuator
-from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor
+from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicPins
 from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
 from src.subsumption.motion_executor import MotionExecutor
@@ -90,7 +90,13 @@ def main():
         # Deferred import: pulls in ultralytics/torch, Pi-only in practice.
         from src.hardware.sensors.camera_sensor import CameraSensor
         camera = CameraSensor()
-    sensors = SensorHub(ultrasonic=UltrasonicSensor(), camera=camera)
+    sensors = SensorHub(
+        front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
+        left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
+        right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
+        back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
+        camera=camera,
+    )
 
     layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
               CollectLitterLayer(), EmergencyStopLayer()]

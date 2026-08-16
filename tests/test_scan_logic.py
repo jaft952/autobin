@@ -358,7 +358,7 @@ def _vote(arbitrator, sensors_obj):
 def test_arbitration_with_real_hub():
     with fake_clock():
         ultra = FakeUltrasonic()
-        hub = SensorHub(ultrasonic=ultra, camera=None)
+        hub = SensorHub(front=ultra, camera=None)
         arb = Arbitrator()
 
         # Clear floor: scan (layer 1) outvotes idle (layer 0).

@@ -55,7 +55,13 @@ def build_sensors(with_camera: bool) -> SensorHub:
     if with_camera:
         from src.hardware.sensors.camera_sensor import CameraSensor
         camera = CameraSensor()
-    return SensorHub(ultrasonic=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)), camera=camera)
+    return SensorHub(
+        front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
+        left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
+        right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
+        back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
+        camera=camera,
+    )
 
 
 def main():
