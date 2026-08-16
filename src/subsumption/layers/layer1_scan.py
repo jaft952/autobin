@@ -65,11 +65,25 @@ TURN_SPEED    = 0.2 # pivot speed (below this the base tends to stall)
 TURN_AT_CM    = 35.0  # end the lane and start the zigzag turn
 BACKOFF_AT_CM = 20.0  # we noticed the wall late -> reverse first for clearance
 
+# Pivot-side override. Sides are compared saturated at PIVOT_ROOM_CM so a
+# harmless far wall can't outvote a side reading nothing at all; the margin
+# stops near-equal readings from cancelling the zigzag's alternation.
+PIVOT_ROOM_CM   = 40.0
+PIVOT_MARGIN_CM = 10.0
+
 # Timed phases (seconds) — calibrate on the Pi, see module docstring.
 TURN_90_S  = 0.9
 SHIFT_S    = 1.2
 BACKOFF_S  = 0.45
 MAX_LANE_S = 12.0
+
+
+def _side_room_cm(sensors: Any, getter: str) -> float:
+    """Free space on one side, saturated at PIVOT_ROOM_CM. No echo (None) and
+    a missing getter both mean 'nothing in range', i.e. fully open."""
+    fn = getattr(sensors, getter, None)
+    value = fn() if fn is not None else None
+    return PIVOT_ROOM_CM if value is None else min(value, PIVOT_ROOM_CM)
 
 
 class _Phase(enum.Enum):
@@ -169,10 +183,12 @@ class ScanAroundLayer(BaseLayer):
             if wall_seen and dist <= BACKOFF_AT_CM:
                 self._enter(_Phase.BACKOFF, now)
             elif wall_seen or (now - self._lane_started) >= self.max_lane_s:
+                self._turn_left = self._pivot_side(sensors)
                 self._enter(_Phase.TURN1, now)
 
         elif self._phase == _Phase.BACKOFF:
             if self._elapsed(now) >= BACKOFF_S:
+                self._turn_left = self._pivot_side(sensors)
                 self._enter(_Phase.TURN1, now)
 
         elif self._phase == _Phase.TURN1:
@@ -226,6 +242,19 @@ class ScanAroundLayer(BaseLayer):
 
     def _elapsed(self, now: float) -> float:
         return now - self._phase_started
+
+    def _pivot_side(self, sensors: Any) -> bool:
+        """Which way to swing this lane change. Alternating is what makes the
+        pattern a zigzag, so keep it -- but never swing into the tighter side
+        when the other one is clearly roomier, or a corner just traps the
+        robot pivoting back and forth into the same wall."""
+        left = _side_room_cm(sensors, "get_obstacle_distance_front_left_cm")
+        right = _side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
+        if self._turn_left and left + PIVOT_MARGIN_CM < right:
+            return False
+        if not self._turn_left and right + PIVOT_MARGIN_CM < left:
+            return True
+        return self._turn_left
 
     @staticmethod
     def _obstacle_distance_cm(sensors: Any) -> Optional[float]:

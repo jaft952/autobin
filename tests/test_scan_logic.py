@@ -560,6 +560,34 @@ def test_wedged_stays_latched_instead_of_restarting_the_turn():
     print("PASS wedged stays latched until the readings genuinely change")
 
 
+def test_scan_pivots_away_from_the_tighter_side():
+    """Live log: the left side was hard up against a wall and the pattern
+    pivoted left anyway -- the side came purely from the alternation flag."""
+    class Sides:
+        def __init__(self, left, right):
+            self.left, self.right = left, right
+
+        def get_obstacle_distance_front_left_cm(self):
+            return self.left
+
+        def get_obstacle_distance_front_right_cm(self):
+            return self.right
+
+    layer = ScanAroundLayer()
+    layer._turn_left = True
+    assert layer._pivot_side(Sides(left=16.0, right=None)) is False
+
+    layer._turn_left = False
+    assert layer._pivot_side(Sides(left=None, right=16.0)) is True
+
+    # Alternation still owns the choice when neither side is the tighter one:
+    # that alternation IS the zigzag, so a far wall must not cancel it.
+    layer._turn_left = True
+    assert layer._pivot_side(Sides(left=None, right=None)) is True
+    assert layer._pivot_side(Sides(left=60.0, right=None)) is True
+    print("PASS scan pivots away from the tighter side")
+
+
 def test_scan_sees_the_diagonals():
     """A wall off to one side must end the lane at TURN_AT_CM, not stay
     invisible until layer 5 trips -- reading the front sensor alone is why
@@ -693,6 +721,7 @@ ALL_TESTS = [
     test_a_distant_wall_does_not_steer_the_escape,
     test_tied_diagonals_alternate_instead_of_always_turning_right,
     test_wedged_stays_latched_instead_of_restarting_the_turn,
+    test_scan_pivots_away_from_the_tighter_side,
     test_scan_sees_the_diagonals,
     test_median_filter_absorbs_a_dropped_ping,
     test_scan_timers_pause_while_suppressed,
