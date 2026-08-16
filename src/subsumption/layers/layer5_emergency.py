@@ -6,7 +6,7 @@ from src.hardware.sensors.sensor_hub import SensorHub
 
 # Keep in step with layer1_scan's TURN_SPEED: this layer outvotes it, so a
 # higher value here makes the robot speed up as it nears an obstacle.
-EMERGENCY_TURN_SPEED = 0.3
+EMERGENCY_TURN_SPEED = 0.2
 
 
 def _is_close(dist: Optional[float]) -> bool:
