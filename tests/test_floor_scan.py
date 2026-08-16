@@ -143,6 +143,8 @@ def main():
             for layer in layers:
                 arbitrator.submit_command(layer.evaluate(sensors))
             winning = arbitrator.get_winning_action()
+            for layer in layers:
+                layer.notify_arbitration(layer.layer_id == winning.layer_id)
             executor.execute(winning)
             arbitrator.clear()
 

@@ -1,9 +1,14 @@
 """
-High-level safety logic for the front ultrasonic sensors (top + bottom).
+High-level safety logic for the front ultrasonic sensor.
+
+Was a pair stacked vertically, both aimed straight ahead (the old
+top/bottom naming). The lower one has been remounted as the front-left
+diagonal and is now owned by SensorHub / layer 5, so this module reads the
+front sensor only; the second-sensor code is left commented out below.
 
 Responsibilities
 ----------------
-1. Poll both HC-SR04s.
+1. Poll the front HC-SR04.
 2. Decide whether emergency stop is required.
 3. Decide whether the arm is allowed to grab.
 4. Never contains GPIO code other than calling UltrasonicSensor.
@@ -33,8 +38,9 @@ def _within(d: Optional[float], threshold_cm: float) -> bool:
 
 @dataclass
 class UltrasonicState:
-    distance_top_cm: Optional[float]
-    distance_bottom_cm: Optional[float]
+    # OLD (second sensor, was bottom, now the front_left diagonal):
+    # distance_bottom_cm: Optional[float]
+    distance_front_cm: Optional[float]
     emergency_stop: bool
     grab_confirmed: bool
 
@@ -45,61 +51,54 @@ class UltrasonicSafety:
         self,
         trig: int = 23,
         echo: int = 24,
-        trig2: int = 27,
-        echo2: int = 22,
+        # OLD second sensor: trig2: int = 27, echo2: int = 22,
     ):
-        self.sensor_top = UltrasonicSensor(
+        self.sensor_front = UltrasonicSensor(
             UltrasonicPins(trig=trig, echo=echo)
         )
-        self.sensor_bottom = UltrasonicSensor(
-            UltrasonicPins(trig=trig2, echo=echo2)
-        )
+        # OLD:
+        # self.sensor_bottom = UltrasonicSensor(
+        #     UltrasonicPins(trig=trig2, echo=echo2)
+        # )
 
     def update(self) -> UltrasonicState:
         """
-        Poll both sensors once and return the current safety state.
+        Poll the front sensor once and return the current safety state.
 
-        emergency_stop is top OR bottom -- a close reading on EITHER sensor
-        is reason enough to cut the wheels, regardless of what's calibrated
-        where. grab_confirmed stays TOP-ONLY: it's gated against the arm
-        solver's known ~29cm grasp distance, which only the top sensor's
-        mounting was calibrated against (see GRAB_CONFIRM_CM above); ORing
-        the bottom sensor in here would fire the arm on a close bottom
-        reading (floor, wheel well, ground clutter) that has nothing to do
-        with the tin actually being in grab position.
+        Both signals come from the front sensor. It is the only one aimed
+        where the tin sits, which is what grab_confirmed is gated against
+        (the arm solver's known ~29cm grasp distance). Off-axis coverage is
+        SensorHub / layer 5's job now.
 
-        grab_confirmed is also True when the top sensor has NO reading at
-        all (echo timeout, d_top is None) -- not just when it's within
+        grab_confirmed is also True when the front sensor has NO reading at
+        all (echo timeout, d_front is None) -- not just when it's within
         range. The HC-SR04's beam is narrow; a tin sitting off-center (which
         is a perfectly normal, calibrated arc_grasp position, not an edge
         case) can sit outside that cone entirely, so the echo has nothing to
         bounce off and times out even though the tin is really there. vision
         + the arc solver's own per-row calibration (solve_with_band) already
         confirm the tin's actual position independently of this sensor, so a
-        missing top reading must not be able to block a real grab -- same
+        missing front reading must not be able to block a real grab -- same
         reasoning as the existing "hardware fault" fallback, just triggered
         by geometry instead of a dead sensor.
         """
 
-        self.sensor_top.update()
-        # Brief settling gap before the second sensor pings -- firing it
-        # immediately after the top sensor's echo returns risks the top
-        # transducer still ringing down / a stray reflection crossing over,
-        # which reads as a bogus near-zero distance (see MIN_VALID_DISTANCE_CM
-        # in ultrasonic_sensor.py, which now also guards against exactly that
-        # as a second line of defense).
-        time.sleep(0.01)
-        self.sensor_bottom.update()
+        self.sensor_front.update()
+        d_front = self.sensor_front.get_distance_cm()
 
-        d_top = self.sensor_top.get_distance_cm()
-        d_bottom = self.sensor_bottom.get_distance_cm()
+        # OLD second sensor: a settling gap was needed before pinging it, or
+        # the front transducer's ring-down read back as a bogus near-zero.
+        # time.sleep(0.01)
+        # self.sensor_bottom.update()
+        # d_bottom = self.sensor_bottom.get_distance_cm()
 
+        # OLD: emergency_stop ORed the second sensor in.
+        # emergency_stop=(_within(d_front, EMERGENCY_STOP_CM) or
+        #                 _within(d_bottom, EMERGENCY_STOP_CM)),
         return UltrasonicState(
-            distance_top_cm=d_top,
-            distance_bottom_cm=d_bottom,
-            emergency_stop=(_within(d_top, EMERGENCY_STOP_CM) or
-                             _within(d_bottom, EMERGENCY_STOP_CM)),
-            grab_confirmed=(_within(d_top, GRAB_CONFIRM_CM) or d_top is None),
+            distance_front_cm=d_front,
+            emergency_stop=_within(d_front, EMERGENCY_STOP_CM),
+            grab_confirmed=(_within(d_front, GRAB_CONFIRM_CM) or d_front is None),
         )
 
     def should_stop(self) -> bool:
@@ -123,8 +122,8 @@ class UltrasonicSafety:
         return s.grab_confirmed
 
     def close(self):
-        self.sensor_top.close()
-        self.sensor_bottom.close()
+        self.sensor_front.close()
+        # OLD: self.sensor_bottom.close()
 
 
 # HC-SR04 datasheets recommend at least ~60ms between trigger pulses so an
@@ -167,7 +166,7 @@ class UltrasonicWatchdog:
         self._stop_callback = stop_callback
         self._interval_s = 1.0 / poll_hz
         self._lock = threading.Lock()
-        self._latest = UltrasonicState(distance_top_cm=None, distance_bottom_cm=None,
+        self._latest = UltrasonicState(distance_front_cm=None,
                                         emergency_stop=False, grab_confirmed=False)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ultrasonic-watchdog", daemon=True)
@@ -195,7 +194,7 @@ class UltrasonicWatchdog:
                 # .latest would stay frozen at "no reading" forever, with
                 # nothing left to recover it. Log and keep polling instead.
                 print(f"[ultrasonic] poll error: {exc}")
-                state = UltrasonicState(distance_top_cm=None, distance_bottom_cm=None,
+                state = UltrasonicState(distance_front_cm=None,
                                          emergency_stop=False, grab_confirmed=False)
             with self._lock:
                 self._latest = state

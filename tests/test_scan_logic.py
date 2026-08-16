@@ -39,6 +39,7 @@ from src.subsumption.layers.layer1_scan import (
 )
 from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
+import src.subsumption.layers.layer5_emergency as emergency_mod
 from src.subsumption.layers.layer5_emergency import EmergencyStopLayer, EMERGENCY_TURN_SPEED
 from src.subsumption.motion_executor import MotionExecutor
 from src.hardware.sensors.sensor_hub import SensorHub
@@ -383,6 +384,134 @@ def test_arbitration_with_real_hub():
     print("PASS arbitration: scan > idle, emergency > scan")
 
 
+# ── Layer 5: obstacle avoidance ───────────────────────────────────────────
+
+class FakeDirectionalSensors:
+    """SensorHub stand-in with one reading per ultrasonic direction."""
+
+    def __init__(self, front=None, back=None, front_left=None, front_right=None):
+        self.front, self.back = front, back
+        self.front_left, self.front_right = front_left, front_right
+
+    def _near(self, d):
+        return d is not None and d < SensorHub.EMERGENCY_STOP_CM
+
+    def has_obstacle(self):
+        return any(self._near(d) for d in
+                   (self.front, self.back, self.front_left, self.front_right))
+
+    def get_obstacle_distance_cm(self):
+        return self.front
+
+    def get_obstacle_distance_back_cm(self):
+        return self.back
+
+    def get_obstacle_distance_front_left_cm(self):
+        return self.front_left
+
+    def get_obstacle_distance_front_right_cm(self):
+        return self.front_right
+
+
+@contextmanager
+def fake_emergency_clock():
+    clock = FakeClock()
+    real = emergency_mod.time.monotonic
+    emergency_mod.time.monotonic = clock
+    try:
+        yield clock
+    finally:
+        emergency_mod.time.monotonic = real
+
+
+def test_avoid_turns_toward_the_roomier_side():
+    """Obstacle on the right must turn LEFT (+ve v_theta), and vice versa."""
+    layer = EmergencyStopLayer()
+    cmd = layer.evaluate(FakeDirectionalSensors(front=10, front_right=8, front_left=90))
+    assert cmd.motion_vector[2] > 0, cmd.message
+
+    layer = EmergencyStopLayer()
+    cmd = layer.evaluate(FakeDirectionalSensors(front=10, front_left=8, front_right=90))
+    assert cmd.motion_vector[2] < 0, cmd.message
+    print("PASS avoid turns toward the roomier side")
+
+
+def test_avoid_does_not_oscillate():
+    """The reported bug: front_right trips -> turn left -> the obstacle slides
+    into the front cone -> a fresh decision turned back right, forever."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        first = layer.evaluate(FakeDirectionalSensors(front=20, front_right=8, front_left=90))
+        assert first.motion_vector[2] > 0, first.message
+
+        # Same obstacle, now seen by the front sensor instead of the diagonal.
+        for _ in range(5):
+            clock.tick(0.1)
+            cmd = layer.evaluate(FakeDirectionalSensors(front=8, front_right=20, front_left=90))
+            assert cmd.motion_vector[2] > 0, f"reversed direction: {cmd.message}"
+    print("PASS avoid holds its direction instead of oscillating")
+
+
+def test_avoid_keeps_turning_until_clear_of_the_margin():
+    """Barely clearing the trigger range must NOT end the turn -- that is what
+    leaves the robot juddering on the threshold."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        layer.evaluate(FakeDirectionalSensors(front=8, front_left=90, front_right=90))
+        clock.tick(emergency_mod.MIN_TURN_S + 0.1)
+
+        just_outside = SensorHub.EMERGENCY_STOP_CM + 1
+        cmd = layer.evaluate(FakeDirectionalSensors(front=just_outside,
+                                                    front_left=90, front_right=90))
+        assert cmd.active, "released the turn while still hugging the obstacle"
+
+        clear = SensorHub.EMERGENCY_STOP_CM * emergency_mod.CLEAR_MARGIN + 1
+        cmd = layer.evaluate(FakeDirectionalSensors(front=clear, front_left=90, front_right=90))
+        assert not cmd.active, cmd.message
+    print("PASS avoid keeps turning until clear of the margin")
+
+
+def test_avoid_gives_up_when_wedged():
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
+        layer.evaluate(blocked)
+        clock.tick(emergency_mod.MAX_TURN_S + 0.1)
+        cmd = layer.evaluate(blocked)
+        assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
+    print("PASS avoid halts instead of spinning forever when wedged")
+
+
+def test_rear_obstacle_only_halts():
+    layer = EmergencyStopLayer()
+    cmd = layer.evaluate(FakeDirectionalSensors(back=8, front=90))
+    assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
+    print("PASS rear obstacle halts rather than turning")
+
+
+def test_scan_timers_pause_while_suppressed():
+    """Layer 1's phases are timed open-loop, so a suppressed layer must not
+    burn through them while a higher layer is driving the robot."""
+    with fake_clock() as clock:
+        layer = ScanAroundLayer()
+        sensors = FakeSensors()
+        sensors.dist = TURN_AT_CM - 1
+        layer.evaluate(sensors)            # DRIVE
+        layer.evaluate(sensors)            # -> TURN1
+        layer.notify_arbitration(won=False)
+
+        # Suppressed for longer than a full pivot: the phase must survive it.
+        clock.tick(layer.turn_90_s * 3)
+        cmd = layer.evaluate(sensors)
+        assert "turn 1" in cmd.message, cmd.message
+
+        layer.notify_arbitration(won=True)
+        clock.tick(layer.turn_90_s + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert "shifting" in cmd.message, cmd.message
+    print("PASS scan timers pause while suppressed")
+
+
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -396,6 +525,12 @@ ALL_TESTS = [
     test_executor_brakes_during_grab,
     test_executor_brake_falls_back_to_stop,
     test_arbitration_with_real_hub,
+    test_avoid_turns_toward_the_roomier_side,
+    test_avoid_does_not_oscillate,
+    test_avoid_keeps_turning_until_clear_of_the_margin,
+    test_avoid_gives_up_when_wedged,
+    test_rear_obstacle_only_halts,
+    test_scan_timers_pause_while_suppressed,
 ]
 
 if __name__ == "__main__":

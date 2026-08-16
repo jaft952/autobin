@@ -106,6 +106,7 @@ class ScanAroundLayer(BaseLayer):
         self._phase_started: float = 0.0
         self._lane_started: float = 0.0
         self._turn_left: bool = True           # pivot side; alternates per wall
+        self._suppressed_since: Optional[float] = None
 
     # ── Calibration knobs (the Pi tools drive these, see module docstring) ─
 
@@ -134,14 +135,28 @@ class ScanAroundLayer(BaseLayer):
 
     # ── Subsumption API ───────────────────────────────────────────────────
 
+    def notify_arbitration(self, won: bool) -> None:
+        if not won and self._suppressed_since is None:
+            self._suppressed_since = time.monotonic()
+
     def evaluate(self, sensors: Any) -> ActionCommand:
         # A target exists -> higher layers will handle it; go inactive and
         # forget the zigzag phase (the robot is about to move off-pattern).
         if sensors.get_litter_position() or sensors.get_aerial_trash_position():
             self._phase = None
+            self._suppressed_since = None
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         now = time.monotonic()
+        # Every phase is timed open-loop, so time spent suppressed by a higher
+        # layer must not count -- otherwise the pattern runs to completion
+        # while the robot is being driven somewhere else entirely.
+        if self._suppressed_since is not None:
+            paused = now - self._suppressed_since
+            self._phase_started += paused
+            self._lane_started += paused
+            self._suppressed_since = None
+
         dist = self._obstacle_distance_cm(sensors)
 
         if self._phase is None:

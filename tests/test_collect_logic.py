@@ -41,6 +41,7 @@ from src.subsumption.layers.layer2_approach import ApproachLitterLayer
 from src.subsumption.layers.layer3_collect import (
     CollectLitterLayer, IK_MIN_RADIUS_M, IK_MAX_RADIUS_M,
 )
+import src.subsumption.layers.layer5_emergency as emergency_mod
 from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
 from src.arm.arc_grasp import ArcGraspSolver, save_config, ch5_from_angle
 
@@ -172,6 +173,17 @@ def fake_exec_clock():
         yield clock
     finally:
         arm_exec_mod.time.monotonic = real
+
+
+@contextmanager
+def fake_emergency_clock():
+    clock = FakeClock()
+    real = emergency_mod.time.monotonic
+    emergency_mod.time.monotonic = clock
+    try:
+        yield clock
+    finally:
+        emergency_mod.time.monotonic = real
 
 
 # ── Layer 3: arc primary, IK fallback ─────────────────────────────────────
@@ -635,37 +647,40 @@ def test_smooth_move_semantics():
 # ── Arbitration: the full ground-litter stack ─────────────────────────────
 
 def test_arbitration_stack():
-    layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
-              CollectLitterLayer(arc_solver=make_solver(),
-                                 pixel_to_arm=FakeP2A(ready=False)),
-              EmergencyStopLayer()]
-    arb = Arbitrator()
-    sensors = FakeSensors()
+    with fake_emergency_clock() as clock:
+        layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
+                  CollectLitterLayer(arc_solver=make_solver(),
+                                     pixel_to_arm=FakeP2A(ready=False)),
+                  EmergencyStopLayer()]
+        arb = Arbitrator()
+        sensors = FakeSensors()
 
-    def winner():
-        for l in layers:
-            arb.submit_command(l.evaluate(sensors))
-        win = arb.get_winning_action()
-        arb.clear()
-        return win
+        def winner():
+            for l in layers:
+                arb.submit_command(l.evaluate(sensors))
+            win = arb.get_winning_action()
+            arb.clear()
+            return win
 
-    # Litter visible but NOT grabbable -> approach (2) beats scan (1).
-    sensors.center = sensors.ground = (0.5, 0.1)
-    assert winner().layer_id == 2
+        # Litter visible but NOT grabbable -> approach (2) beats scan (1).
+        sensors.center = sensors.ground = (0.5, 0.1)
+        assert winner().layer_id == 2
 
-    # Tin inside the arc grid -> collect (3) halts the base and wins.
-    sensors.center = sensors.ground = (0.5, 0.6)
-    win = winner()
-    assert win.layer_id == 3 and win.arm_action == 'grab_arc', win.message
+        # Tin inside the arc grid -> collect (3) halts the base and wins.
+        sensors.center = sensors.ground = (0.5, 0.6)
+        win = winner()
+        assert win.layer_id == 3 and win.arm_action == 'grab_arc', win.message
 
-    # Obstacle inside emergency range -> emergency (5) beats even the grab.
-    sensors.dist = 8.0
-    assert winner().layer_id == 5
+        # Obstacle inside emergency range -> emergency (5) beats even the grab.
+        sensors.dist = 8.0
+        assert winner().layer_id == 5
 
-    # No litter, no obstacle -> scan patrols.
-    sensors.center = sensors.ground = None
-    sensors.dist = None
-    assert winner().layer_id == 1
+        # No litter, no obstacle -> scan patrols, but only once layer 5 has
+        # finished steering clear (it holds the turn past MIN_TURN_S).
+        sensors.center = sensors.ground = None
+        sensors.dist = None
+        clock.tick(emergency_mod.MIN_TURN_S + 0.1)
+        assert winner().layer_id == 1
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 

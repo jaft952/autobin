@@ -186,6 +186,8 @@ class RobotRuntime:
             for layer in layers:
                 self.arbitrator.submit_command(layer.evaluate(self.sensors))
             winning = self.arbitrator.get_winning_action()
+            for layer in layers:
+                layer.notify_arbitration(layer.layer_id == winning.layer_id)
             self.arbitrator.clear()
 
             self.motion.execute(winning)
