@@ -28,14 +28,25 @@ Expected behavior (wheels live, no camera):
     than ~10 cm trips Layer 5 and halts the base until cleared.
 
 Calibrating the pattern: pass --turn-90 / --shift / --speed / --turn-speed to
-try values live (they call ScanAroundLayer.set_timing/set_speeds); once a set
-works, write it into src/subsumption/layers/layer1_scan.py as the new default.
+seed starting values (they call ScanAroundLayer.set_timing/set_speeds); once
+a set works, write it into src/subsumption/layers/layer1_scan.py as the new
+default.
+
+Live speed adjustment: while the loop is running, type into the same
+terminal and press Enter:
+    s 0.5       set lane cruising speed to 0.5
+    t 0.4       set turn/pivot speed to 0.4
+    (any other input just gets ignored)
+This runs in a background thread and calls ScanAroundLayer.set_speeds(), the
+same setter the dashboard uses -- just plain attribute writes, safe to call
+from another thread mid-tick.
 
 Ctrl+C stops the motors and releases GPIO.
 """
 import argparse
 import os
 import sys
+import threading
 import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -57,11 +68,30 @@ def build_sensors(with_camera: bool) -> SensorHub:
         camera = CameraSensor()
     return SensorHub(
         front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
-        left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
-        right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
         back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
+        front_left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
+        front_right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
         camera=camera,
     )
+
+
+def _speed_input_loop(scan: ScanAroundLayer) -> None:
+    """Background thread: 's <val>' sets lane speed, 't <val>' sets turn
+    speed. Runs until stdin closes (EOF on Ctrl+C exit)."""
+    for line in sys.stdin:
+        parts = line.split()
+        if len(parts) != 2 or parts[0] not in ("s", "t"):
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError:
+            continue
+        if parts[0] == "s":
+            scan.set_speeds(forward_speed=value)
+            print(f"[speed] lane speed -> {value}")
+        else:
+            scan.set_speeds(turn_speed=value)
+            print(f"[speed] turn speed -> {value}")
 
 
 def main():
@@ -95,6 +125,9 @@ def main():
     mode = "PRINT-ONLY" if args.no_motors else "WHEELS LIVE"
     print(f"floor scan @ {args.hz:.0f} Hz — {mode} — Ctrl+C to stop")
     print(f"scan: {scan.timing_summary()}")
+    print("live speed control: type 's <0..1>' or 't <0..1>' + Enter")
+
+    threading.Thread(target=_speed_input_loop, args=(scan,), daemon=True).start()
 
     sensors.start()
     last_msg = None

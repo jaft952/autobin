@@ -9,13 +9,13 @@ Usage (Pi):
     python tests/test_ultrasonic.py --trig3 5 --echo3 6 --hz 10
 
 Wiring (BCM numbering):
-    top (front):
+    front:
         TRIG -> GPIO 23 (physical pin 16)
         ECHO -> GPIO 24 (physical pin 18)
-    left:
+    front_left (diagonal):
         TRIG -> GPIO 27 (physical pin 13)
         ECHO -> GPIO 22 (physical pin 15)
-    right:
+    front_right (diagonal):
         TRIG -> GPIO 5  (physical pin 29)
         ECHO -> GPIO 6  (physical pin 31)
     back:
@@ -45,9 +45,9 @@ BAR_FULL_CM = 100.0  # bar spans 0..1 m
 BAR_WIDTH = 40
 
 DEFAULT_SENSORS: List[Tuple[str, int, int]] = [
-    ("top", 23, 24),
-    ("left", 27, 22),
-    ("right", 5, 6),
+    ("front", 23, 24),
+    ("front_left", 27, 22),
+    ("front_right", 5, 6),
     ("back", 17, 20),
 ]
 

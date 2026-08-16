@@ -18,16 +18,16 @@ class SensorInterface:
         never as an obstacle at 0 cm."""
         return None
 
-    def get_obstacle_distance_left_cm(self):
-        """Same contract as get_obstacle_distance_cm(), left-facing sensor."""
-        return None
-
-    def get_obstacle_distance_right_cm(self):
-        """Same contract as get_obstacle_distance_cm(), right-facing sensor."""
-        return None
-
     def get_obstacle_distance_back_cm(self):
         """Same contract as get_obstacle_distance_cm(), rear-facing sensor."""
+        return None
+
+    def get_obstacle_distance_front_left_cm(self):
+        """Same contract as get_obstacle_distance_cm(), front-left diagonal sensor."""
+        return None
+
+    def get_obstacle_distance_front_right_cm(self):
+        """Same contract as get_obstacle_distance_cm(), front-right diagonal sensor."""
         return None
 
     def get_litter_position(self) -> tuple:

@@ -75,9 +75,9 @@ class RobotRuntime:
                 self.log.warning(f"camera unavailable ({exc}) — running without it")
         self.sensors = SensorHub(
             front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
-            left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
-            right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
             back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
+            front_left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
+            front_right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
             camera=camera,
         )
         self.camera_available = camera is not None

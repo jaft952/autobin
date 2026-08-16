@@ -56,9 +56,9 @@ from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
 
 # Motion fractions (scaled by MotionExecutor / MotionCalibration duty).
-FORWARD_SPEED = 0.6   # lane cruising speed
-TURN_SPEED    = 0.55  # pivot speed (below this the base tends to stall)
-BACKOFF_SPEED = 0.5   # gentle reverse away from a close wall
+FORWARD_SPEED = 0.25   # lane cruising speed
+TURN_SPEED    = 0.3 # pivot speed (below this the base tends to stall)
+BACKOFF_SPEED = 0.25   # gentle reverse away from a close wall
 
 # Ultrasonic thresholds (cm).
 TURN_AT_CM    = 35.0  # end the lane and start the zigzag turn

@@ -9,21 +9,23 @@ poll semantic getters (Rule 3). Any sensor can be omitted (None): its getters
 then return the interface defaults, which lets tests run e.g. the zigzag scan
 without the camera attached.
 
-Up to 4 ultrasonics: front/left/right/back. front is the only one Layer 1
-(scan) reads today, via get_obstacle_distance_cm() -- left/right/back exist
-for all-round emergency coverage (has_obstacle()) and are otherwise exposed
+Up to 4 ultrasonics: front / back / front_left (diagonal) / front_right
+(diagonal). front is the only one Layer 1 (scan) reads today, via
+get_obstacle_distance_cm() -- back/front_left/front_right exist for
+all-round emergency coverage (has_obstacle()) and are otherwise exposed
 read-only for future layers to use.
 
 Obstacle semantics — two thresholds on purpose:
     get_obstacle_distance_cm()  raw filtered range, FRONT sensor only. Layer 1
                                 (scan) uses this to trigger its zigzag
                                 lane-turn EARLY (~35 cm).
-    has_obstacle()              True when ANY fitted ultrasonic (front, left,
-                                right, back) is INSIDE EMERGENCY_STOP_CM. This
-                                is what Layer 5 (emergency stop) polls, so it
-                                only fires if the scan layer failed to turn
-                                away in time -- and now also catches a side or
-                                rear collision the front sensor can't see.
+    has_obstacle()              True when ANY fitted ultrasonic (front, back,
+                                front_left, front_right) is INSIDE
+                                EMERGENCY_STOP_CM. This is what Layer 5
+                                (emergency stop) polls, so it only fires if
+                                the scan layer failed to turn away in time --
+                                and now also catches a rear or off-angle
+                                collision the front sensor can't see.
 Keeping the scan threshold well above the emergency threshold is what lets the
 robot patrol without constantly tripping the emergency halt.
 """
@@ -39,20 +41,22 @@ class SensorHub(SensorInterface):
     # Inside this range the situation is "imminent collision": Layer 5 halts.
     EMERGENCY_STOP_CM = 10.0
 
-    def __init__(self, front=None, left=None, right=None, back=None, camera=None):
+    def __init__(self, front=None, back=None, front_left=None, front_right=None, camera=None):
         """
         Args:
-            front, left, right, back: UltrasonicSensor instances, or None if
-                                       not fitted.
+            front, back, front_left, front_right: UltrasonicSensor instances,
+                                       or None if not fitted. front_left/
+                                       front_right are the two diagonal
+                                       sensors angled off the front.
             camera:                   CameraSensor instance, or None if not
                                        fitted.
         """
         self._front = front
-        self._left = left
-        self._right = right
         self._back = back
+        self._front_left = front_left
+        self._front_right = front_right
         self._camera = camera
-        self._ultrasonics = [s for s in (front, left, right, back) if s is not None]
+        self._ultrasonics = [s for s in (front, back, front_left, front_right) if s is not None]
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -82,14 +86,14 @@ class SensorHub(SensorInterface):
             return None
         return self._front.get_distance_cm()
 
-    def get_obstacle_distance_left_cm(self) -> Optional[float]:
-        return self._left.get_distance_cm() if self._left is not None else None
-
-    def get_obstacle_distance_right_cm(self) -> Optional[float]:
-        return self._right.get_distance_cm() if self._right is not None else None
-
     def get_obstacle_distance_back_cm(self) -> Optional[float]:
         return self._back.get_distance_cm() if self._back is not None else None
+
+    def get_obstacle_distance_front_left_cm(self) -> Optional[float]:
+        return self._front_left.get_distance_cm() if self._front_left is not None else None
+
+    def get_obstacle_distance_front_right_cm(self) -> Optional[float]:
+        return self._front_right.get_distance_cm() if self._front_right is not None else None
 
     def has_obstacle(self) -> bool:
         return any(
