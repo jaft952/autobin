@@ -39,7 +39,7 @@ from src.subsumption.layers.layer1_scan import (
 )
 from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
+from src.subsumption.layers.layer5_emergency import EmergencyStopLayer, EMERGENCY_TURN_SPEED
 from src.subsumption.motion_executor import MotionExecutor
 from src.hardware.sensors.sensor_hub import SensorHub
 
@@ -372,11 +372,13 @@ def test_arbitration_with_real_hub():
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message
 
-        # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything and halts.
+        # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything. front-only
+        # close (no back/front_left/front_right fitted here) steers away
+        # rather than sitting dead -- see layer5_emergency.py.
         ultra.dist = SensorHub.EMERGENCY_STOP_CM - 2
         win = _vote(arb, hub)
         assert win.layer_id == 5, win.message
-        assert win.motion_vector == (0, 0, 0), win.message
+        assert win.motion_vector == (0, 0, -EMERGENCY_TURN_SPEED), win.message
     print("PASS arbitration: scan > idle, emergency > scan")
 
 

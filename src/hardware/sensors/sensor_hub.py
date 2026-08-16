@@ -39,7 +39,7 @@ from src.hardware.sensors.interfaces import SensorInterface
 class SensorHub(SensorInterface):
 
     # Inside this range the situation is "imminent collision": Layer 5 halts.
-    EMERGENCY_STOP_CM = 10.0
+    EMERGENCY_STOP_CM = 15.0
 
     def __init__(self, front=None, back=None, front_left=None, front_right=None, camera=None):
         """
