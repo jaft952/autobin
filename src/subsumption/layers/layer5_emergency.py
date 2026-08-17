@@ -24,9 +24,13 @@ DIAG_CLEAR_MARGIN = 1.2
 # every tick is what made a single obstacle read left-then-right forever.
 MIN_TURN_S = 0.6
 
-# Give up turning after this long: still blocked all round means pivoting
-# is not helping (wedged in a corner), so halt instead of spinning forever.
+# Give up turning after this long: still blocked all round means edging away
+# is not working, so spin about-face and leave the way we came in.
 MAX_TURN_S = 6.0
+
+# The wedge escape: half a turn, clockwise. Calibrate on the Pi as roughly
+# twice ScanAroundLayer.TURN_90_S at the same pivot speed.
+TURN_180_S = 2.0
 
 # Reverse first so the chassis has room to pivot -- a rectangular base sweeps
 # its corners wider than its front face, so "15cm ahead" is not 15cm of
@@ -62,7 +66,9 @@ class _Phase(enum.Enum):
     BACKOFF     = enum.auto()
     SETTLE_TURN = enum.auto()   # stop before the wheels flip to pivot
     TURN        = enum.auto()
-    WEDGED      = enum.auto()   # gave up; hold still until something clears
+    SETTLE_SPIN = enum.auto()   # stop before the wheels flip for the half-turn
+    SPIN        = enum.auto()   # wedged: 180 clockwise to face back out
+    STUCK       = enum.auto()   # the spin failed too; hold until something clears
 
 
 class EmergencyStopLayer(BaseLayer):
@@ -73,8 +79,9 @@ class EmergencyStopLayer(BaseLayer):
               inside EMERGENCY_STOP_CM. Backs off (when the rear is clear),
               then pivots toward the roomier side and holds that direction
               until the way ahead is clear, so the robot escapes instead of
-              sitting dead or juddering in place. Halts when nothing helps:
-              blocked ahead with no room behind. The rear sensor only gates
+              sitting dead or juddering in place. When edging away gets
+              nowhere it spins 180 clockwise to leave the way it came in, and
+              only halts if that fails too. The rear sensor only gates
               reversing; it never triggers a stop on its own.
     """
     def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED):
@@ -85,6 +92,7 @@ class EmergencyStopLayer(BaseLayer):
         self._phase_started: float = 0.0
         self._turn_dir: float = -1.0             # +1 = left/CCW, -1 = right
         self._tie_dir: float = -1.0              # side to try when neither diagonal is nearer
+        self._spun: bool = False                 # the about-face has been tried this wedge
 
     def set_turn_speed(self, turn_speed: Optional[float] = None) -> None:
         """Pivot fraction 0..1, same contract as ScanAroundLayer.set_speeds.
@@ -127,24 +135,43 @@ class EmergencyStopLayer(BaseLayer):
                 return self._turn_command(front, left, right, trigger_cm)
             return self._command((0, 0, 0), "EMERGENCY settling before turn")
 
-        if self._phase == _Phase.WEDGED:
-            # Latched: pivoting already failed once, so re-deciding every tick
-            # just restarts the same doomed manoeuvre forever. Only a genuine
-            # change in the readings releases it.
+        if self._phase == _Phase.SETTLE_SPIN:
+            if elapsed >= SETTLE_S:
+                self._enter(_Phase.SPIN, now)
+                return self._spin_command()
+            return self._command((0, 0, 0), "EMERGENCY settling before spin")
+
+        if self._phase == _Phase.SPIN:
+            # Run the half-turn to completion: stopping the moment a sensor
+            # reads clear leaves the robot half way round, still facing the
+            # corner it is trying to leave.
+            if elapsed < TURN_180_S:
+                return self._spin_command()
+            self._phase = None
+            return ActionCommand(layer_id=self.layer_id, active=False)
+
+        if self._phase == _Phase.STUCK:
+            # Latched: edging away failed and so did the about-face, so
+            # re-deciding every tick just restarts the same doomed manoeuvre.
+            # Only a genuine change in the readings releases it.
             if escaped:
-                self._phase = None
+                self._reset()
                 return ActionCommand(layer_id=self.layer_id, active=False)
-            return self._command((0, 0, 0), "EMERGENCY STOP (wedged, turning did not help)")
+            return self._command((0, 0, 0), "EMERGENCY STOP (stuck, spin did not help)")
 
         if self._phase == _Phase.TURN:
             if elapsed >= MAX_TURN_S:
-                self._enter(_Phase.WEDGED, now)
-                return self._command((0, 0, 0), "EMERGENCY STOP (wedged, turning did not help)")
+                if self._spun:
+                    self._enter(_Phase.STUCK, now)
+                    return self._command((0, 0, 0), "EMERGENCY STOP (stuck, spin did not help)")
+                self._spun = True
+                self._enter(_Phase.SETTLE_SPIN, now)
+                return self._command((0, 0, 0), "EMERGENCY settling before spin")
             # MIN_TURN_S guards against a dropped echo (None reads as far)
             # ending the turn after a single tick.
             ahead = min(front, left, right)
             if elapsed >= MIN_TURN_S and escaped:
-                self._phase = None
+                self._reset()
                 return ActionCommand(layer_id=self.layer_id, active=False)
             v_theta = self._turn_dir * self.turn_speed
             return self._command(
@@ -160,6 +187,7 @@ class EmergencyStopLayer(BaseLayer):
         # forward past something behind the robot is not an emergency, and
         # halting for it stranded the patrol against walls it had left.
         if min(front, left, right) >= trigger_cm:
+            self._reset()
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         if back >= BACKOFF_CLEARANCE_CM:
@@ -196,9 +224,21 @@ class EmergencyStopLayer(BaseLayer):
             f"EMERGENCY TURN {'left' if self._turn_dir > 0 else 'right'} ({blocked} blocked)",
         )
 
+    def _spin_command(self) -> ActionCommand:
+        """Half-turn clockwise. Clockwise is -ve v_theta (see motion_executor)."""
+        return self._command(
+            (0, 0, -abs(self.turn_speed)),
+            "EMERGENCY SPIN 180 clockwise (wedged)",
+        )
+
     def _enter(self, phase: _Phase, now: float) -> None:
         self._phase = phase
         self._phase_started = now
+
+    def _reset(self) -> None:
+        """Genuinely clear again, so the next wedge gets its own spin."""
+        self._phase = None
+        self._spun = False
 
     def _command(self, motion, message: str) -> ActionCommand:
         return ActionCommand(

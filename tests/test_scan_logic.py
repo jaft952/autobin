@@ -528,36 +528,69 @@ def test_avoid_keeps_turning_until_clear_of_the_margin():
     print("PASS avoid keeps turning until clear of the margin")
 
 
-def test_avoid_gives_up_when_wedged():
+def _advance_to_wedge(layer, sensors, clock):
+    """Run the escape until the pivot times out and the about-face begins."""
+    _advance_to_pivot(layer, sensors, clock)
+    clock.tick(emergency_mod.MAX_TURN_S + 0.1)
+    layer.evaluate(sensors)                       # -> SETTLE_SPIN
+    clock.tick(emergency_mod.SETTLE_S + 0.01)
+    return layer.evaluate(sensors)                # -> SPIN
+
+
+def test_avoid_spins_180_clockwise_when_wedged():
+    """Edging away got nowhere, so turn about-face and leave the way we came.
+    Clockwise is a negative v_theta."""
     with fake_emergency_clock() as clock:
         layer = EmergencyStopLayer()
         blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
-        _advance_to_pivot(layer, blocked, clock)
-        clock.tick(emergency_mod.MAX_TURN_S + 0.1)
+        cmd = _advance_to_wedge(layer, blocked, clock)
+        assert cmd.motion_vector[2] < 0, f"not clockwise: {cmd.message}"
+    print("PASS avoid spins 180 clockwise when wedged")
+
+
+def test_the_spin_runs_the_full_half_turn():
+    """Releasing the moment a sensor reads clear leaves the robot half way
+    round, still facing the corner."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
+        cmd = _advance_to_wedge(layer, blocked, clock)
+
+        spun = 0.0
+        while spun < emergency_mod.TURN_180_S - 0.1:
+            assert cmd.motion_vector[2] < 0, f"stopped early: {cmd.message}"
+            clock.tick(0.1)
+            spun += 0.1
+            cmd = layer.evaluate(blocked)
+
+        clock.tick(0.2)
         cmd = layer.evaluate(blocked)
-        assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
-    print("PASS avoid halts instead of spinning forever when wedged")
+        assert not cmd.active, f"still spinning: {cmd.message}"
+    print("PASS the spin runs the full half turn")
 
 
-def test_wedged_stays_latched_instead_of_restarting_the_turn():
-    """Live log: the turn timed out, then the very next tick started the same
-    doomed turn again, forever. It must stay put until something changes."""
+def test_a_second_wedge_latches_instead_of_spinning_forever():
+    """One about-face per wedge. If it changed nothing, hold still rather than
+    spin on the spot until the battery dies."""
     with fake_emergency_clock() as clock:
         layer = EmergencyStopLayer()
         blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
-        _advance_to_pivot(layer, blocked, clock)
-        clock.tick(emergency_mod.MAX_TURN_S + 0.1)
+        _advance_to_wedge(layer, blocked, clock)
+        clock.tick(emergency_mod.TURN_180_S + 0.1)
+        layer.evaluate(blocked)                    # spin finished, still blocked
 
+        cmd = _advance_to_pivot(layer, blocked, clock)
+        clock.tick(emergency_mod.MAX_TURN_S + 0.1)
         for _ in range(10):
             cmd = layer.evaluate(blocked)
-            assert cmd.motion_vector == (0, 0, 0), f"restarted the turn: {cmd.message}"
+            assert cmd.motion_vector == (0, 0, 0), f"spun again: {cmd.message}"
             clock.tick(0.5)
 
         clear = SensorHub.EMERGENCY_STOP_CM * emergency_mod.CLEAR_MARGIN + 1
         cmd = layer.evaluate(FakeDirectionalSensors(front=clear, front_left=clear,
                                                      front_right=clear))
         assert not cmd.active, cmd.message
-    print("PASS wedged stays latched until the readings genuinely change")
+    print("PASS a second wedge latches instead of spinning forever")
 
 
 def test_scan_pivots_away_from_the_tighter_side():
@@ -767,13 +800,14 @@ ALL_TESTS = [
     test_avoid_turns_toward_the_roomier_side,
     test_avoid_does_not_oscillate,
     test_avoid_keeps_turning_until_clear_of_the_margin,
-    test_avoid_gives_up_when_wedged,
+    test_avoid_spins_180_clockwise_when_wedged,
+    test_the_spin_runs_the_full_half_turn,
+    test_a_second_wedge_latches_instead_of_spinning_forever,
     test_rear_obstacle_alone_is_ignored,
     test_scan_backoff_aborts_on_a_close_rear,
     test_boxed_in_halts,
     test_a_distant_wall_does_not_steer_the_escape,
     test_tied_diagonals_alternate_instead_of_always_turning_right,
-    test_wedged_stays_latched_instead_of_restarting_the_turn,
     test_scan_pivots_away_from_the_tighter_side,
     test_scan_sees_the_diagonals,
     test_scan_drives_out_of_a_corner_instead_of_spinning,
