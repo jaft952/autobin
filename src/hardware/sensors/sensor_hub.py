@@ -19,7 +19,10 @@ Obstacle semantics — two thresholds on purpose:
     get_obstacle_distance_cm()  FRONT sensor only. Layer 1 (scan) turns its
                                 zigzag lane EARLY on this (~35 cm).
     has_obstacle()              True when ANY fitted ultrasonic is inside
-                                EMERGENCY_STOP_CM. Layer 5 polls this.
+                                EMERGENCY_STOP_CM. A coarse summary only:
+                                the layers read the per-direction getters,
+                                because the rear must be acted on solely
+                                while reversing.
 Keeping the scan threshold well above the emergency threshold is what lets the
 robot patrol without constantly tripping the emergency halt.
 """

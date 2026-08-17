@@ -64,6 +64,7 @@ TURN_SPEED    = 0.2 # pivot speed (below this the base tends to stall)
 # Ultrasonic thresholds (cm).
 TURN_AT_CM    = 35.0  # end the lane and start the zigzag turn
 BACKOFF_AT_CM = 20.0  # we noticed the wall late -> reverse first for clearance
+BACKOFF_REAR_MIN_CM = 20.0  # abort the reverse if the rear closes to this
 
 # Pivot-side override. Sides are compared saturated at PIVOT_ROOM_CM so a
 # harmless far wall can't outvote a side reading nothing at all; the margin
@@ -189,7 +190,11 @@ class ScanAroundLayer(BaseLayer):
                 self._enter(_Phase.TURN1, now)
 
         elif self._phase == _Phase.BACKOFF:
-            if self._elapsed(now) >= BACKOFF_S:
+            # Cut the reverse short if something is behind us: this is the only
+            # phase in the pattern that moves backwards, so it is the only one
+            # the rear sensor has any say over.
+            rear = _side_room_cm(sensors, "get_obstacle_distance_back_cm")
+            if self._elapsed(now) >= BACKOFF_S or rear < BACKOFF_REAR_MIN_CM:
                 self._turn_left = self._pivot_side(sensors)
                 self._enter(_Phase.TURN1, now)
 

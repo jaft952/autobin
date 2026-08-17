@@ -650,11 +650,31 @@ def test_boxed_in_halts():
     print("PASS boxed in halts")
 
 
-def test_rear_obstacle_only_halts():
+def test_rear_obstacle_alone_is_ignored():
+    """Halting for something behind while driving forward stranded the patrol.
+    The rear only gates reversing."""
     layer = EmergencyStopLayer()
     cmd = layer.evaluate(FakeDirectionalSensors(back=8, front=90))
-    assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
-    print("PASS rear obstacle halts rather than turning")
+    assert not cmd.active, cmd.message
+    print("PASS rear obstacle alone is ignored while driving forward")
+
+
+def test_scan_backoff_aborts_on_a_close_rear():
+    """Layer 1's backoff is the only phase that reverses, so it is the only
+    one the rear sensor may cut short."""
+    with fake_clock() as clock:
+        layer = ScanAroundLayer()
+        sensors = FakeDirectionalSensors(front=BACKOFF_AT_CM - 1,
+                                         front_left=90, front_right=90, back=None)
+        layer.evaluate(sensors)                        # DRIVE -> sees the wall
+        cmd = layer.evaluate(sensors)                  # -> BACKOFF
+        assert cmd.motion_vector[0] < 0, cmd.message
+
+        sensors.back = scan_mod.BACKOFF_REAR_MIN_CM - 1
+        clock.tick(0.05)
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] >= 0, f"kept reversing into it: {cmd.message}"
+    print("PASS scan backoff aborts on a close rear")
 
 
 def test_scan_timers_pause_while_suppressed():
@@ -723,7 +743,8 @@ ALL_TESTS = [
     test_avoid_does_not_oscillate,
     test_avoid_keeps_turning_until_clear_of_the_margin,
     test_avoid_gives_up_when_wedged,
-    test_rear_obstacle_only_halts,
+    test_rear_obstacle_alone_is_ignored,
+    test_scan_backoff_aborts_on_a_close_rear,
     test_boxed_in_halts,
     test_a_distant_wall_does_not_steer_the_escape,
     test_tied_diagonals_alternate_instead_of_always_turning_right,

@@ -69,7 +69,8 @@ class EmergencyStopLayer(BaseLayer):
               then pivots toward the roomier side and holds that direction
               until the way ahead is clear, so the robot escapes instead of
               sitting dead or juddering in place. Halts when nothing helps:
-              a rear-only obstacle, or blocked ahead with no room behind.
+              blocked ahead with no room behind. The rear sensor only gates
+              reversing; it never triggers a stop on its own.
     """
     def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED):
         super().__init__(layer_id=5)
@@ -147,12 +148,12 @@ class EmergencyStopLayer(BaseLayer):
             )
 
         # ---- no manoeuvre running: decide whether to start one -------------
-        if min(front, back, left, right) >= trigger_cm:
-            return ActionCommand(layer_id=self.layer_id, active=False)
-
+        # The rear never triggers a manoeuvre: it only gates whether reversing
+        # is allowed (below) and aborts a backoff already in progress. Driving
+        # forward past something behind the robot is not an emergency, and
+        # halting for it stranded the patrol against walls it had left.
         if min(front, left, right) >= trigger_cm:
-            # Only the rear is blocked, and pivoting opens no space behind.
-            return self._command((0, 0, 0), "EMERGENCY STOP (rear blocked)")
+            return ActionCommand(layer_id=self.layer_id, active=False)
 
         if back >= BACKOFF_CLEARANCE_CM:
             self._enter(_Phase.SETTLE_BACK, now)
