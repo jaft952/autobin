@@ -138,10 +138,12 @@ class EmergencyStopLayer(BaseLayer):
             if elapsed >= MIN_TURN_S and ahead >= clear_cm:
                 self._phase = None
                 return ActionCommand(layer_id=self.layer_id, active=False)
+            v_theta = self._turn_dir * self.turn_speed
             return self._command(
-                (0, 0, self._turn_dir * self.turn_speed),
+                (0, 0, v_theta),
                 f"EMERGENCY TURN {'left' if self._turn_dir > 0 else 'right'} "
-                f"(clearing, ahead {ahead:.0f}cm)",
+                f"(v_theta {v_theta:+.2f}, L{min(left, ROOMY_CM):.0f} "
+                f"R{min(right, ROOMY_CM):.0f}, ahead {ahead:.0f}cm)",
             )
 
         # ---- no manoeuvre running: decide whether to start one -------------

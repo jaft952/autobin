@@ -585,6 +585,13 @@ def test_scan_pivots_away_from_the_tighter_side():
     layer._turn_left = True
     assert layer._pivot_side(Sides(left=None, right=None)) is True
     assert layer._pivot_side(Sides(left=60.0, right=None)) is True
+
+    # Both sides close: the wide old margin refused to flip here and the robot
+    # pivoted into the nearer wall.
+    layer._turn_left = True
+    assert layer._pivot_side(Sides(left=12.0, right=18.0)) is False
+    layer._turn_left = False
+    assert layer._pivot_side(Sides(left=18.0, right=12.0)) is True
     print("PASS scan pivots away from the tighter side")
 
 

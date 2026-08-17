@@ -69,7 +69,8 @@ BACKOFF_AT_CM = 20.0  # we noticed the wall late -> reverse first for clearance
 # harmless far wall can't outvote a side reading nothing at all; the margin
 # stops near-equal readings from cancelling the zigzag's alternation.
 PIVOT_ROOM_CM   = 40.0
-PIVOT_MARGIN_CM = 10.0
+PIVOT_TIGHT_CM  = 25.0
+PIVOT_MARGIN_CM = 5.0
 
 # Timed phases (seconds) — calibrate on the Pi, see module docstring.
 TURN_90_S  = 0.9
@@ -120,6 +121,7 @@ class ScanAroundLayer(BaseLayer):
         self._phase_started: float = 0.0
         self._lane_started: float = 0.0
         self._turn_left: bool = True           # pivot side; alternates per wall
+        self._pivot_note: str = "L-- R--"      # side readings behind the last choice
         self._suppressed_since: Optional[float] = None
 
     # ── Calibration knobs (the Pi tools drive these, see module docstring) ─
@@ -228,12 +230,13 @@ class ScanAroundLayer(BaseLayer):
             return (self.forward_speed, 0, 0), "lane"
         if self._phase == _Phase.BACKOFF:
             return (-self.forward_speed, 0, 0), "backing off wall"
+        side = 'left' if self._turn_left else 'right'
         if self._phase == _Phase.TURN1:
-            return (0, 0, turn), f"turn 1 ({'left' if self._turn_left else 'right'})"
+            return (0, 0, turn), f"turn 1 ({side}, v_theta {turn:+.2f}, {self._pivot_note})"
         if self._phase == _Phase.SHIFT:
             return (self.forward_speed, 0, 0), "shifting lane"
         if self._phase == _Phase.TURN2:
-            return (0, 0, turn), f"turn 2 ({'left' if self._turn_left else 'right'})"
+            return (0, 0, turn), f"turn 2 ({side}, v_theta {turn:+.2f}, {self._pivot_note})"
         return (0, 0, 0), "idle"
 
     def _enter(self, phase: _Phase, now: float) -> None:
@@ -250,10 +253,13 @@ class ScanAroundLayer(BaseLayer):
         robot pivoting back and forth into the same wall."""
         left = _side_room_cm(sensors, "get_obstacle_distance_front_left_cm")
         right = _side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
-        if self._turn_left and left + PIVOT_MARGIN_CM < right:
-            return False
-        if not self._turn_left and right + PIVOT_MARGIN_CM < left:
-            return True
+        self._pivot_note = f"L{left:.0f} R{right:.0f}"
+        intended, other = (left, right) if self._turn_left else (right, left)
+        # Only a genuinely tight intended side justifies breaking alternation,
+        # and then any clearly roomier alternative wins -- requiring the old
+        # wide margin left the robot pivoting into the nearer of two close walls.
+        if intended < PIVOT_TIGHT_CM and other >= intended + PIVOT_MARGIN_CM:
+            return not self._turn_left
         return self._turn_left
 
     @staticmethod
