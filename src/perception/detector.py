@@ -259,8 +259,9 @@ class AluminiumCanDetector:
             return DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
         return self.infer(frame, fast=fast)
 
-    def get_annotated_frame(self, result: DetectionResult):
-        """Render detections with segmentation masks, bbox, base_center, and orientation."""
+    def get_annotated_frame(self, result: DetectionResult, target=None):
+        """Render detections with segmentation masks, bbox, base_center, and
+        orientation. target (the locked tin, if any) is boxed in cyan."""
         import cv2
         import numpy as np
         if self._last_frame is None:
@@ -275,7 +276,13 @@ class AluminiumCanDetector:
                 cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, dst=frame)
                 cv2.polylines(frame, [pts], True, (0, 255, 0), 2)
 
-            cv2.rectangle(frame, (det.x1, det.y1), (det.x2, det.y2), (0, 255, 0), 2)
+            is_target = target is not None and det is target
+            cv2.rectangle(frame, (det.x1, det.y1), (det.x2, det.y2),
+                          (255, 255, 0) if is_target else (0, 255, 0),
+                          4 if is_target else 2)
+            if is_target:
+                cv2.putText(frame, "TARGET", (det.x1, max(det.y1 - 26, 14)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
             bx, by = det.base_center
             cv2.circle(frame, (bx, by), 6, (0, 0, 255), -1)

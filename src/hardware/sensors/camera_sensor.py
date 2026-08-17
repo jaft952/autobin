@@ -16,6 +16,11 @@ Staleness guard: if the worker hasn't produced a result recently (camera
 unplugged, inference crash-looping), the getters report "no detection"
 rather than acting on a frozen frame.
 
+TARGET PRIORITY: the getters do NOT expose every detection — TargetLock
+picks the largest-bbox tin, holds it across frames, and hides the rest until
+that tin is collected (see src/perception/target_lock.py). One tin at a
+time, nearest first, no re-aiming mid-approach.
+
 RESOLUTION: capture defaults to 1280x720 (not 1920x1080). Inference is
 letterboxed to 640 px anyway, so 1080p only added USB/decode/resize cost.
 All downstream consumers use NORMALIZED coordinates, which are unchanged as
@@ -31,6 +36,7 @@ from src.hardware.sensors.interfaces import SensorInterface
 from src.perception.detector import (
     AluminiumCanDetector, DetectionResult, RUNTIME_MODEL_PATH,
 )
+from src.perception.target_lock import TargetLock
 
 # If the newest inference result is older than this, report "no detection"
 # instead of acting on a frozen scene.
@@ -65,6 +71,9 @@ class CameraSensor(SensorInterface):
         self._latest_result: DetectionResult = DetectionResult()
         self._latest_at: float = 0.0
         self._result_lock = threading.Lock()
+        self._target_lock = TargetLock()
+        self._selected_box = None
+        self._selected_at: float = -1.0
         self._alive = False
         self._worker = None
         self._battery: float = 1.0   # Placeholder; replace with real battery sensor
@@ -105,19 +114,35 @@ class CameraSensor(SensorInterface):
         """Cheap by design — inference happens in the worker thread. Kept so
         the polled-sensor contract (update every tick) stays uniform."""
         pass
-
-    def _fresh_result(self) -> DetectionResult:
-        """Latest result, or an empty one when it has gone stale."""
+        
+    def _current_target(self):
+        """(box, result) of the LOCKED tin — the largest-bbox one, held until
+        it leaves the frame. Selection runs once per new inference result, so
+        the three getters in one tick all describe the same tin."""
         with self._result_lock:
-            if time.monotonic() - self._latest_at > STALE_AFTER_S:
-                return DetectionResult()
-            return self._latest_result
+            result = self._latest_result
+            at = self._latest_at
+            stale = time.monotonic() - at > STALE_AFTER_S
+        if stale:
+            return None, result
+        if at != self._selected_at:
+            self._selected_at = at
+            self._selected_box = self._target_lock.select(result.detections)
+        return self._selected_box, result
+
+    def release_target(self):
+        """Forget the current tin now (e.g. after a collection) so the next
+        frame re-picks the largest. Normally unnecessary — a collected tin
+        leaves the frame and the lock times out on its own."""
+        self._target_lock.release()
+        self._selected_box = None
+        self._selected_at = -1.0
 
     def get_litter_position(self): # type: ignore
         """
-        Returns normalized (x, y) of the best-detected aluminium can,
-        where (0.5, 0.5) is the center of the frame.
-        Returns None if no can is detected (or detection has gone stale).
+        Returns normalized (x, y) of the LOCKED aluminium can (largest bbox
+        area at lock time), where (0.5, 0.5) is the center of the frame.
+        Returns None if no can is locked (or detection has gone stale).
 
         Used by:
             layer1_scan.py    — to check if a target exists
@@ -127,29 +152,33 @@ class CameraSensor(SensorInterface):
 
     def get_litter_ground_contact(self): # type: ignore
         """
-        Returns normalized (x, y) of the best detection's ground-contact
-        point (bbox bottom-center), or None. Arc-grasp and pixel_to_arm
+        Returns normalized (x, y) of the locked tin's ground-contact point
+        (bbox bottom-center), or None. Arc-grasp and pixel_to_arm
         calibrations are anchored to this point.
 
         Used by:
             layer3_collect.py — to solve the grasp pose
         """
-        return self._fresh_result().normalized_base_center()
+        box, result = self._current_target()
+        if box is None or result.frame_width == 0:
+            return None
+        return (box.center_x / result.frame_width,
+                box.center_y / result.frame_height)
 
     def get_litter_pose(self): # type: ignore
         """
-        Returns the best detection's pose estimated from its segmentation
-        mask: {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180},
-        or None when there is no detection / no usable mask.
+        Returns the locked tin's pose estimated from its segmentation mask:
+        {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180},
+        or None when there is no target / no usable mask.
 
         Used by:
             layer3_collect.py — upright vs lying picks the grasp grid, and
             the angle drives the wrist roll (CH5) for lying tins.
         """
-        best = self._fresh_result().best
-        if best is None or best.orientation is None:
+        box, _ = self._current_target()
+        if box is None or box.orientation is None:
             return None
-        o = best.orientation
+        o = box.orientation
         return {"klass": o.klass, "angle": o.angle}
 
     def get_aerial_trash_position(self): # type: ignore
@@ -173,10 +202,10 @@ class CameraSensor(SensorInterface):
 
     def get_annotated_frame(self):
         """
-        Returns the last camera frame with bounding boxes drawn.
-        Use with cv2.imshow() or the web dashboard's MJPEG stream.
+        Returns the last camera frame with bounding boxes drawn, the locked
+        target highlighted. Use with cv2.imshow() or the dashboard stream.
         """
-        return self._detector.get_annotated_frame(self.get_latest_result())
+        return self._detector.get_annotated_frame(self.get_latest_result(), target=self._target_lock.target)
 
     def read_camera_frame(self):
         """
