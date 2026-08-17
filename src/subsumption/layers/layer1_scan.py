@@ -62,7 +62,8 @@ TURN_SPEED    = 0.32 # pivot speed (below this the base tends to stall)
 # every speed calibration.
 
 # Ultrasonic thresholds (cm).
-TURN_AT_CM    = 35.0  # end the lane and start the zigzag turn
+TURN_AT_CM    = 35.0  # front sensor: end the lane and start the zigzag turn
+DIAGONAL_TURN_AT_CM = 22.0  # a diagonal ends the lane only this close
 BACKOFF_AT_CM = 20.0  # we noticed the wall late -> reverse first for clearance
 BACKOFF_REAR_MIN_CM = 20.0  # abort the reverse if the rear closes to this
 
@@ -174,7 +175,9 @@ class ScanAroundLayer(BaseLayer):
             self._lane_started += paused
             self._suppressed_since = None
 
-        dist = self._obstacle_distance_cm(sensors)
+        front, left, right = self._clearances(sensors)
+        dist = min([d for d in (front, left, right) if d is not None], default=None)
+        wall_ahead = self._wall_ahead(front, left, right)
 
         if self._phase is None:
             self._enter(_Phase.DRIVE, now)
@@ -182,8 +185,8 @@ class ScanAroundLayer(BaseLayer):
 
         # ---- phase transitions ------------------------------------------
         if self._phase == _Phase.DRIVE:
-            wall_seen = dist is not None and dist <= TURN_AT_CM
-            if wall_seen and dist <= BACKOFF_AT_CM:
+            wall_seen = wall_ahead
+            if wall_seen and dist is not None and dist <= BACKOFF_AT_CM:
                 self._enter(_Phase.BACKOFF, now)
             elif wall_seen or (now - self._lane_started) >= self.max_lane_s:
                 self._turn_left = self._pivot_side(sensors)
@@ -205,8 +208,7 @@ class ScanAroundLayer(BaseLayer):
         elif self._phase == _Phase.SHIFT:
             # Corner case: wall ahead during the shift -> skip straight to
             # the second pivot instead of driving into it.
-            wall_seen = dist is not None and dist <= TURN_AT_CM
-            if wall_seen or self._elapsed(now) >= self.shift_s:
+            if wall_ahead or self._elapsed(now) >= self.shift_s:
                 self._enter(_Phase.TURN2, now)
 
         elif self._phase == _Phase.TURN2:
@@ -217,13 +219,13 @@ class ScanAroundLayer(BaseLayer):
 
         # ---- phase outputs ----------------------------------------------
         motion, label = self._motion_for_phase()
-        dist_txt = f"{dist:.0f}cm" if dist is not None else "--"
+        front_txt = f"{front:.0f}cm" if front is not None else "--"
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
             motion_vector=motion,
             arm_action='stow',                 # arm stays stowed while patrolling
-            message=f"SCAN {label} (wall {dist_txt})",
+            message=f"SCAN {label} (front {front_txt})",
         )
 
     # ── Internals ─────────────────────────────────────────────────────────
@@ -268,17 +270,23 @@ class ScanAroundLayer(BaseLayer):
         return self._turn_left
 
     @staticmethod
-    def _obstacle_distance_cm(sensors: Any) -> Optional[float]:
-        """Nearest of the three forward sensors. Reading the front one alone
-        left the diagonals invisible here, so a wall off to one side was
-        never seen at TURN_AT_CM and the pattern only ever gave way to the
-        layer 5 escape. Missing getters tolerate older sensor objects."""
-        readings = []
+    def _clearances(sensors: Any):
+        """(front, front_left, front_right) in cm; None = nothing in range.
+        Missing getters tolerate older sensor objects."""
+        out = []
         for name in ("get_obstacle_distance_cm",
                      "get_obstacle_distance_front_left_cm",
                      "get_obstacle_distance_front_right_cm"):
             getter = getattr(sensors, name, None)
-            value = getter() if getter is not None else None
-            if value is not None:
-                readings.append(value)
-        return min(readings) if readings else None
+            out.append(getter() if getter is not None else None)
+        return tuple(out)
+
+    @staticmethod
+    def _wall_ahead(front, left, right) -> bool:
+        """A diagonal alone must be much closer than the front sensor to end a
+        lane: taking the plain minimum of all three made every wall the robot
+        drove PARALLEL to read as a wall in front of it, so in a corner the
+        lane ended on its first tick and the pattern span forever."""
+        if front is not None and front <= TURN_AT_CM:
+            return True
+        return any(d is not None and d <= DIAGONAL_TURN_AT_CM for d in (left, right))

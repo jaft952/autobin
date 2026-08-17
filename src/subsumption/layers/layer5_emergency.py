@@ -15,6 +15,11 @@ EMERGENCY_TURN_SPEED = 0.2
 # oscillate on the threshold.
 CLEAR_MARGIN = 1.6
 
+# The diagonals only have to leave the trigger range, not clear the full front
+# margin: in a corridor the side walls never reach 1.6x, so demanding it of
+# them meant the escape always timed out into WEDGED.
+DIAG_CLEAR_MARGIN = 1.2
+
 # Once committed, hold the same direction at least this long. Re-deciding
 # every tick is what made a single obstacle read left-then-right forever.
 MIN_TURN_S = 0.6
@@ -96,6 +101,8 @@ class EmergencyStopLayer(BaseLayer):
 
         trigger_cm = SensorHub.EMERGENCY_STOP_CM
         clear_cm = trigger_cm * CLEAR_MARGIN
+        diag_clear_cm = trigger_cm * DIAG_CLEAR_MARGIN
+        escaped = front >= clear_cm and min(left, right) >= diag_clear_cm
         elapsed = now - self._phase_started
 
         if self._phase == _Phase.SETTLE_BACK:
@@ -124,7 +131,7 @@ class EmergencyStopLayer(BaseLayer):
             # Latched: pivoting already failed once, so re-deciding every tick
             # just restarts the same doomed manoeuvre forever. Only a genuine
             # change in the readings releases it.
-            if min(front, left, right) >= clear_cm:
+            if escaped:
                 self._phase = None
                 return ActionCommand(layer_id=self.layer_id, active=False)
             return self._command((0, 0, 0), "EMERGENCY STOP (wedged, turning did not help)")
@@ -136,7 +143,7 @@ class EmergencyStopLayer(BaseLayer):
             # MIN_TURN_S guards against a dropped echo (None reads as far)
             # ending the turn after a single tick.
             ahead = min(front, left, right)
-            if elapsed >= MIN_TURN_S and ahead >= clear_cm:
+            if elapsed >= MIN_TURN_S and escaped:
                 self._phase = None
                 return ActionCommand(layer_id=self.layer_id, active=False)
             v_theta = self._turn_dir * self.turn_speed

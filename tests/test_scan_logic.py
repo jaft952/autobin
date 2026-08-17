@@ -596,18 +596,43 @@ def test_scan_pivots_away_from_the_tighter_side():
 
 
 def test_scan_sees_the_diagonals():
-    """A wall off to one side must end the lane at TURN_AT_CM, not stay
-    invisible until layer 5 trips -- reading the front sensor alone is why
-    the zigzag never actually ran on the robot."""
+    """A diagonal ends the lane only when it is genuinely close. At the front
+    sensor's own threshold it must not: that is a wall being driven PAST, and
+    treating it as a wall ahead trapped the robot spinning in a corner."""
+    with fake_clock():
+        layer = ScanAroundLayer()
+        sensors = FakeDirectionalSensors(front=None, front_left=None,
+                                          front_right=scan_mod.DIAGONAL_TURN_AT_CM - 1)
+        sensors.litter = None
+        layer.evaluate(sensors)                 # enter DRIVE
+        cmd = layer.evaluate(sensors)
+        assert "turn 1" in cmd.message, cmd.message
+
     with fake_clock():
         layer = ScanAroundLayer()
         sensors = FakeDirectionalSensors(front=None, front_left=None,
                                           front_right=TURN_AT_CM - 5)
         sensors.litter = None
-        layer.evaluate(sensors)                 # enter DRIVE
+        layer.evaluate(sensors)
         cmd = layer.evaluate(sensors)
-        assert "turn 1" in cmd.message, cmd.message
-    print("PASS scan reacts to the diagonal sensors, not just the front one")
+        assert "lane" in cmd.message, f"a wall alongside ended the lane: {cmd.message}"
+    print("PASS a diagonal ends the lane only when genuinely close")
+
+
+def test_scan_drives_out_of_a_corner_instead_of_spinning():
+    """Live log: front open, left open, right wall at 27cm -> the lane lasted
+    exactly one tick and the pattern cycled turn/shift/turn forever."""
+    with fake_clock() as clock:
+        layer = ScanAroundLayer()
+        sensors = FakeDirectionalSensors(front=None, front_left=None, front_right=27.0)
+        sensors.litter = None
+        layer.evaluate(sensors)
+        for _ in range(20):
+            cmd = layer.evaluate(sensors)
+            assert "lane" in cmd.message, f"stopped driving: {cmd.message}"
+            assert cmd.motion_vector[0] > 0 and cmd.motion_vector[2] == 0, cmd.message
+            clock.tick(0.05)
+    print("PASS scan drives out of a corner instead of spinning")
 
 
 def test_tied_diagonals_alternate_instead_of_always_turning_right():
@@ -751,6 +776,7 @@ ALL_TESTS = [
     test_wedged_stays_latched_instead_of_restarting_the_turn,
     test_scan_pivots_away_from_the_tighter_side,
     test_scan_sees_the_diagonals,
+    test_scan_drives_out_of_a_corner_instead_of_spinning,
     test_median_filter_absorbs_a_dropped_ping,
     test_scan_timers_pause_while_suppressed,
 ]
