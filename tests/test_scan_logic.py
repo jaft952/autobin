@@ -532,9 +532,12 @@ def _advance_to_wedge(layer, sensors, clock):
     """Run the escape until the pivot times out and the about-face begins."""
     _advance_to_pivot(layer, sensors, clock)
     clock.tick(emergency_mod.MAX_TURN_S + 0.1)
-    layer.evaluate(sensors)                       # -> SETTLE_SPIN
-    clock.tick(emergency_mod.SETTLE_S + 0.01)
-    return layer.evaluate(sensors)                # -> SPIN
+    for _ in range(200):
+        cmd = layer.evaluate(sensors)
+        if "SPIN" in cmd.message:
+            return cmd
+        clock.tick(0.1)
+    raise AssertionError(f"never reached the spin: {cmd.message}")
 
 
 def test_avoid_spins_180_clockwise_when_wedged():
@@ -557,40 +560,65 @@ def test_the_spin_runs_the_full_half_turn():
         cmd = _advance_to_wedge(layer, blocked, clock)
 
         spun = 0.0
-        while spun < emergency_mod.TURN_180_S - 0.1:
+        while spun < emergency_mod.TURN_180_S - 0.15:
             assert cmd.motion_vector[2] < 0, f"stopped early: {cmd.message}"
             clock.tick(0.1)
             spun += 0.1
             cmd = layer.evaluate(blocked)
 
-        clock.tick(0.2)
+        clock.tick(0.3)
         cmd = layer.evaluate(blocked)
-        assert not cmd.active, f"still spinning: {cmd.message}"
+        assert cmd.motion_vector[2] == 0, f"still spinning: {cmd.message}"
     print("PASS the spin runs the full half turn")
 
 
-def test_a_second_wedge_latches_instead_of_spinning_forever():
-    """One about-face per wedge. If it changed nothing, hold still rather than
-    spin on the spot until the battery dies."""
+def test_the_escape_drives_out_after_the_spin():
+    """Turning away is not leaving: without the forward burst the robot faced
+    a way out, handed back to the patrol and was re-triggered on the spot."""
     with fake_emergency_clock() as clock:
         layer = EmergencyStopLayer()
-        blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
-        _advance_to_wedge(layer, blocked, clock)
-        clock.tick(emergency_mod.TURN_180_S + 0.1)
-        layer.evaluate(blocked)                    # spin finished, still blocked
+        # Blocked to the front, but the spin turns that into open space.
+        sensors = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
+        _advance_to_wedge(layer, sensors, clock)
+        clock.tick(emergency_mod.MAX_SPIN_S + 1.0)
+        sensors.front = 90                          # the about-face found room
 
-        cmd = _advance_to_pivot(layer, blocked, clock)
-        clock.tick(emergency_mod.MAX_TURN_S + 0.1)
-        for _ in range(10):
+        for _ in range(50):
+            cmd = layer.evaluate(sensors)
+            if not cmd.active:
+                continue
+            if "DRIVE OUT" in cmd.message:
+                assert cmd.motion_vector[0] > 0, cmd.message
+                break
+            clock.tick(0.05)
+        else:
+            raise AssertionError("never drove out of the wedge")
+    print("PASS the escape drives out after the spin")
+
+
+def test_the_escape_never_gives_up_and_widens_each_retry():
+    """No latched stop: a robot halted in a corner needs a human to free it.
+    Each retry must spin further so it stops retracing the same arc."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        blocked = FakeDirectionalSensors(front=8, front_left=8, front_right=8)
+        spins = []
+        for _ in range(4000):
             cmd = layer.evaluate(blocked)
-            assert cmd.motion_vector == (0, 0, 0), f"spun again: {cmd.message}"
-            clock.tick(0.5)
+            if cmd.active and "SPIN" in cmd.message and layer._spin_s not in spins:
+                spins.append(layer._spin_s)
+            clock.tick(0.1)
+
+        assert len(spins) >= 3, spins
+        assert spins == sorted(spins) and spins[-1] > spins[0], spins
+        assert all(s <= emergency_mod.MAX_SPIN_S for s in spins), spins
 
         clear = SensorHub.EMERGENCY_STOP_CM * emergency_mod.CLEAR_MARGIN + 1
         cmd = layer.evaluate(FakeDirectionalSensors(front=clear, front_left=clear,
                                                      front_right=clear))
         assert not cmd.active, cmd.message
-    print("PASS a second wedge latches instead of spinning forever")
+        assert layer._attempt == 0, "getting clear must reset the escalation"
+    print("PASS the escape never gives up and widens each retry")
 
 
 def test_scan_pivots_away_from_the_tighter_side():
@@ -700,12 +728,18 @@ def test_a_distant_wall_does_not_steer_the_escape():
     print("PASS a distant wall does not steer the escape")
 
 
-def test_boxed_in_halts():
-    """Blocked ahead on both diagonals with no room behind -> nothing to do."""
-    layer = EmergencyStopLayer()
-    cmd = layer.evaluate(FakeDirectionalSensors(front=8, front_left=8, front_right=8, back=8))
-    assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
-    print("PASS boxed in halts")
+def test_boxed_in_goes_straight_to_the_spin():
+    """Blocked ahead on both diagonals with no room behind: edging away has
+    nowhere to go, so skip it and turn about-face."""
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        boxed = FakeDirectionalSensors(front=8, front_left=8, front_right=8, back=8)
+        cmd = layer.evaluate(boxed)
+        assert cmd.motion_vector == (0, 0, 0), "must settle before flipping direction"
+        clock.tick(emergency_mod.SETTLE_S + 0.01)
+        cmd = layer.evaluate(boxed)
+        assert cmd.motion_vector[2] < 0, f"expected the clockwise spin: {cmd.message}"
+    print("PASS boxed in goes straight to the spin")
 
 
 def test_rear_obstacle_alone_is_ignored():
@@ -802,10 +836,11 @@ ALL_TESTS = [
     test_avoid_keeps_turning_until_clear_of_the_margin,
     test_avoid_spins_180_clockwise_when_wedged,
     test_the_spin_runs_the_full_half_turn,
-    test_a_second_wedge_latches_instead_of_spinning_forever,
+    test_the_escape_drives_out_after_the_spin,
+    test_the_escape_never_gives_up_and_widens_each_retry,
     test_rear_obstacle_alone_is_ignored,
     test_scan_backoff_aborts_on_a_close_rear,
-    test_boxed_in_halts,
+    test_boxed_in_goes_straight_to_the_spin,
     test_a_distant_wall_does_not_steer_the_escape,
     test_tied_diagonals_alternate_instead_of_always_turning_right,
     test_scan_pivots_away_from_the_tighter_side,
