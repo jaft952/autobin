@@ -1,9 +1,12 @@
 """
 tests/test_ibvs_centering.py
 
-Pure-logic tests for distance_error.py + reactive_controller.py. NO hardware or
-camera needed — builds synthetic DetectionResult/BoundingBox fixtures by
-hand, same spirit as tests/test_scan_logic.py:
+Pure-logic tests for distance_error.py + reactive_controller.py + target_lock.py
+(see src/perception/target_lock.py -- picks the largest-bbox tin and holds it
+across frames, one at a time, instead of re-deriving "the" target from
+DetectionResult.best every frame). NO hardware or camera needed — builds
+synthetic DetectionResult/BoundingBox fixtures by hand, same spirit as
+tests/test_scan_logic.py:
 
     python tests/test_ibvs_centering.py      # plain runner with PASS/FAIL summary
     pytest tests/test_ibvs_centering.py      # also works
@@ -46,22 +49,31 @@ from src.visual_servoing.reactive_controller import (
 )
 from src.visual_servoing.ultrasonic_safety import (
     UltrasonicSafety, UltrasonicWatchdog, EMERGENCY_STOP_CM, GRAB_CONFIRM_CM)
+from src.perception.target_lock import TargetLock
 
 
 # ── Fixture builder ──────────────────────────────────────────────────────
+
+def _make_box(norm_x: float, bbox_height_px: float, confidence: float = 0.9,
+              bbox_width_px: float = 60, frame_width: int = 640) -> BoundingBox:
+    """A single BoundingBox whose ground-contact point sits at norm_x (0..1
+    across the frame) with the given pixel bbox height (drives the monocular
+    distance estimate) and width (drives bbox area)."""
+    center_x = norm_x * frame_width
+    half_w = bbox_width_px / 2
+    x1 = int(center_x - half_w)
+    x2 = int(center_x + half_w)
+    y1 = 100
+    y2 = int(y1 + bbox_height_px)
+    return BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=confidence)
+
 
 def _make_detection(norm_x: float, bbox_height_px: float,
                      frame_width: int = 640, frame_height: int = 480) -> DetectionResult:
     """A single detection whose ground-contact point sits at norm_x (0..1
     across the frame) with the given pixel bbox height (drives the monocular
     distance estimate)."""
-    center_x = norm_x * frame_width
-    half_w = 30
-    x1 = int(center_x - half_w)
-    x2 = int(center_x + half_w)
-    y1 = 100
-    y2 = int(y1 + bbox_height_px)
-    box = BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, confidence=0.9)
+    box = _make_box(norm_x, bbox_height_px, frame_width=frame_width)
     return DetectionResult(detections=[box], frame_width=frame_width, frame_height=frame_height)
 
 
@@ -219,6 +231,71 @@ def test_speed_tier_labels_cover_every_branch():
     print("PASS speed_tier labels match every compute_reactive_command branch")
 
 
+# ── TargetLock prioritization ────────────────────────────────────────────
+#
+# The live loop used to feed every frame's DetectionResult.best straight into
+# compute_target_error / _solve_for_detection -- max CONFIDENCE, recomputed
+# independently every frame with no memory. With two tins in view that
+# flips which one "best" points at frame to frame (confidence jitters,
+# whichever detection happens to be biggest that instant wins), so the robot
+# would drift off a can it was mid-approach on instead of finishing the
+# grab. These tests drive TargetLock the same way run_live_demo() does: feed
+# it raw detections, wrap the box it returns in a single-detection
+# DetectionResult, and check THAT is what steering/distance actually locks
+# onto -- largest bbox area first, held until released (grab done).
+
+
+def test_locks_onto_largest_bbox_not_highest_confidence():
+    """Two tins in one frame: a physically bigger, lower-confidence one and
+    a smaller, higher-confidence one. TargetLock must pick the bigger box --
+    confidence never enters the decision."""
+    small_confident = _make_box(norm_x=0.2, bbox_height_px=40, confidence=0.99, bbox_width_px=30)
+    big_unsure = _make_box(norm_x=0.7, bbox_height_px=200, confidence=0.75, bbox_width_px=150)
+    lock = TargetLock()
+    picked = lock.select([small_confident, big_unsure], now=0.0)
+    assert picked is big_unsure, "largest bbox area must win, not highest confidence"
+    print("PASS TargetLock picks the largest bbox area over the more confident detection")
+
+
+def test_reactive_command_targets_the_locked_can_not_a_bigger_newcomer():
+    """Approaching the locked (initially largest) can when a second, now-
+    bigger can appears nearby -- the drive command must still steer toward
+    the ORIGINAL locked can's position, not jump to the newcomer. Mirrors
+    run_live_demo(): TargetLock.select() output feeds a single-detection
+    DetectionResult into compute_target_error, same as the live loop does."""
+    tin = _make_box(norm_x=0.3, bbox_height_px=150, bbox_width_px=100)
+    lock = TargetLock()
+    assert lock.select([tin], now=0.0) is tin
+
+    newcomer = _make_box(norm_x=0.7, bbox_height_px=250, bbox_width_px=200)  # bigger, elsewhere
+    locked = lock.select([tin, newcomer], now=0.2)
+    assert locked is not None and locked is tin, "must stay locked on the original can"
+
+    locked_result = DetectionResult(detections=[locked], frame_width=640, frame_height=480)
+    error = compute_target_error(locked_result)
+    cmd = compute_reactive_command(error, _kin())
+    assert error.lateral_error < 0, "locked can is left of center -> negative error"
+    assert cmd is not None and cmd.right_speed < cmd.left_speed, cmd
+    print("PASS drive command steers toward the locked can, ignoring the bigger newcomer")
+
+
+def test_advances_to_next_largest_after_release():
+    """release() is what run_live_demo() calls right after a successful
+    grab -- the freed-up tin is gone from the frame, so the very next
+    select() must pick the largest of what's LEFT, moving the robot on to
+    the next target instead of re-locking the (now collected) one."""
+    first = _make_box(norm_x=0.5, bbox_height_px=300, bbox_width_px=250)
+    second = _make_box(norm_x=0.2, bbox_height_px=150, bbox_width_px=100)
+    lock = TargetLock()
+    assert lock.select([first, second], now=0.0) is first
+
+    lock.release()   # simulates _attempt_grab() succeeding on `first`
+    # `first` is gone (collected); only `second` remains in view.
+    picked = lock.select([second], now=0.1)
+    assert picked is second, "must advance to the next-largest remaining tin"
+    print("PASS releasing the lock after a grab advances to the next-largest tin")
+
+
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -233,6 +310,9 @@ ALL_TESTS = [
     test_reactive_command_when_can_is_left_of_center,
     test_reactive_command_speed_tiers_are_hardcoded,
     test_speed_tier_labels_cover_every_branch,
+    test_locks_onto_largest_bbox_not_highest_confidence,
+    test_reactive_command_targets_the_locked_can_not_a_bigger_newcomer,
+    test_advances_to_next_largest_after_release,
 ]
 
 
@@ -583,12 +663,20 @@ def _solve_for_detection(result: DetectionResult, solver):
     return solved, pose, point, band
 
 
-def _attempt_grab(solved, pose, point, arm, actuator, state: dict) -> None:
+def _attempt_grab(solved, pose, point, arm, actuator, state: dict,
+                  target_lock=None) -> None:
     """Run the SAME collect (grab -> dump) -> home sequence the autonomous
     stack runs, so this is byte-for-byte the grab you tune in the calibration
     tool. solved/pose/point come from _solve_for_detection (already checked
     non-None by the caller). Cooldown-gated so a tin sitting in the band
-    doesn't re-trigger every single frame."""
+    doesn't re-trigger every single frame.
+
+    target_lock: released only once the WHOLE sequence below completes
+    without raising -- the tin is then actually gone from the frame, so the
+    very next select() moves the robot on to the next-largest one instead of
+    waiting out LOST_GRACE_S for the (now empty) spot to time out on its
+    own. Left locked on a raise: an interrupted grab may not have actually
+    collected the tin, so it's still the right one to re-approach."""
     import time as _time
     if _time.monotonic() < state["cooldown_until"]:
         return
@@ -605,6 +693,8 @@ def _attempt_grab(solved, pose, point, arm, actuator, state: dict) -> None:
         arm.collect(solved, tin_pose=pose)   # grab + drop in the bin
         arm.goto("home")
         arm.release()
+        if target_lock is not None:
+            target_lock.release()
     finally:
         actuator.stop()
     print("[arm] grab sequence done.")
@@ -650,6 +740,19 @@ def run_live_demo():
     (band == BAND_TOO_CLOSE) fires a bounded backward _retreat_pulse()
     instead -- the same pulse the ultrasonic watchdog uses for its own
     emergency retreat.
+
+    TARGET PRIORITY (see src/perception/target_lock.py): with more than one
+    tin in frame, every distance/steer/grab decision above acts on ONE
+    locked tin -- the largest bbox area at lock time -- not on whichever
+    detection happens to be DetectionResult.best (max confidence) that
+    particular frame. Without this the robot would visibly get close to one
+    tin, then drift onto a different one instead of finishing the grab,
+    because "best" is recomputed from scratch every frame with no memory.
+    The lock is held through brief occlusion (e.g. the arm blocking the
+    camera mid-grab) and is released the moment a grab sequence actually
+    completes (see _attempt_grab), so the very next frame re-picks the
+    largest of whatever tins are left -- one tin at a time, nearest/biggest
+    first.
 
     Keys (window focused): m = toggle drive, g = toggle arm, q = quit.
     Ctrl+C also stops.
@@ -706,6 +809,12 @@ def run_live_demo():
     # top priority, not delayed behind camera inference or a retreat pulse's
     # time.sleep() below. See UltrasonicWatchdog's docstring.
     ultra_watchdog = UltrasonicWatchdog(ultrasonic, stop_callback=_retreat_pulse).start()
+    # Picks the largest-bbox tin and holds it across frames -- without this,
+    # compute_target_error/_solve_for_detection below would re-derive
+    # "the" target from result.best (max CONFIDENCE) fresh every frame, so
+    # steering could hop to a different can mid-approach whenever it briefly
+    # scored higher than the one already being closed in on.
+    target_lock = TargetLock()
     grab_latch = {"on": False, "until": 0.0}
     band = BAND_NOT_CALIBRATED   # last frame's band; gates the fast-path detect
 
@@ -753,14 +862,28 @@ def run_live_demo():
             # nothing, since BAND_TOO_FAR can't solve a grab anyway.
             result = detector.detect(fast=(band == BAND_TOO_FAR))
             ultra = ultra_watchdog.latest   # background thread already stopped us if this is emergency_stop
-            error = compute_target_error(result)
+
+            # Pick/hold the priority target -- largest bbox area first, same
+            # tin every frame until it's grabbed (released below) or lost
+            # from view past LOST_GRACE_S. None here can mean either "no can
+            # in frame" or "locked can occluded, still inside the grace
+            # window" -- either way the rest of this tick must not fall back
+            # to some OTHER visible can, so it's wrapped as "not found" for
+            # every downstream consumer, same as an empty DetectionResult.
+            locked_box = target_lock.select(result.detections)
+            locked_result = DetectionResult(
+                detections=[locked_box] if locked_box is not None else [],
+                frame_width=result.frame_width, frame_height=result.frame_height)
+
+            error = compute_target_error(locked_result)
 
             cmd = compute_reactive_command(error, kin)
             tier = speed_tier(error)   # single source of truth for driving AND display below
 
             # Ask arc_grasp EVERY frame, and stop the moment it can solve --
-            # not when the uncalibrated distance_cm says "reached".
-            solved, tin_pose, point, band = _solve_for_detection(result, solver)
+            # not when the uncalibrated distance_cm says "reached". Solved
+            # against the LOCKED tin only, same reasoning as compute_target_error above.
+            solved, tin_pose, point, band = _solve_for_detection(locked_result, solver)
             if solved is not None:
                 grab_latch["on"] = True
                 grab_latch["until"] = time.monotonic() + GRABBABLE_LATCH_S
@@ -771,8 +894,8 @@ def run_live_demo():
             # re-starts the approach -- straight back into the old loop.
             grabbable = grab_latch["on"]
 
-            bbox_width_px = result.best.width if result.best is not None else None
-            bbox_height_px = result.best.height if result.best is not None else None
+            bbox_width_px = locked_box.width if locked_box is not None else None
+            bbox_height_px = locked_box.height if locked_box is not None else None
             bbox_area_px = bbox_width_px * bbox_height_px if bbox_width_px is not None and bbox_height_px is not None else None
 
             if driving:
@@ -836,7 +959,8 @@ def run_live_demo():
                     print("[grab] WARNING: no front ultrasonic reading -- grabbing on vision alone")
                 grab_state["grabbing"] = True
                 try:
-                    _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state)
+                    _attempt_grab(solved, tin_pose, point, arm, actuator, grab_state,
+                                 target_lock=target_lock)
                 finally:
                     grab_state["grabbing"] = False
                 grab_latch["on"] = False   # can should be gone -- re-evaluate fresh
@@ -844,7 +968,7 @@ def run_live_demo():
 
             if show:
                 try:
-                    frame = detector.get_annotated_frame(result)
+                    frame = detector.get_annotated_frame(result, target=locked_box)
                     if frame is None:
                         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
                         cv2.putText(frame, "[waiting for first frame...]", (20, 360),
@@ -897,7 +1021,9 @@ def run_live_demo():
             motion_plan = _format_motion_plan(cmd, error, tier, ultra.emergency_stop)
             ultra_status = (f"ULTRASONIC: front={ultra.distance_front_cm}cm "
                             f"| emergency={ultra.emergency_stop} grab_ok={ultra.grab_confirmed}")
-            target_status = f"TARGET: found={error.found} lateral={error.lateral_error:+.2f} dist={error.distance_cm}cm reached={error.reached} too_close={error.too_close}"
+            target_status = (f"TARGET: found={error.found} lateral={error.lateral_error:+.2f} "
+                             f"dist={error.distance_cm}cm reached={error.reached} too_close={error.too_close} "
+                             f"| locked={target_lock.locked} tins_in_view={len(result.detections)}")
             bbox_info = f"BBOX: w={bbox_width_px} h={bbox_height_px} area={bbox_area_px}px" if bbox_area_px else "BBOX: none"
             mode_status = f"MODE: drive={'ON' if driving else 'OFF'} arm={'ARMED' if armed else 'OFF'} ctrl={controller_name}"
             grab_status = f"GRAB: ready={grab_ready_now} stable={grab_stable_s:.1f}s/{GRAB_STABLE_S:.0f}s"
