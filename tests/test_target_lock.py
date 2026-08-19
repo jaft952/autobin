@@ -29,8 +29,8 @@ sys.path.append(str(project_root))
 # run on a plain Windows checkout; the CameraSensor tests skip without torch.
 _spec = importlib.util.spec_from_file_location(
     "target_lock", project_root / "src" / "perception" / "target_lock.py")
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
+_mod = importlib.util.module_from_spec(_spec) # type: ignore
+_spec.loader.exec_module(_mod) # type: ignore
 TargetLock, LOST_GRACE_S = _mod.TargetLock, _mod.LOST_GRACE_S
 
 
@@ -161,7 +161,7 @@ def test_camera_sensor_getters_follow_lock():
 
     tin = square(400, 600, 200)
     huge = square(1000, 500, 400)
-    result = DetectionResult(detections=[tin, huge],
+    result = DetectionResult(detections=[tin, huge], # type: ignore
                              frame_width=1280, frame_height=720)
     sensor._latest_result = result
     sensor._latest_at = time.monotonic()
@@ -170,7 +170,7 @@ def test_camera_sensor_getters_follow_lock():
     assert pos is not None
     assert abs(pos[0] - huge.center_x / 1280) < 1e-6, "largest tin first"
     ground = sensor.get_litter_ground_contact()
-    assert abs(ground[1] - huge.y2 / 720) < 1e-6, "ground contact of the same tin"
+    assert abs(ground[1] - huge.y2 / 720) < 1e-6, "ground contact of the same tin" # type: ignore
 
     # Same frame queried three times -> one selection, no state churn.
     sensor.get_litter_position()
@@ -179,7 +179,7 @@ def test_camera_sensor_getters_follow_lock():
     # New frame where the locked tin shrank and another one is now larger.
     huge2 = square(1010, 505, 380)
     other = square(300, 400, 500)
-    sensor._latest_result = DetectionResult(detections=[other, huge2],
+    sensor._latest_result = DetectionResult(detections=[other, huge2], # type: ignore
                                             frame_width=1280, frame_height=720)
     sensor._latest_at = time.monotonic()
     pos = sensor.get_litter_position()
@@ -203,7 +203,7 @@ def test_stale_result_reports_nothing():
     sensor._target_lock = TargetLock()
     sensor._selected_box = None
     sensor._selected_at = -1.0
-    sensor._latest_result = DetectionResult(detections=[square(400, 600, 200)],
+    sensor._latest_result = DetectionResult(detections=[square(400, 600, 200)], # type: ignore
                                             frame_width=1280, frame_height=720)
     sensor._latest_at = time.monotonic() - (STALE_AFTER_S + 1.0)
 

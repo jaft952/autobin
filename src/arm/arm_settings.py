@@ -17,7 +17,7 @@ GRAB_ANGLES     = [101.0, 106.0, 40.0, 180.0, 80.0]
 ARC_LIFT_ARM    = [96.7, 96.7, 100.0, 100.0, 80.0]
 
 GRIPPER_OPEN = 50.0
-GRIPPER_CLOSED = 4.0
+GRIPPER_CLOSED = 2.0
 
 # Grab order per tin pose: the LAST channel is the one that descends onto the
 # tin — upright: CH2 shoulder, lying: CH3 elbow.
