@@ -28,14 +28,25 @@ Expected behavior (wheels live, no camera):
     than ~10 cm trips Layer 5 and halts the base until cleared.
 
 Calibrating the pattern: pass --turn-90 / --shift / --speed / --turn-speed to
-try values live (they call ScanAroundLayer.set_timing/set_speeds); once a set
-works, write it into src/subsumption/layers/layer1_scan.py as the new default.
+seed starting values (they call ScanAroundLayer.set_timing/set_speeds); once
+a set works, write it into src/subsumption/layers/layer1_scan.py as the new
+default.
+
+Live speed adjustment: while the loop is running, type into the same
+terminal and press Enter:
+    s 0.5       set lane cruising speed to 0.5
+    t 0.4       set turn/pivot speed to 0.4
+    (any other input just gets ignored)
+This runs in a background thread and calls ScanAroundLayer.set_speeds(), the
+same setter the dashboard uses -- just plain attribute writes, safe to call
+from another thread mid-tick.
 
 Ctrl+C stops the motors and releases GPIO.
 """
 import argparse
 import os
 import sys
+import threading
 import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -55,7 +66,34 @@ def build_sensors(with_camera: bool) -> SensorHub:
     if with_camera:
         from src.hardware.sensors.camera_sensor import CameraSensor
         camera = CameraSensor()
-    return SensorHub(ultrasonic=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)), camera=camera)
+    return SensorHub(
+        front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
+        back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
+        front_left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
+        front_right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
+        camera=camera,
+    )
+
+
+def _speed_input_loop(scan: ScanAroundLayer, emergency: EmergencyStopLayer) -> None:
+    """Background thread: 's <val>' sets lane speed, 't <val>' sets turn
+    speed on both layers (layer 5 outvotes the scan pivot, so they must
+    match). Runs until stdin closes."""
+    for line in sys.stdin:
+        parts = line.split()
+        if len(parts) != 2 or parts[0] not in ("s", "t"):
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError:
+            continue
+        if parts[0] == "s":
+            scan.set_speeds(forward_speed=value)
+            print(f"[speed] lane speed -> {value}")
+        else:
+            scan.set_speeds(turn_speed=value)
+            emergency.set_turn_speed(value)
+            print(f"[speed] turn speed -> {value} (scan + emergency)")
 
 
 def main():
@@ -64,7 +102,10 @@ def main():
                     help="print wheel commands instead of driving")
     ap.add_argument("--camera", action="store_true",
                     help="also run YOLO litter detection (scan yields to it)")
-    ap.add_argument("--hz", type=float, default=10.0, help="control loop rate")
+    # 20Hz: the hub pings one ultrasonic per tick (round-robin, see
+    # SensorHub.update), so the loop rate divided by 4 is each sensor's
+    # refresh rate.
+    ap.add_argument("--hz", type=float, default=20.0, help="control loop rate")
     ap.add_argument("--turn-90", type=float, default=None,
                     help="seconds per ~90 deg pivot (calibration)")
     ap.add_argument("--shift", type=float, default=None,
@@ -81,7 +122,9 @@ def main():
     scan = ScanAroundLayer()
     scan.set_timing(args.turn_90, args.shift, args.max_lane)
     scan.set_speeds(args.speed, args.turn_speed)
-    layers = [SystemIdleLayer(), scan, EmergencyStopLayer()]
+    emergency = EmergencyStopLayer()
+    emergency.set_turn_speed(args.turn_speed)
+    layers = [SystemIdleLayer(), scan, emergency]
     arbitrator = Arbitrator()
     executor = MotionExecutor(actuator=PrintActuator() if args.no_motors else None) # type: ignore
 
@@ -89,6 +132,9 @@ def main():
     mode = "PRINT-ONLY" if args.no_motors else "WHEELS LIVE"
     print(f"floor scan @ {args.hz:.0f} Hz — {mode} — Ctrl+C to stop")
     print(f"scan: {scan.timing_summary()}")
+    print("live speed control: type 's <0..1>' or 't <0..1>' + Enter")
+
+    threading.Thread(target=_speed_input_loop, args=(scan, emergency), daemon=True).start()
 
     sensors.start()
     last_msg = None
@@ -100,6 +146,8 @@ def main():
             for layer in layers:
                 arbitrator.submit_command(layer.evaluate(sensors))
             winning = arbitrator.get_winning_action()
+            for layer in layers:
+                layer.notify_arbitration(layer.layer_id == winning.layer_id)
             executor.execute(winning)
             arbitrator.clear()
 

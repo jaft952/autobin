@@ -1,37 +1,41 @@
 """
 tests/test_ultrasonic.py
 
-HC-SR04 wiring check — TOP + BOTTOM sensors. Run this FIRST, before
+HC-SR04 wiring check -- up to 4 sensors. Run this FIRST, before
 test_floor_scan.py.
 
 Usage (Pi):
     python tests/test_ultrasonic.py                 # default pins, see below
-    python tests/test_ultrasonic.py --trig2 27 --echo2 22 --hz 10
+    python tests/test_ultrasonic.py --trig3 5 --echo3 6 --hz 10
 
 Wiring (BCM numbering):
-    TOP sensor:
-        VCC  -> 5V   (physical pin 2)
-        GND  -> GND  (physical pin 6)
+    front:
         TRIG -> GPIO 23 (physical pin 16)
         ECHO -> GPIO 24 (physical pin 18)
-    BOTTOM sensor:
-        VCC  -> 5V   (physical pin 4)
-        GND  -> GND  (physical pin 9)
+    front_left (diagonal):
         TRIG -> GPIO 27 (physical pin 13)
         ECHO -> GPIO 22 (physical pin 15)
-                ECHO outputs 5V, Pi GPIO tolerates only 3.3V!
+    front_right (diagonal):
+        TRIG -> GPIO 5  (physical pin 29)
+        ECHO -> GPIO 6  (physical pin 31)
+    back:
+        TRIG -> GPIO 17 (physical pin 11)
+        ECHO -> GPIO 20 (physical pin 38)
+    All sensors: VCC -> 5V, GND -> GND (shared rail is fine).
+                 ECHO outputs 5V, Pi GPIO tolerates only 3.3V --
+                 use a voltage divider on every ECHO line!
 
 What you should see:
-    Two distance readouts side by side (top/bottom) ~10x/s, each with a bar
-    that shrinks as you move your hand toward that sensor. "--" means no
-    echo (nothing in range, wiring fault, or not running on the Pi). Check
-    both read sensibly at 10/30/100 cm.
+    One distance readout per sensor, ~10x/s, each with a bar that shrinks
+    as you move your hand toward that sensor. "--" means no echo (nothing
+    in range, wiring fault, or not running on the Pi). Check each reads
+    sensibly at 10/30/100 cm.
 """
 import argparse
 import os
 import sys
 import time
-from typing import Optional
+from typing import List, Optional, Tuple
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -40,49 +44,54 @@ from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicP
 BAR_FULL_CM = 100.0  # bar spans 0..1 m
 BAR_WIDTH = 40
 
+DEFAULT_SENSORS: List[Tuple[str, int, int]] = [
+    ("front", 23, 24),
+    ("front_left", 27, 22),
+    ("front_right", 5, 6),
+    ("back", 17, 20),
+]
+
 
 def _reading_str(label: str, dist: Optional[float]) -> str:
     val = f"{'--':>9s}" if dist is None else f"{dist:6.1f} cm"
     filled = 0 if dist is None else int(min(dist, BAR_FULL_CM) / BAR_FULL_CM * BAR_WIDTH)
     bar = "#" * filled + " " * (BAR_WIDTH - filled)
-    return f"{label:<6s} {val} |{bar}|"
+    return f"{label:<8s} {val} |{bar}|"
 
 
 def main():
-    ap = argparse.ArgumentParser(description="HC-SR04 wiring check (top + bottom)")
-    ap.add_argument("--trig", type=int, default=23, help="top sensor TRIG pin (GPIO)")
-    ap.add_argument("--echo", type=int, default=24, help="top sensor ECHO pin (GPIO)")
-    ap.add_argument("--trig2", type=int, default=27, help="bottom sensor TRIG pin (GPIO)")
-    ap.add_argument("--echo2", type=int, default=22, help="bottom sensor ECHO pin (GPIO)")
+    ap = argparse.ArgumentParser(description="HC-SR04 wiring check (up to 4 sensors)")
+    for label, default_trig, default_echo in DEFAULT_SENSORS:
+        ap.add_argument(f"--trig-{label}", dest=f"trig_{label}", type=int,
+                         default=default_trig, help=f"{label} sensor TRIG pin (GPIO)")
+        ap.add_argument(f"--echo-{label}", dest=f"echo_{label}", type=int,
+                         default=default_echo, help=f"{label} sensor ECHO pin (GPIO)")
     ap.add_argument("--hz", type=float, default=10.0, help="poll rate")
     args = ap.parse_args()
 
-    sensor_top = UltrasonicSensor(UltrasonicPins(trig=args.trig, echo=args.echo))
-    sensor_bottom = UltrasonicSensor(UltrasonicPins(trig=args.trig2, echo=args.echo2))
+    sensors = []
+    for label, _, _ in DEFAULT_SENSORS:
+        trig = getattr(args, f"trig_{label}")
+        echo = getattr(args, f"echo_{label}")
+        sensors.append((label, UltrasonicSensor(UltrasonicPins(trig=trig, echo=echo))))
+        print(f"{label:<8s} TRIG=GPIO{trig} ECHO=GPIO{echo}")
+
     period = 1.0 / args.hz
-    print(f"top TRIG=GPIO{args.trig} ECHO=GPIO{args.echo}  |  "
-          f"bottom TRIG=GPIO{args.trig2} ECHO=GPIO{args.echo2} "
-          f"@ {args.hz:.0f} Hz — Ctrl+C to quit")
+    print(f"@ {args.hz:.0f} Hz -- Ctrl+C to quit")
 
     first = True
     try:
         while True:
             tick = time.monotonic()
-            sensor_top.update()
-            sensor_bottom.update()
-            line_top = _reading_str("top", sensor_top.get_distance_cm())
-            line_bottom = _reading_str("bottom", sensor_bottom.get_distance_cm())
+            for _, sensor in sensors:
+                sensor.update()
+            lines = [_reading_str(label, sensor.get_distance_cm()) for label, sensor in sensors]
 
             if first:
-                # First frame: just lay down both lines, cursor ends on line 2.
-                print(line_top)
-                print(line_bottom, end="", flush=True)
+                print("\n".join(lines), end="", flush=True)
                 first = False
             else:
-                # Move up to line 1 and rewrite both lines in place (fixed-width
-                # fields mean no leftover characters from the previous frame).
-                print("\x1b[1A\r" + line_top)
-                print("\r" + line_bottom, end="", flush=True)
+                print(f"\x1b[{len(lines) - 1}A\r" + "\n".join(lines), end="", flush=True)
 
             sleep_left = period - (time.monotonic() - tick)
             if sleep_left > 0:
@@ -90,8 +99,8 @@ def main():
     except KeyboardInterrupt:
         print("\nbye")
     finally:
-        sensor_top.close()
-        sensor_bottom.close()
+        for _, sensor in sensors:
+            sensor.close()
 
 
 if __name__ == "__main__":

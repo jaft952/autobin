@@ -35,7 +35,7 @@ import time
 from collections import deque
 from typing import Optional
 
-from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor
+from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicPins
 from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
 from src.subsumption.motion_executor import MotionExecutor
@@ -73,7 +73,13 @@ class RobotRuntime:
                 camera = CameraSensor()
             except Exception as exc:
                 self.log.warning(f"camera unavailable ({exc}) — running without it")
-        self.sensors = SensorHub(ultrasonic=UltrasonicSensor(), camera=camera)
+        self.sensors = SensorHub(
+            front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
+            back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
+            front_left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
+            front_right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
+            camera=camera,
+        )
         self.camera_available = camera is not None
 
         # ── Layers / arbitration / executors ─────────────────────────────
@@ -180,6 +186,8 @@ class RobotRuntime:
             for layer in layers:
                 self.arbitrator.submit_command(layer.evaluate(self.sensors))
             winning = self.arbitrator.get_winning_action()
+            for layer in layers:
+                layer.notify_arbitration(layer.layer_id == winning.layer_id)
             self.arbitrator.clear()
 
             self.motion.execute(winning)

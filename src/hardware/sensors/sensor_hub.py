@@ -9,13 +9,20 @@ poll semantic getters (Rule 3). Any sensor can be omitted (None): its getters
 then return the interface defaults, which lets tests run e.g. the zigzag scan
 without the camera attached.
 
+Up to 4 ultrasonics: front / back / front_left / front_right (the last two
+are diagonals). They are pinged ROUND-ROBIN, one per tick: firing them
+back-to-back let each receiver hear its neighbour's outgoing burst directly
+through the air, which decodes as a phantom obstacle a few cm away. One tick
+apart clears the HC-SR04 datasheet's ~60ms between-measurement minimum.
+
 Obstacle semantics — two thresholds on purpose:
-    get_obstacle_distance_cm()  raw filtered range. Layer 1 (scan) uses this to
-                                trigger its zigzag lane-turn EARLY (~35 cm).
-    has_obstacle()              True only when an obstacle is INSIDE
-                                EMERGENCY_STOP_CM. This is what Layer 5
-                                (emergency stop) polls, so it only fires if the
-                                scan layer failed to turn away in time.
+    get_obstacle_distance_cm()  FRONT sensor only. Layer 1 (scan) turns its
+                                zigzag lane EARLY on this (~35 cm).
+    has_obstacle()              True when ANY fitted ultrasonic is inside
+                                EMERGENCY_STOP_CM. A coarse summary only:
+                                the layers read the per-direction getters,
+                                because the rear must be acted on solely
+                                while reversing.
 Keeping the scan threshold well above the emergency threshold is what lets the
 robot patrol without constantly tripping the emergency halt.
 """
@@ -29,16 +36,17 @@ from src.hardware.sensors.interfaces import SensorInterface
 class SensorHub(SensorInterface):
 
     # Inside this range the situation is "imminent collision": Layer 5 halts.
-    EMERGENCY_STOP_CM = 10.0
+    EMERGENCY_STOP_CM = 15.0
 
-    def __init__(self, ultrasonic=None, camera=None):
-        """
-        Args:
-            ultrasonic: UltrasonicSensor instance, or None if not fitted.
-            camera:     CameraSensor instance, or None if not fitted.
-        """
-        self._ultrasonic = ultrasonic
+    def __init__(self, front=None, back=None, front_left=None, front_right=None, camera=None):
+        """Any sensor may be None if not fitted."""
+        self._front = front
+        self._back = back
+        self._front_left = front_left
+        self._front_right = front_right
         self._camera = camera
+        self._ultrasonics = [s for s in (front, back, front_left, front_right) if s is not None]
+        self._next_ping = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -51,8 +59,8 @@ class SensorHub(SensorInterface):
         """Call once on shutdown."""
         if self._camera is not None:
             self._camera.stop()
-        if self._ultrasonic is not None:
-            self._ultrasonic.close()
+        for sensor in self._ultrasonics:
+            sensor.close()
 
     # ── SensorInterface implementation ────────────────────────────────────
 
@@ -60,17 +68,29 @@ class SensorHub(SensorInterface):
         """Poll every fitted sensor. Called once per tick by the main loop."""
         if self._camera is not None:
             self._camera.update()
-        if self._ultrasonic is not None:
-            self._ultrasonic.update()
+        if self._ultrasonics:
+            self._ultrasonics[self._next_ping].update()
+            self._next_ping = (self._next_ping + 1) % len(self._ultrasonics)
 
     def get_obstacle_distance_cm(self) -> Optional[float]:
-        if self._ultrasonic is None:
+        if self._front is None:
             return None
-        return self._ultrasonic.get_distance_cm()
+        return self._front.get_distance_cm()
+
+    def get_obstacle_distance_back_cm(self) -> Optional[float]:
+        return self._back.get_distance_cm() if self._back is not None else None
+
+    def get_obstacle_distance_front_left_cm(self) -> Optional[float]:
+        return self._front_left.get_distance_cm() if self._front_left is not None else None
+
+    def get_obstacle_distance_front_right_cm(self) -> Optional[float]:
+        return self._front_right.get_distance_cm() if self._front_right is not None else None
 
     def has_obstacle(self) -> bool:
-        dist = self.get_obstacle_distance_cm()
-        return dist is not None and dist < self.EMERGENCY_STOP_CM
+        return any(
+            (d := sensor.get_distance_cm()) is not None and d < self.EMERGENCY_STOP_CM
+            for sensor in self._ultrasonics
+        )
 
     def get_litter_position(self):
         if self._camera is None:

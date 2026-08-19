@@ -56,19 +56,37 @@ from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
 
 # Motion fractions (scaled by MotionExecutor / MotionCalibration duty).
-FORWARD_SPEED = 0.6   # lane cruising speed
-TURN_SPEED    = 0.55  # pivot speed (below this the base tends to stall)
-BACKOFF_SPEED = 0.5   # gentle reverse away from a close wall
+FORWARD_SPEED = 0.25   # lane cruising speed
+TURN_SPEED    = 0.32 # pivot speed (below this the base tends to stall)
+# Backing off reuses the live lane speed; a constant here would override
+# every speed calibration.
 
 # Ultrasonic thresholds (cm).
-TURN_AT_CM    = 35.0  # end the lane and start the zigzag turn
+TURN_AT_CM    = 20.0  # front sensor: end the lane and start the zigzag turn
+DIAGONAL_TURN_AT_CM = 18.0  # a diagonal ends the lane only this close
 BACKOFF_AT_CM = 20.0  # we noticed the wall late -> reverse first for clearance
+BACKOFF_REAR_MIN_CM = 20.0  # abort the reverse if the rear closes to this
+
+# Pivot-side override. Sides are compared saturated at PIVOT_ROOM_CM so a
+# harmless far wall can't outvote a side reading nothing at all; the margin
+# stops near-equal readings from cancelling the zigzag's alternation.
+PIVOT_ROOM_CM   = 40.0
+PIVOT_TIGHT_CM  = 25.0
+PIVOT_MARGIN_CM = 5.0
 
 # Timed phases (seconds) — calibrate on the Pi, see module docstring.
 TURN_90_S  = 0.9
 SHIFT_S    = 1.2
 BACKOFF_S  = 0.45
 MAX_LANE_S = 12.0
+
+
+def _side_room_cm(sensors: Any, getter: str) -> float:
+    """Free space on one side, saturated at PIVOT_ROOM_CM. No echo (None) and
+    a missing getter both mean 'nothing in range', i.e. fully open."""
+    fn = getattr(sensors, getter, None)
+    value = fn() if fn is not None else None
+    return PIVOT_ROOM_CM if value is None else min(value, PIVOT_ROOM_CM)
 
 
 class _Phase(enum.Enum):
@@ -105,6 +123,8 @@ class ScanAroundLayer(BaseLayer):
         self._phase_started: float = 0.0
         self._lane_started: float = 0.0
         self._turn_left: bool = True           # pivot side; alternates per wall
+        self._pivot_note: str = "L-- R--"      # side readings behind the last choice
+        self._suppressed_since: Optional[float] = None
 
     # ── Calibration knobs (the Pi tools drive these, see module docstring) ─
 
@@ -133,15 +153,31 @@ class ScanAroundLayer(BaseLayer):
 
     # ── Subsumption API ───────────────────────────────────────────────────
 
+    def notify_arbitration(self, won: bool) -> None:
+        if not won and self._suppressed_since is None:
+            self._suppressed_since = time.monotonic()
+
     def evaluate(self, sensors: Any) -> ActionCommand:
         # A target exists -> higher layers will handle it; go inactive and
         # forget the zigzag phase (the robot is about to move off-pattern).
         if sensors.get_litter_position() or sensors.get_aerial_trash_position():
             self._phase = None
+            self._suppressed_since = None
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         now = time.monotonic()
-        dist = self._obstacle_distance_cm(sensors)
+        # Every phase is timed open-loop, so time spent suppressed by a higher
+        # layer must not count -- otherwise the pattern runs to completion
+        # while the robot is being driven somewhere else entirely.
+        if self._suppressed_since is not None:
+            paused = now - self._suppressed_since
+            self._phase_started += paused
+            self._lane_started += paused
+            self._suppressed_since = None
+
+        front, left, right = self._clearances(sensors)
+        dist = min([d for d in (front, left, right) if d is not None], default=None)
+        wall_ahead = self._wall_ahead(front, left, right)
 
         if self._phase is None:
             self._enter(_Phase.DRIVE, now)
@@ -149,14 +185,20 @@ class ScanAroundLayer(BaseLayer):
 
         # ---- phase transitions ------------------------------------------
         if self._phase == _Phase.DRIVE:
-            wall_seen = dist is not None and dist <= TURN_AT_CM
-            if wall_seen and dist <= BACKOFF_AT_CM:
+            wall_seen = wall_ahead
+            if wall_seen and dist is not None and dist <= BACKOFF_AT_CM:
                 self._enter(_Phase.BACKOFF, now)
             elif wall_seen or (now - self._lane_started) >= self.max_lane_s:
+                self._turn_left = self._pivot_side(sensors)
                 self._enter(_Phase.TURN1, now)
 
         elif self._phase == _Phase.BACKOFF:
-            if self._elapsed(now) >= BACKOFF_S:
+            # Cut the reverse short if something is behind us: this is the only
+            # phase in the pattern that moves backwards, so it is the only one
+            # the rear sensor has any say over.
+            rear = _side_room_cm(sensors, "get_obstacle_distance_back_cm")
+            if self._elapsed(now) >= BACKOFF_S or rear < BACKOFF_REAR_MIN_CM:
+                self._turn_left = self._pivot_side(sensors)
                 self._enter(_Phase.TURN1, now)
 
         elif self._phase == _Phase.TURN1:
@@ -166,8 +208,7 @@ class ScanAroundLayer(BaseLayer):
         elif self._phase == _Phase.SHIFT:
             # Corner case: wall ahead during the shift -> skip straight to
             # the second pivot instead of driving into it.
-            wall_seen = dist is not None and dist <= TURN_AT_CM
-            if wall_seen or self._elapsed(now) >= self.shift_s:
+            if wall_ahead or self._elapsed(now) >= self.shift_s:
                 self._enter(_Phase.TURN2, now)
 
         elif self._phase == _Phase.TURN2:
@@ -178,13 +219,13 @@ class ScanAroundLayer(BaseLayer):
 
         # ---- phase outputs ----------------------------------------------
         motion, label = self._motion_for_phase()
-        dist_txt = f"{dist:.0f}cm" if dist is not None else "--"
+        front_txt = f"{front:.0f}cm" if front is not None else "--"
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
             motion_vector=motion,
             arm_action='stow',                 # arm stays stowed while patrolling
-            message=f"SCAN {label} (wall {dist_txt})",
+            message=f"SCAN {label} (front {front_txt})",
         )
 
     # ── Internals ─────────────────────────────────────────────────────────
@@ -195,13 +236,14 @@ class ScanAroundLayer(BaseLayer):
         if self._phase == _Phase.DRIVE:
             return (self.forward_speed, 0, 0), "lane"
         if self._phase == _Phase.BACKOFF:
-            return (-BACKOFF_SPEED, 0, 0), "backing off wall"
+            return (-self.forward_speed, 0, 0), "backing off wall"
+        side = 'left' if self._turn_left else 'right'
         if self._phase == _Phase.TURN1:
-            return (0, 0, turn), f"turn 1 ({'left' if self._turn_left else 'right'})"
+            return (0, 0, turn), f"turn 1 ({side}, v_theta {turn:+.2f}, {self._pivot_note})"
         if self._phase == _Phase.SHIFT:
             return (self.forward_speed, 0, 0), "shifting lane"
         if self._phase == _Phase.TURN2:
-            return (0, 0, turn), f"turn 2 ({'left' if self._turn_left else 'right'})"
+            return (0, 0, turn), f"turn 2 ({side}, v_theta {turn:+.2f}, {self._pivot_note})"
         return (0, 0, 0), "idle"
 
     def _enter(self, phase: _Phase, now: float) -> None:
@@ -211,8 +253,40 @@ class ScanAroundLayer(BaseLayer):
     def _elapsed(self, now: float) -> float:
         return now - self._phase_started
 
+    def _pivot_side(self, sensors: Any) -> bool:
+        """Which way to swing this lane change. Alternating is what makes the
+        pattern a zigzag, so keep it -- but never swing into the tighter side
+        when the other one is clearly roomier, or a corner just traps the
+        robot pivoting back and forth into the same wall."""
+        left = _side_room_cm(sensors, "get_obstacle_distance_front_left_cm")
+        right = _side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
+        self._pivot_note = f"L{left:.0f} R{right:.0f}"
+        intended, other = (left, right) if self._turn_left else (right, left)
+        # Only a genuinely tight intended side justifies breaking alternation,
+        # and then any clearly roomier alternative wins -- requiring the old
+        # wide margin left the robot pivoting into the nearer of two close walls.
+        if intended < PIVOT_TIGHT_CM and other >= intended + PIVOT_MARGIN_CM:
+            return not self._turn_left
+        return self._turn_left
+
     @staticmethod
-    def _obstacle_distance_cm(sensors: Any) -> Optional[float]:
-        """Tolerate sensor objects predating get_obstacle_distance_cm()."""
-        getter = getattr(sensors, "get_obstacle_distance_cm", None)
-        return getter() if getter is not None else None
+    def _clearances(sensors: Any):
+        """(front, front_left, front_right) in cm; None = nothing in range.
+        Missing getters tolerate older sensor objects."""
+        out = []
+        for name in ("get_obstacle_distance_cm",
+                     "get_obstacle_distance_front_left_cm",
+                     "get_obstacle_distance_front_right_cm"):
+            getter = getattr(sensors, name, None)
+            out.append(getter() if getter is not None else None)
+        return tuple(out)
+
+    @staticmethod
+    def _wall_ahead(front, left, right) -> bool:
+        """A diagonal alone must be much closer than the front sensor to end a
+        lane: taking the plain minimum of all three made every wall the robot
+        drove PARALLEL to read as a wall in front of it, so in a corner the
+        lane ended on its first tick and the pattern span forever."""
+        if front is not None and front <= TURN_AT_CM:
+            return True
+        return any(d is not None and d <= DIAGONAL_TURN_AT_CM for d in (left, right))
