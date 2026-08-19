@@ -11,7 +11,7 @@ upright:
           arm: [67.0, 180.0, 60.0, 70.0, 90.0] # furthest left
         - nx: 0.4867
           ny: 0.8806
-          arm: [95.0, 180.0, 60.0, 60.0, 80.0] # further center
+          arm: [95.0, 180.0, 55.0, 65.0, 90.0] # further center
         - nx: 0.9102
           ny: 0.9125
           arm: [130.0, 180.0, 60.0, 70.0, 90.0] # furthest right
@@ -22,13 +22,13 @@ upright:
       samples:
         - nx: 0.093
           ny: 0.9681
-          arm: [67.0, 180.0, 60.0, 70.0, 90.0] # center left
+          arm: [67.0, 180.0, 45.0, 55.0, 90.0] # center left
         - nx: 0.4734
           ny: 0.8958
-          arm: [95.0, 180.0, 60.0, 60.0, 80.0] # center center
+          arm: [95.0, 180.0, 40.0, 50.0, 90.0] # center center
         - nx: 0.9156
           ny: 0.9375
-          arm: [130.0, 180.0, 60.0, 70.0, 90.0] # center right
+          arm: [130.0, 180.0, 45.0, 55.0, 90.0] # center right
     - ny: 0.9167
       ny_tol: 0.02
       ny_tol_near: 0.01
@@ -36,13 +36,13 @@ upright:
       samples:
         - nx: 0.0977
           ny: 0.9903
-          arm: [67.0, 180.0, 60.0, 70.0, 90.0] # closest left
+          arm: [67.0, 170.0, 35.0, 55.0, 90.0] # closest left
         - nx: 0.4906
           ny: 0.9167
-          arm: [95.0, 180.0, 60.0, 60.0, 80.0] # center center
+          arm: [95.0, 170.0, 25.0, 35.0, 90.0] # closest center
         - nx: 0.9078
           ny: 0.95
-          arm: [130.0, 180.0, 60.0, 70.0, 90.0] # closest right
+          arm: [130.0, 170.0, 35.0, 55.0, 90.0] # closest right
 
 lying:
   rows:
