@@ -148,7 +148,11 @@ class CameraSensor(SensorInterface):
             layer1_scan.py    — to check if a target exists
             layer2_approach.py — to calculate motion vector towards the can
         """
-        return self._fresh_result().normalized_center()
+        box, result = self._current_target()
+        if box is None or result.frame_width == 0:
+            return None
+        return (box.center_x / result.frame_width,
+                box.center_y / result.frame_height)
 
     def get_litter_ground_contact(self): # type: ignore
         """
@@ -162,8 +166,8 @@ class CameraSensor(SensorInterface):
         box, result = self._current_target()
         if box is None or result.frame_width == 0:
             return None
-        return (box.center_x / result.frame_width,
-                box.center_y / result.frame_height)
+        u, v = box.base_center
+        return (u / result.frame_width, v / result.frame_height)
 
     def get_litter_pose(self): # type: ignore
         """
