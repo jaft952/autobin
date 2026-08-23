@@ -64,7 +64,7 @@ TURN_SPEED    = 0.32 # pivot speed (below this the base tends to stall)
 # Ultrasonic thresholds (cm).
 TURN_AT_CM    = 20.0  # front sensor: end the lane and start the zigzag turn
 DIAGONAL_TURN_AT_CM = 18.0  # a diagonal ends the lane only this close
-BACKOFF_AT_CM = 20.0  # we noticed the wall late -> reverse first for clearance
+BACKOFF_AT_CM = 15.0  # we noticed the wall late -> reverse first for clearance
 BACKOFF_REAR_MIN_CM = 20.0  # abort the reverse if the rear closes to this
 
 # Pivot-side override. Sides are compared saturated at PIVOT_ROOM_CM so a
