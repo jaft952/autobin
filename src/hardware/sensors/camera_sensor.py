@@ -29,6 +29,7 @@ once on the Pi (arc ny values should match the calibration); if the FOV
 differs, pass frame_width=1920, frame_height=1080 here instead of recalibrating.
 """
 
+import math
 import threading
 import time
 
@@ -168,6 +169,25 @@ class CameraSensor(SensorInterface):
             return None
         u, v = box.base_center
         return (u / result.frame_width, v / result.frame_height)
+
+    def get_litter_distance_cm(self): # type: ignore
+        box, result = self._current_target()
+        if box is None or box.width <= 0 or box.height <= 0:
+            return None
+        from src.visual_servoing.distance_error import CALIBRATION_CONSTANT_PX_CM
+        bbox_area_px = box.width * box.height
+        return math.sqrt(CALIBRATION_CONSTANT_PX_CM / bbox_area_px)
+
+    def get_litter_too_close(self): # type: ignore
+        box, result = self._current_target()
+        if box is None or result.frame_height == 0:
+            return False
+        from src.visual_servoing.distance_error import (
+            CLOSE_BBOX_FRACTION, TOO_CLOSE_DISTANCE_CM)
+        if box.height / result.frame_height >= CLOSE_BBOX_FRACTION:
+            return True
+        distance_cm = self.get_litter_distance_cm()
+        return distance_cm is not None and distance_cm <= TOO_CLOSE_DISTANCE_CM
 
     def get_litter_pose(self): # type: ignore
         """

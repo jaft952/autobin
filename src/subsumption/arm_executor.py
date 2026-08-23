@@ -33,11 +33,15 @@ stack at all. Pass a fake planner for logic tests.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional
 
+import src.log_levels  # noqa: F401 -- registers log.success()/log.fail()
 from src.hardware.actuators.interfaces import ArmPlannerInterface
 from src.subsumption.arbitrator import ActionCommand
+
+log = logging.getLogger("arm_executor")
 
 GRAB_COOLDOWN_S = 4.0
 
@@ -49,12 +53,15 @@ GRAB_HEIGHT_ABOVE_FLOOR_M = 0.03
 class ArmExecutor:
     """Executes the winning command's arm_action. One per robot."""
 
-    def __init__(self, planner: Optional[ArmPlannerInterface] = None) -> None:
+    def __init__(self, planner: Optional[ArmPlannerInterface] = None,
+                 sensors=None, grab_zone_check=None) -> None:
         if planner is None:
             # Deferred so wheels-only setups never touch the ikpy import chain.
             from src.arm.grasp_planner import GraspPlanner
             planner = GraspPlanner()
         self.planner: ArmPlannerInterface = planner
+        self._sensors = sensors
+        self._grab_zone_check = grab_zone_check
         self._at_home = False
         self._force_next_home = True  # first home since boot must be FORCED:
         #   the arm's true pose is unknown (no feedback) and nothing may move
@@ -118,10 +125,20 @@ class ArmExecutor:
             self._ensure_home()
         self._at_home = False
         try:
-            if not grab_fn():
-                print("[ArmExecutor] grab refused (unreachable/invalid pose)")
+            grabbed = grab_fn()
             self._home()
             self._at_home = True
+            if not grabbed:
+                log.fail("grab refused (unreachable/invalid pose)")
+            elif self._sensors is not None and self._grab_zone_check is not None:
+                if self._grab_zone_check(self._sensors):
+                    log.fail("grab sequence completed but a can is still "
+                             "in the grab zone — likely missed/knocked aside")
+                else:
+                    log.success("grab zone clear after collect (unconfirmed "
+                                "whether it landed in the bin)")
+            else:
+                log.success("grab sequence completed (unconfirmed)")
         finally:
             # Cooldown even on failure so an unreachable/missed tin doesn't
             # re-trigger the whole sequence every tick.

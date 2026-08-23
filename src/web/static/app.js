@@ -101,7 +101,7 @@ function Header({ base, connected, onConnect, status, onDead }) {
       <button disabled=${!connected || state === "STOPPED"}
               onClick=${() => apiPost(base, "/api/system/stop")}>⏹ STOP</button>
       <button class="btn-estop" disabled=${!connected}
-              onClick=${() => apiPost(base, "/api/system/estop")}>■ E-STOP</button>
+              onClick=${() => apiPost(base, "/api/system/estop")}>■ EMERGENCY STOP</button>
 
       <label class="poweroff-opt">
         <input type="checkbox" checked=${poweroff}
@@ -307,15 +307,15 @@ function LogPanel({ base, lines, onClear }) {
     onClear();
   };
 
-  const shown = filter === "ALL" ? lines
-    : lines.filter((l) => filter === "ERROR" ? l.level === "ERROR" : l.level !== "INFO");
+  const shown = filter === "ALL" ? lines : lines.filter((l) => l.level === filter);
 
   return html`
     <div class="card">
       <div class="card-title">LOG
         <span class="right log-controls">
           <select value=${filter} onChange=${(e) => setFilter(e.target.value)}>
-            <option>ALL</option><option>WARNING</option><option>ERROR</option>
+            <option>ALL</option><option>DEBUG</option><option>SUCCESS</option>
+            <option>WARNING</option><option>FAIL</option><option>ERROR</option>
           </select>
           <button onClick=${() => setFollow(!follow)}>${follow ? "⏸ pause" : "▶ follow"}</button>
           <button onClick=${clear}>clear</button>

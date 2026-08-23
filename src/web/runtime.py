@@ -73,19 +73,27 @@ class RobotRuntime:
                 camera = CameraSensor()
             except Exception as exc:
                 self.log.warning(f"camera unavailable ({exc}) — running without it")
+        battery = None
+        try:
+            from src.hardware.sensors.battery_sensor import BatterySensor
+            battery = BatterySensor()
+        except Exception as exc:
+            self.log.warning(f"battery sensor unavailable ({exc}) — using placeholder")
         self.sensors = SensorHub(
             front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
             back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
             front_left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
             front_right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
             camera=camera,
+            battery=battery,
         )
         self.camera_available = camera is not None
 
         # ── Layers / arbitration / executors ─────────────────────────────
         self._layers_scan = [SystemIdleLayer(), ScanAroundLayer(), EmergencyStopLayer()]
+        collect_layer = CollectLitterLayer()
         self._layers_auto = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
-                             CollectLitterLayer(), EmergencyStopLayer()]
+                             collect_layer, EmergencyStopLayer()]
         self.arbitrator = Arbitrator()
         self.motion = MotionExecutor()
 
@@ -94,7 +102,10 @@ class RobotRuntime:
             from src.subsumption.arm_executor import ArmExecutor
             # Does NOT move the arm at server boot — the first arm command
             # after the operator presses START force-homes it.
-            self.arm = ArmExecutor()
+            self.arm = ArmExecutor(
+                sensors=self.sensors if self.camera_available else None,
+                grab_zone_check=collect_layer.can_still_in_grab_zone,
+            )
         except Exception as exc:
             self.log.warning(f"arm unavailable ({exc}) — manual arm + grabs disabled")
 
@@ -330,7 +341,7 @@ class RobotRuntime:
             "layer": self.win_layer,
             "distance_cm": round(dist, 1) if dist is not None else None,
             "battery": round(self.sensors.get_battery_level(), 2),
-            "battery_placeholder": True,      # no real battery sensor yet
+            "battery_placeholder": not self.sensors.has_real_battery_sensor(),
             "camera": self.camera_available,
             "arm": self.arm is not None,
             "uptime_s": int(time.monotonic() - self.started_at),

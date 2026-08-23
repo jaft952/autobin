@@ -124,6 +124,12 @@ class FakeSensors:
     def has_obstacle(self):
         return self.dist is not None and self.dist < 10.0
 
+    def get_litter_distance_cm(self):
+        return None
+
+    def get_litter_too_close(self):
+        return False
+
 
 class FakePlanner:
     """Records the GraspPlanner calls the ArmExecutor makes."""

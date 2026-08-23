@@ -38,13 +38,15 @@ class SensorHub(SensorInterface):
     # Inside this range the situation is "imminent collision": Layer 5 halts.
     EMERGENCY_STOP_CM = 15.0
 
-    def __init__(self, front=None, back=None, front_left=None, front_right=None, camera=None):
+    def __init__(self, front=None, back=None, front_left=None, front_right=None,
+                 camera=None, battery=None):
         """Any sensor may be None if not fitted."""
         self._front = front
         self._back = back
         self._front_left = front_left
         self._front_right = front_right
         self._camera = camera
+        self._battery = battery
         self._ultrasonics = [s for s in (front, back, front_left, front_right) if s is not None]
         self._next_ping = 0
 
@@ -107,15 +109,30 @@ class SensorHub(SensorInterface):
             return None
         return self._camera.get_litter_pose()
 
+    def get_litter_distance_cm(self):
+        if self._camera is None:
+            return None
+        return self._camera.get_litter_distance_cm()
+
+    def get_litter_too_close(self):
+        if self._camera is None:
+            return False
+        return self._camera.get_litter_too_close()
+
     def get_aerial_trash_position(self):
         if self._camera is None:
             return None
         return self._camera.get_aerial_trash_position()
 
     def get_battery_level(self) -> float:
+        if self._battery is not None:
+            return self._battery.get_battery_level()
         if self._camera is not None:
             return self._camera.get_battery_level()
         return 1.0
+
+    def has_real_battery_sensor(self) -> bool:
+        return self._battery is not None
 
     # ── Debug passthrough ─────────────────────────────────────────────────
 

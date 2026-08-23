@@ -142,6 +142,12 @@ class CollectLitterLayer(BaseLayer):
         # Not grabbable from here — Layer 2 keeps approaching.
         return ActionCommand(layer_id=self.layer_id, active=False)
 
+    def can_still_in_grab_zone(self, sensors: Any) -> bool:
+        """Re-run the grabbability check after a grab, once the arm is
+        clear of the camera — catches a miss regardless of where a
+        knocked-but-not-grabbed can ended up."""
+        return self.evaluate(sensors).active
+
     # ── Internals ─────────────────────────────────────────────────────────
 
     @staticmethod
