@@ -47,7 +47,9 @@ import sys
 import threading
 import time
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(_SRC_DIR)                      # for "web.xxx" imports
+sys.path.append(os.path.dirname(_SRC_DIR))      # for "src.xxx" imports
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 

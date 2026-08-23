@@ -1,0 +1,14 @@
+[Unit]
+Description=AutoBin robot server (web/server.py)
+After=network.target
+
+[Service]
+Type=simple
+User=rikashi
+WorkingDirectory=/home/rikashi/Desktop/autobin
+ExecStart=/home/rikashi/Desktop/autobin/venv/bin/python3 src/web/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
