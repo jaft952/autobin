@@ -72,10 +72,12 @@ def compute_reactive_command(error: TargetError,
     else:
         dynamic_speed = 0
 
+    # +ve lateral_error = can RIGHT of frame centre (see TargetError), so the
+    # base has to arc right to close on it.
     if error.lateral_error > 0:
-        return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
-    else:
         return kin.arc_forward_right(angle_deg=steer_angle, speed=dynamic_speed)
+    else:
+        return kin.arc_forward_left(angle_deg=steer_angle, speed=dynamic_speed)
 
 
 def speed_tier(error: TargetError) -> str:

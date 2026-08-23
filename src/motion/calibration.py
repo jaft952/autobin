@@ -40,6 +40,10 @@ class MotionCalibration:
     invert_left: bool = False
     invert_right: bool = True
 
-    swap_left_right: bool = False
+    # tests/test_turn_direction.py --manual: commanding a LEFT pivot turned
+    # the chassis right (and vice versa) while forward drive stayed correct --
+    # the signature of the two motors being in each other's channels, since a
+    # swap is invisible when both wheels run the same way.
+    swap_left_right: bool = True
 
     arc_inner_wheel_ratio: float = 0.3
