@@ -23,7 +23,7 @@ Something ahead is not automatically a wall. The robot DODGES first and only
 treats the blockage as a wall when the dodge fails to get past it, so a bin in
 the middle of the floor no longer ends the lane and costs a whole strip.
 
-    DRIVE ──(blocked < TURN_AT_CM)──> DODGE_TURN   (or BACKOFF first if close)
+    DRIVE ──(front < TURN_AT_CM)──> DODGE_TURN   (or BACKOFF first if close)
     DRIVE ──(lane timeout)──> TURN1
     BACKOFF ──(timed)──> DODGE_TURN
     DODGE_TURN ──(timed ~90 deg toward the open side)──> DODGE_PASS
@@ -38,6 +38,17 @@ The wall path reuses the dodge itself as the first half of the lane change:
 DODGE_TURN is the first pivot and DODGE_PASS runs along the wall exactly as
 SHIFT did, so DODGE_TURN + DODGE_PASS + TURN2 is the same ~180 deg
 turn-and-offset the zigzag always did. Failing to dodge costs nothing.
+
+Only the FRONT sensor ends a lane. A close diagonal means a wall alongside,
+not a wall in the way: it steers the lane away instead (see _lane_bias). Live
+log that forced this -- the robot dodged with `front 43cm`, a clear road
+ahead, because a side wall read 17cm; each failed dodge is a 180, so it
+about-faced back and forth in a corridor and never drove out of it.
+
+Every phase change passes through SETTLE first: the wheels reverse direction
+between almost any two phases (lane -> pivot flips one wheel, pivot -> lane
+flips the other), and instant flips spike current, stall the driver and brown
+out the rail (see docs/hardware_safety_patterns.md rule 7).
 
 Rule 3 note: the phase/timer state is INTERNAL to this layer and resets
 whenever the layer deactivates (a target appeared -> layers 2/3 take over and
@@ -78,9 +89,14 @@ TURN_SPEED    = 0.35 # pivot speed (below this the base tends to stall)
 
 # Ultrasonic thresholds (cm).
 TURN_AT_CM    = 20.0  # front sensor: end the lane and start the zigzag turn
-DIAGONAL_TURN_AT_CM = 18.0  # a diagonal ends the lane only this close
 BACKOFF_AT_CM = 15.0  # we noticed the wall late -> reverse first for clearance
 BACKOFF_REAR_MIN_CM = 20.0  # abort the reverse if the rear closes to this
+
+# Diagonals steer the lane, they never end it. Full gain (at zero clearance)
+# is NUDGE_GAIN of the pivot speed, so the correction is always gentler than
+# a deliberate turn and two opposing walls cancel to a straight line.
+DIAGONAL_NUDGE_CM = 25.0
+NUDGE_GAIN        = 0.35
 
 # Pivot-side override. Sides are compared saturated at PIVOT_ROOM_CM so a
 # harmless far wall can't outvote a side reading nothing at all; the margin
@@ -102,6 +118,7 @@ TURN_90_S  = 0.9
 SHIFT_S    = 1.2
 BACKOFF_S  = 0.45
 MAX_LANE_S = 30.0
+SETTLE_S   = 0.15   # wheels stop between phases before they flip direction
 
 # Every timed phase is re-rolled +/- this fraction. Fixed durations make a
 # fixed path: with no odometry the same turn and the same lane length walk the
@@ -116,6 +133,10 @@ def _jitter(seconds: float) -> float:
     return seconds * random.uniform(1.0 - TIMING_JITTER, 1.0 + TIMING_JITTER)
 
 
+def _fmt(value) -> str:
+    return "--" if value is None else f"{value:.0f}"
+
+
 def _side_room_cm(sensors: Any, getter: str) -> float:
     """Free space on one side, saturated at PIVOT_ROOM_CM. No echo (None) and
     a missing getter both mean 'nothing in range', i.e. fully open."""
@@ -125,6 +146,7 @@ def _side_room_cm(sensors: Any, getter: str) -> float:
 
 
 class _Phase(enum.Enum):
+    SETTLE     = enum.auto()   # brief halt between phases (direction flips)
     DRIVE      = enum.auto()
     BACKOFF    = enum.auto()
     DODGE_TURN = enum.auto()   # pivot away from whatever is ahead
@@ -164,6 +186,7 @@ class ScanAroundLayer(BaseLayer):
         self._turn_s: float = self.turn_90_s          # this pivot's jittered time
         self._turn_left: bool = True           # pivot side; alternates per wall
         self._dodge_left: bool = True          # which way the current dodge went
+        self._next_phase: _Phase = _Phase.DRIVE  # what the settle is settling for
         self._pivot_note: str = "L-- R--"      # side readings behind the last choice
         self._suppressed_since: Optional[float] = None
 
@@ -217,23 +240,25 @@ class ScanAroundLayer(BaseLayer):
             self._suppressed_since = None
 
         front, left, right = self._clearances(sensors)
-        dist = min([d for d in (front, left, right) if d is not None], default=None)
-        wall_ahead = self._wall_ahead(front, left, right)
+        wall_ahead = front is not None and front <= TURN_AT_CM
 
         if self._phase is None:
             self._enter(_Phase.DRIVE, now)
             self._start_lane(now)
 
         # ---- phase transitions ------------------------------------------
-        if self._phase == _Phase.DRIVE:
-            wall_seen = wall_ahead
-            if wall_seen and dist is not None and dist <= BACKOFF_AT_CM:
-                self._enter(_Phase.BACKOFF, now)
-            elif wall_seen:
+        if self._phase == _Phase.SETTLE:
+            if self._elapsed(now) >= SETTLE_S:
+                self._enter(self._next_phase, now)
+
+        elif self._phase == _Phase.DRIVE:
+            if wall_ahead and front <= BACKOFF_AT_CM:
+                self._settle(_Phase.BACKOFF, now)
+            elif wall_ahead:
                 self._start_dodge(sensors, now)
             elif (now - self._lane_started) >= self._lane_limit_s:
                 self._turn_left = self._pivot_side(sensors)
-                self._enter(_Phase.TURN1, now)
+                self._settle(_Phase.TURN1, now)
 
         elif self._phase == _Phase.BACKOFF:
             # Cut the reverse short if something is behind us: this is the only
@@ -245,7 +270,7 @@ class ScanAroundLayer(BaseLayer):
 
         elif self._phase == _Phase.DODGE_TURN:
             if self._elapsed(now) >= self.turn_90_s:
-                self._enter(_Phase.DODGE_PASS, now)
+                self._settle(_Phase.DODGE_PASS, now)
 
         elif self._phase == _Phase.DODGE_PASS:
             elapsed = self._elapsed(now)
@@ -254,32 +279,36 @@ class ScanAroundLayer(BaseLayer):
                 # dodge already IS the first pivot and the sideways hop, so the
                 # lane change only has its second pivot left to run.
                 self._turn_left = self._dodge_left
-                self._enter(_Phase.TURN2, now)
+                self._settle(_Phase.TURN2, now)
             elif elapsed >= DODGE_MIN_S and self._dodge_side_clear(sensors):
-                self._enter(_Phase.DODGE_BACK, now)
+                self._settle(_Phase.DODGE_BACK, now)
 
         elif self._phase == _Phase.DODGE_BACK:
             if self._elapsed(now) >= self.turn_90_s:
-                self._enter(_Phase.DRIVE, now)
+                self._settle(_Phase.DRIVE, now)
 
         elif self._phase == _Phase.TURN1:
             if self._elapsed(now) >= self._turn_s:
-                self._enter(_Phase.SHIFT, now)
+                self._settle(_Phase.SHIFT, now)
 
         elif self._phase == _Phase.SHIFT:
             # Corner case: wall ahead during the shift -> skip straight to
             # the second pivot instead of driving into it.
             if wall_ahead or self._elapsed(now) >= self.shift_s:
-                self._enter(_Phase.TURN2, now)
+                self._settle(_Phase.TURN2, now)
 
         elif self._phase == _Phase.TURN2:
             if self._elapsed(now) >= self._turn_s:
                 self._turn_left = not self._turn_left  # alternate -> zigzag
-                self._enter(_Phase.DRIVE, now)
                 self._start_lane(now)
+                self._settle(_Phase.DRIVE, now)
 
-        # ---- phase outputs ----------------------------------------------
-        motion, label = self._motion_for_phase()
+        return self._output(front, left, right)
+
+    # ── Internals ─────────────────────────────────────────────────────────
+
+    def _output(self, front, left, right) -> ActionCommand:
+        motion, label = self._motion_for_phase(left, right)
         front_txt = f"{front:.0f}cm" if front is not None else "--"
         return ActionCommand(
             layer_id=self.layer_id,
@@ -289,13 +318,28 @@ class ScanAroundLayer(BaseLayer):
             message=f"SCAN {label} (front {front_txt})",
         )
 
-    # ── Internals ─────────────────────────────────────────────────────────
+    def _lane_bias(self, left, right) -> float:
+        """Steer the lane away from a wall alongside, hardest when closest.
+        Opposing walls cancel, which is what centres the robot in a corridor
+        instead of bouncing it off one side."""
+        bias = 0.0
+        if left is not None and left < DIAGONAL_NUDGE_CM:
+            bias -= NUDGE_GAIN * (1.0 - left / DIAGONAL_NUDGE_CM)
+        if right is not None and right < DIAGONAL_NUDGE_CM:
+            bias += NUDGE_GAIN * (1.0 - right / DIAGONAL_NUDGE_CM)
+        return max(-1.0, min(1.0, bias)) * self.turn_speed
 
-    def _motion_for_phase(self):
+    def _motion_for_phase(self, left=None, right=None):
         """(v_x, v_y, v_theta) for the current phase. v_theta > 0 = CCW/left."""
         turn = self.turn_speed if self._turn_left else -self.turn_speed
+        if self._phase == _Phase.SETTLE:
+            return (0, 0, 0), f"settling before {self._next_phase.name.lower()}"
         if self._phase == _Phase.DRIVE:
-            return (self.forward_speed, 0, 0), "lane"
+            bias = self._lane_bias(left, right)
+            if bias == 0.0:
+                return (self.forward_speed, 0, 0), "lane"
+            return ((self.forward_speed, 0, bias),
+                    f"lane (nudge {bias:+.2f}, L{_fmt(left)} R{_fmt(right)})")
         if self._phase == _Phase.BACKOFF:
             return (-self.forward_speed, 0, 0), "backing off wall"
         dodge = self.turn_speed if self._dodge_left else -self.turn_speed
@@ -314,6 +358,12 @@ class ScanAroundLayer(BaseLayer):
         if self._phase == _Phase.TURN2:
             return (0, 0, turn), f"turn 2 ({side}, v_theta {turn:+.2f}, {self._pivot_note})"
         return (0, 0, 0), "idle"
+
+    def _settle(self, nxt: _Phase, now: float) -> None:
+        """Halt briefly before the wheels flip direction, then run `nxt`."""
+        self._next_phase = nxt
+        self._phase = _Phase.SETTLE
+        self._phase_started = now
 
     def _enter(self, phase: _Phase, now: float) -> None:
         self._phase = phase
@@ -336,7 +386,7 @@ class ScanAroundLayer(BaseLayer):
         right = _side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
         self._pivot_note = f"L{left:.0f} R{right:.0f}"
         self._dodge_left = left >= right
-        self._enter(_Phase.DODGE_TURN, now)
+        self._settle(_Phase.DODGE_TURN, now)
 
     def _dodge_side_clear(self, sensors: Any) -> bool:
         """After pivoting away, the blockage sits on the opposite diagonal.
@@ -373,12 +423,3 @@ class ScanAroundLayer(BaseLayer):
             out.append(getter() if getter is not None else None)
         return tuple(out)
 
-    @staticmethod
-    def _wall_ahead(front, left, right) -> bool:
-        """A diagonal alone must be much closer than the front sensor to end a
-        lane: taking the plain minimum of all three made every wall the robot
-        drove PARALLEL to read as a wall in front of it, so in a corner the
-        lane ended on its first tick and the pattern span forever."""
-        if front is not None and front <= TURN_AT_CM:
-            return True
-        return any(d is not None and d <= DIAGONAL_TURN_AT_CM for d in (left, right))
