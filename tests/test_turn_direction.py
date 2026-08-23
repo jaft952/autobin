@@ -55,12 +55,14 @@ SETTLE_S = 0.2       # stop between opposite directions (safety doc rule 7)
 
 
 def pin_duty(executor: MotionExecutor):
-    """What actually reached the four ZK-BM1 inputs, or None on PrintActuator."""
-    a = executor.actuator
-    pwms = [getattr(a, f"pwm_in{i}", None) for i in (1, 2, 3, 4)]
-    if any(p is None for p in pwms):
+    """What reached the four ZK-BM1 inputs, or None if the actuator has no
+    last_duty. Derived, not read back: RPi.GPIO.PWM cannot report its duty."""
+    duty = getattr(executor.actuator, "last_duty", None)
+    if duty is None:
         return None
-    return "IN1 %5.1f  IN2 %5.1f  IN3 %5.1f  IN4 %5.1f" % tuple(p.value for p in pwms)
+    left, right = duty
+    pins = (max(left, 0.0), max(-left, 0.0), max(right, 0.0), max(-right, 0.0))
+    return "IN1 %5.1f  IN2 %5.1f  IN3 %5.1f  IN4 %5.1f" % pins
 
 
 class Pivot:
