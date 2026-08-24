@@ -277,7 +277,7 @@ def main():
     ap = argparse.ArgumentParser(description="AutoBin web dashboard")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--hz", type=float, default=10.0, help="control loop rate")
+    ap.add_argument("--hz", type=float, default=20.0, help="control loop rate")
     ap.add_argument("--no-camera", action="store_true", help="skip YOLO/webcam")
     ap.add_argument("--allow-poweroff", action="store_true",
                     help="Shutdown button may also power off the Pi")

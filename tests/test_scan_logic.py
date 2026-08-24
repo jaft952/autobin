@@ -900,6 +900,29 @@ def test_scan_timers_pause_while_suppressed():
     print("PASS scan timers pause while suppressed")
 
 
+def test_reset_abandons_the_manoeuvre():
+    """The dashboard resets every layer when the operator changes mode. A
+    pivot half-finished at STOP must not resume minutes later, timed from a
+    clock reading that is now long past."""
+    with fake_clock() as clock:
+        layer = ScanAroundLayer()
+        sensors = FakeSensors()
+        sensors.dist = TURN_AT_CM - 1
+        layer.evaluate(sensors)                 # DRIVE
+        advance(layer, sensors, clock)          # -> DODGE_TURN
+
+        layer.reset()
+        clock.tick(600.0)                       # ten minutes parked
+        sensors.dist = None
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
+
+        # The lane timer restarts too, so it does not fire on the first tick.
+        cmd = layer.evaluate(sensors)
+        assert "lane" in cmd.message, cmd.message
+    print("PASS reset abandons the manoeuvre")
+
+
 def test_median_filter_absorbs_a_dropped_ping():
     """Live log: a wall read 16cm, then 38cm, then 16cm again within a few
     ticks -- one dropped echo per sensor was swinging every threshold."""
@@ -996,6 +1019,7 @@ ALL_TESTS = [
     test_median_filter_absorbs_a_dropped_ping,
     test_scan_timers_pause_while_suppressed,
     test_timed_phases_jitter_within_bounds,
+    test_reset_abandons_the_manoeuvre,
 ]
 
 if __name__ == "__main__":

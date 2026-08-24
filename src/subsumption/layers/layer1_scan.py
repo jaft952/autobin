@@ -210,6 +210,10 @@ class ScanAroundLayer(BaseLayer):
         if turn_speed is not None:
             self.turn_speed = max(0.0, min(1.0, float(turn_speed)))
 
+    def reset(self) -> None:
+        self._phase = None
+        self._suppressed_since = None
+
     def timing_summary(self) -> str:
         return (f"turn_90={self.turn_90_s:.2f}s shift={self.shift_s:.2f}s "
                 f"max_lane={self.max_lane_s:.1f}s fwd={self.forward_speed:.2f} "

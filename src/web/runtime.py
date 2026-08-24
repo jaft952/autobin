@@ -57,7 +57,7 @@ PERF_WINDOW = 50                # ticks averaged for the performance card
 
 class RobotRuntime:
 
-    def __init__(self, log, with_camera: bool = True, hz: float = 10.0):
+    def __init__(self, log, with_camera: bool = True, hz: float = 20.0):
         self.log = log
         self.hz = float(hz)
         self._state = STATE_STOPPED
@@ -90,10 +90,17 @@ class RobotRuntime:
         self.camera_available = camera is not None
 
         # ── Layers / arbitration / executors ─────────────────────────────
-        self._layers_scan = [SystemIdleLayer(), ScanAroundLayer(), EmergencyStopLayer()]
+        idle_layer = SystemIdleLayer()
+        self.scan_layer = ScanAroundLayer()
+        self.emergency_layer = EmergencyStopLayer()
         collect_layer = CollectLitterLayer()
-        self._layers_auto = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
-                             collect_layer, EmergencyStopLayer()]
+        # Both mode lists share the SAME layer objects. Separate copies meant
+        # tuning done in SCAN was lost on the way to AUTO, and the unused copy
+        # came back mid-manoeuvre with a phase timer from minutes earlier.
+        self._layers_scan = [idle_layer, self.scan_layer, self.emergency_layer]
+        self._layers_auto = [idle_layer, self.scan_layer, ApproachLitterLayer(),
+                             collect_layer, self.emergency_layer]
+        self._all_layers = self._layers_auto   # superset of _layers_scan
         self.arbitrator = Arbitrator()
         self.motion = MotionExecutor()
 
@@ -166,6 +173,8 @@ class RobotRuntime:
     def _transition(self, new_state: str, why: str):
         with self._state_lock:
             old, self._state = self._state, new_state
+        for layer in self._all_layers:
+            layer.reset()
         self.log.warning(f"{why}  [{old} -> {new_state}]")
         self.win_message, self.win_layer = "", -1
 
@@ -297,28 +306,36 @@ class RobotRuntime:
     # ── Quick settings ────────────────────────────────────────────────────
 
     def settings_registry(self):
-        """Whitelisted live-tunable parameters: (key, obj, attr, lo, hi, step, label)."""
+        """Whitelisted live-tunable parameters:
+        (key, [(obj, attr), ...], lo, hi, step, label). Targets are the LIVE
+        layer objects -- the layers copy the module defaults in __init__, so
+        patching the module afterwards changed nothing."""
+        scan, emerg = self.scan_layer, self.emergency_layer
         return [
-            ("scan.forward_speed", scan_mod, "FORWARD_SPEED", 0.2, 1.0, 0.05, "Scan: lane speed (0-1)"),
-            ("scan.turn_speed",    scan_mod, "TURN_SPEED",    0.2, 1.0, 0.05, "Scan: pivot speed (0-1)"),
-            ("scan.turn_90_s",     scan_mod, "TURN_90_S",     0.3, 3.0, 0.05, "Scan: 90° pivot time (s)"),
-            ("scan.shift_s",       scan_mod, "SHIFT_S",       0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
-            ("scan.max_lane_s",    scan_mod, "MAX_LANE_S",    3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
-            ("scan.turn_at_cm",    scan_mod, "TURN_AT_CM",    15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
-            ("safety.estop_cm",    SensorHub, "EMERGENCY_STOP_CM", 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
-            ("loop.hz",            self, "hz", 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
+            ("scan.forward_speed", [(scan, "forward_speed")], 0.2, 1.0, 0.05, "Scan: lane speed (0-1)"),
+            # Layer 5 outvotes the scan pivot, so both must pivot at one speed.
+            ("scan.turn_speed",    [(scan, "turn_speed"), (emerg, "turn_speed")],
+             0.2, 1.0, 0.05, "Scan: pivot speed (0-1)"),
+            ("scan.turn_90_s",     [(scan, "turn_90_s")], 0.3, 3.0, 0.05, "Scan: 90° pivot time (s)"),
+            ("scan.shift_s",       [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
+            ("scan.max_lane_s",    [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
+            # Read from the module every tick, so patching the global works.
+            ("scan.turn_at_cm",    [(scan_mod, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
+            ("safety.estop_cm",    [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
+            ("loop.hz",            [(self, "hz")], 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
         ]
 
     def get_settings(self) -> list:
-        return [{"key": k, "value": round(float(getattr(obj, attr)), 3),
+        return [{"key": k, "value": round(float(getattr(*targets[0])), 3),
                  "min": lo, "max": hi, "step": step, "label": label}
-                for k, obj, attr, lo, hi, step, label in self.settings_registry()]
+                for k, targets, lo, hi, step, label in self.settings_registry()]
 
     def set_setting(self, key: str, value: float) -> float:
-        for k, obj, attr, lo, hi, _step, _label in self.settings_registry():
+        for k, targets, lo, hi, _step, _label in self.settings_registry():
             if k == key:
                 clamped = max(lo, min(hi, float(value)))
-                setattr(obj, attr, clamped)
+                for obj, attr in targets:
+                    setattr(obj, attr, clamped)
                 self.log.info(f"setting {key} = {clamped} (session only)")
                 return clamped
         raise KeyError(f"unknown setting '{key}'")

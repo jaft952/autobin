@@ -104,6 +104,9 @@ class EmergencyStopLayer(BaseLayer):
         self._attempt: int = 0                   # escape retries since last clear
         self._spin_s: float = TURN_180_S
 
+    def reset(self) -> None:
+        self._phase = None
+
     def set_turn_speed(self, turn_speed: Optional[float] = None) -> None:
         """Pivot fraction 0..1, same contract as ScanAroundLayer.set_speeds.
         Doubles as the backoff speed so there is one knob, not two."""
