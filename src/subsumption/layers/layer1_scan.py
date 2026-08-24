@@ -189,6 +189,10 @@ class ScanAroundLayer(BaseLayer):
         self._next_phase: _Phase = _Phase.DRIVE  # what the settle is settling for
         self._pivot_note: str = "L-- R--"      # side readings behind the last choice
         self._suppressed_since: Optional[float] = None
+        # Only stand down for a target when a layer above is there to chase
+        # it. SCAN-only mode has no Layer 2, so yielding parked the robot on
+        # Layer 0 IDLE for as long as the camera could see a can.
+        self.yield_to_targets: bool = True
 
     # ── Calibration knobs (the Pi tools drive these, see module docstring) ─
 
@@ -228,7 +232,9 @@ class ScanAroundLayer(BaseLayer):
     def evaluate(self, sensors: Any) -> ActionCommand:
         # A target exists -> higher layers will handle it; go inactive and
         # forget the zigzag phase (the robot is about to move off-pattern).
-        if sensors.get_litter_position() or sensors.get_aerial_trash_position():
+        # Aerial trash is deliberately NOT a reason: Layer 4 is not in any
+        # running stack, so nothing would take over.
+        if self.yield_to_targets and sensors.get_litter_position():
             self._phase = None
             self._suppressed_since = None
             return ActionCommand(layer_id=self.layer_id, active=False)

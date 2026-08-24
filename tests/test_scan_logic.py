@@ -82,12 +82,13 @@ class FakeSensors:
     def __init__(self):
         self.dist = None    # ultrasonic reading (cm), None = nothing in range
         self.litter = None  # (x, y) or None
+        self.aerial = None  # (x, y) or None
 
     def get_litter_position(self):
         return self.litter
 
     def get_aerial_trash_position(self):
-        return None
+        return self.aerial
 
     def get_obstacle_distance_cm(self):
         return self.dist
@@ -900,6 +901,37 @@ def test_scan_timers_pause_while_suppressed():
     print("PASS scan timers pause while suppressed")
 
 
+def test_scan_only_mode_drives_past_a_can():
+    """Live bug: the dashboard read SCAN, the wheels were silent and the
+    battery was fine. Layer 1 stood down for a camera detection, but SCAN-only
+    has no Layer 2, so Layer 0 IDLE won and the robot parked indefinitely."""
+    with fake_clock():
+        layer = ScanAroundLayer()
+        layer.yield_to_targets = False           # what the SCAN button sets
+        sensors = FakeSensors()
+        sensors.litter = (0.5, 0.6)
+        layer.evaluate(sensors)
+        cmd = layer.evaluate(sensors)
+        assert cmd.active, "scan stood down with no layer to take over"
+        assert cmd.motion_vector[0] == FORWARD_SPEED, cmd.message
+
+    # Full autonomy still hands the can to Layer 2.
+    with fake_clock():
+        layer = ScanAroundLayer()
+        sensors = FakeSensors()
+        sensors.litter = (0.5, 0.6)
+        assert not layer.evaluate(sensors).active
+
+    # Aerial trash is never a reason to stand down: Layer 4 is in no stack.
+    with fake_clock():
+        layer = ScanAroundLayer()
+        sensors = FakeSensors()
+        sensors.aerial = (0.5, 0.2)
+        layer.evaluate(sensors)
+        assert layer.evaluate(sensors).active
+    print("PASS scan-only mode drives past a can")
+
+
 def test_reset_abandons_the_manoeuvre():
     """The dashboard resets every layer when the operator changes mode. A
     pivot half-finished at STOP must not resume minutes later, timed from a
@@ -1020,6 +1052,7 @@ ALL_TESTS = [
     test_scan_timers_pause_while_suppressed,
     test_timed_phases_jitter_within_bounds,
     test_reset_abandons_the_manoeuvre,
+    test_scan_only_mode_drives_past_a_can,
 ]
 
 if __name__ == "__main__":

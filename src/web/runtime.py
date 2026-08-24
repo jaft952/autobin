@@ -173,6 +173,9 @@ class RobotRuntime:
     def _transition(self, new_state: str, why: str):
         with self._state_lock:
             old, self._state = self._state, new_state
+        # SCAN-only has no approach layer, so the patrol must keep driving
+        # past cans instead of standing down for them.
+        self.scan_layer.yield_to_targets = (new_state == STATE_AUTO)
         for layer in self._all_layers:
             layer.reset()
         self.log.warning(f"{why}  [{old} -> {new_state}]")
@@ -217,6 +220,8 @@ class RobotRuntime:
 
             if winning.message != self.win_message:
                 self.log.info(f"[L{winning.layer_id}] {winning.message}")
+                if winning.layer_id == 0:
+                    self.log.warning("no layer wants to drive - base parked on IDLE")
             self.win_message, self.win_layer = winning.message, winning.layer_id
         else:
             # STOPPED / ESTOP: enforce halted wheels every tick.
