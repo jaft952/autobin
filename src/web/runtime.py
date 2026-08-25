@@ -92,8 +92,12 @@ class RobotRuntime:
         # ── Layers / arbitration / executors ─────────────────────────────
         idle_layer = SystemIdleLayer()
         self.scan_layer = ScanAroundLayer()
-        self.emergency_layer = EmergencyStopLayer()
         collect_layer = CollectLitterLayer()
+        # Layer 5 outvotes the grab, so at grab range it drove away from every
+        # tin instead of collecting it. is_grabbable() is pure, so asking it
+        # here does not disturb Layer 3's own stability clock.
+        self.emergency_layer = EmergencyStopLayer(
+            grab_zone_check=collect_layer.is_grabbable)
         # Both mode lists share the SAME layer objects. Separate copies meant
         # tuning done in SCAN was lost on the way to AUTO, and the unused copy
         # came back mid-manoeuvre with a phase timer from minutes earlier.
@@ -216,7 +220,7 @@ class RobotRuntime:
             self.motion.execute(winning)
             if self.arm is not None:
                 with self._arm_lock:
-                    self.arm.execute(winning)
+                    self._run_arm(winning)
 
             if winning.message != self.win_message:
                 self.log.info(f"[L{winning.layer_id}] {winning.message}")
@@ -232,6 +236,28 @@ class RobotRuntime:
         if (self.camera_available and self._stream_clients > 0
                 and tick_n % FRAME_ENCODE_EVERY == 0):
             self._encode_frame()
+
+    def _run_arm(self, winning):
+        """Dispatch the arm, with YOLO paused for the duration of a grab.
+
+        A grab blocks this thread for seconds while stepped_move streams
+        setpoints at 50 Hz against the wall clock. The camera worker running
+        YOLO through that steals the GIL in long bursts, tick pacing slips,
+        and the arm jerks instead of descending smoothly. Inference is useless
+        during a grab anyway — the arm is in front of the lens.
+        """
+        if winning.arm_action != 'grab_arc':
+            self.arm.execute(winning)
+            return
+        self.sensors.pause_camera()
+        try:
+            self.arm.execute(winning)
+        finally:
+            self.sensors.resume_camera()
+            # The tin is collected (or was knocked away): either way the lock
+            # must not survive, or the robot keeps aiming at an empty spot
+            # until LOST_GRACE_S expires instead of moving to the next tin.
+            self.sensors.release_target()
 
     def _encode_frame(self):
         try:

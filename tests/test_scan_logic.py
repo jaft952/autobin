@@ -383,9 +383,8 @@ def test_executor_brakes_during_grab():
                              {"pose": [100, 145, 75, 165, 90]}))
     assert act.braked and not act.stopped, "grab halt must brake, not coast"
 
-    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_ik", "",
-                             {"target_m": (0.1, 0.2)}))
-    assert act.braked, "IK grab halt must brake too"
+    ex.execute(ActionCommand(3, True, (0, 0, 0), "hold", ""))
+    assert act.braked, "the wait before a grab must hold the base too"
 
     # A plain scan/idle halt still coasts (free to be repositioned).
     ex.execute(ActionCommand(0, True, (0, 0, 0), "stow", ""))

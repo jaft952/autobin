@@ -1,6 +1,6 @@
-"""The one arm driver: pose tracking, gentle moves, the tuned arc grasp, and
-the closed-form IK fallback. Used by the autonomous stack (ArmExecutor), the
-web dashboard, and the manual calibration tools in tests/.
+"""The one arm driver: pose tracking, gentle moves and the tuned arc grasp.
+Used by the autonomous stack (ArmExecutor), the web dashboard, and the manual
+calibration tools in tests/.
 
 Poses, gripper angles and pacing come from arm_settings; callers retune them
 through set_speed() / set_gripper_angles() instead of declaring their own
@@ -9,7 +9,6 @@ without joint feedback, so no tool may surprise-move the arm.
 """
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 from src.arm.arm_settings import (
@@ -20,15 +19,6 @@ from src.hardware.actuators.pca9685_driver import (
     ArmActuator, clamp_channel_angle, load_last_pose, save_last_pose,
     stepped_move,
 )
-
-# Tip correction: constant x/y offset, z droop proportional to horizontal
-# reach. ik_move() aims at target minus these.
-TIP_ERROR_X_M   = -0.025
-TIP_ERROR_Y_M   = 0.020
-SAG_PER_M_REACH = 0.25
-
-# Floor is 11.3cm below the deck (z=0); lower z targets are clamped.
-DECK_ABOVE_FLOOR_M = 0.113
 
 class GraspPlanner:
     """Rule 1 & 2: reads solver output and routes it to the actuator
@@ -49,8 +39,6 @@ class GraspPlanner:
             "bin":  list(BIN_DROP_ANGLES),
             "grab": list(GRAB_ANGLES),
         }
-        self._ik = None                       # built on first ik_move()
-
         # A wrong start turns "stepped" moves into full-speed snaps, so prefer
         # the pose persisted by the previous session over assuming home.
         last = load_last_pose()
@@ -201,46 +189,3 @@ class GraspPlanner:
         self.goto("bin", "carrying to the bin")
         self.open_gripper()
         print("[arm] collected — can dropped in the bin.")
-
-    def ik_move(self, target_xyz: list, approach: str = "down",
-                compensate: bool = True) -> bool:
-        """Solve IK for a point and move there — the fallback for cans outside
-        the calibrated arc grid. (x, y, z) in meters, arm frame.
-
-        approach: "down" (default) | "up" | "level" | "free" (position only).
-        compensate=True aims at target-minus-measured-error (constant x/y
-        shift + reach-proportional z lift) so the REAL tip lands on target_xyz
-        despite gravity sag.
-        """
-        if self._ik is None:
-            # Imported here so jog/calibration tools never pay the IK import.
-            from src.arm.analytical_ik import AnalyticalArmIK
-            self._ik = AnalyticalArmIK()
-
-        goal = list(target_xyz)
-        if goal[2] < -DECK_ABOVE_FLOOR_M:
-            print(f"[arm] target z={goal[2]:.3f} is BELOW THE FLOOR "
-                  f"(-{DECK_ABOVE_FLOOR_M:.3f} from the deck); clamping.")
-            goal[2] = -DECK_ABOVE_FLOOR_M
-        if compensate:
-            gx = goal[0] - TIP_ERROR_X_M
-            gy = goal[1] - TIP_ERROR_Y_M
-            gz = goal[2] + SAG_PER_M_REACH * math.hypot(gx, gy)
-            goal = [gx, gy, gz]
-            print(f"[arm] planning move to {target_xyz} (sag-compensated aim "
-                  f"{[round(v, 4) for v in goal]}, {approach}) ...")
-        else:
-            print(f"[arm] planning move to {target_xyz} ({approach}) ...")
-
-        servo_angles = self._ik.solve(goal, approach=approach)
-        if servo_angles is None:
-            print(f"[arm] no reachable IK solution for {target_xyz}; NOT moved.")
-            return False
-        print(f"[arm] IK solved, target CH1-5: {servo_angles}")
-        self.goto(servo_angles, "IK target")
-        return True
-
-
-if __name__ == "__main__":
-    planner = GraspPlanner()
-    planner.ik_move([0.20, 0.0, 0.10])   # 20cm ahead, 10cm high

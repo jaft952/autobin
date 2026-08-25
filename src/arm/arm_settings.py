@@ -32,6 +32,11 @@ ARC_STEP_DEG   = 5.0
 ARC_STEP_DELAY = 0.15
 JOG_STEP_DELAY = 0.5
 
+# Calibrated model-zero servo commands, index 0 = unused, 1..5 = CH1..CH5,
+# 6 = gripper. Kept after the IK removal because the manual jog tool homes to
+# it (see docs/ik_removed_2026-08-25.zip).
+SERVO_NEUTRAL_CMD = [0.0, 96.7, 96.7, 100.0, 100.0, 90.0, 80.0]
+
 CH_NAMES = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist",
             "CH5 roll", "CH6 grip"]
 

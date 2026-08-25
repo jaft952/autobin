@@ -87,10 +87,17 @@ class EmergencyStopLayer(BaseLayer):
               with a wider spin each time -- it never latches into a stop,
               because a robot stopped in a corner needs a human to free it.
               The rear sensor only gates reversing; it never triggers a stop
-              on its own.
+              on its own. Stands down when grab_zone_check says the thing in
+              front is a tin the arm can collect.
     """
-    def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED):
+    def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED,
+                 grab_zone_check=None):
         super().__init__(layer_id=5)
+        # Predicate(sensors) -> bool: "the arm can grab what is in front of us
+        # right now". At grab range the front sensor is looking AT the target,
+        # so treating it as an emergency drove the robot away from every tin it
+        # got close enough to collect. Layer 3 supplies this (is_grabbable).
+        self.grab_zone_check = grab_zone_check
         self.turn_speed = EMERGENCY_TURN_SPEED
         self.set_turn_speed(turn_speed)
         self._phase: Optional[_Phase] = None
@@ -106,6 +113,14 @@ class EmergencyStopLayer(BaseLayer):
 
     def reset(self) -> None:
         self._phase = None
+
+    def _target_in_grab_zone(self, sensors: Any) -> bool:
+        if self.grab_zone_check is None:
+            return False
+        try:
+            return bool(self.grab_zone_check(sensors))
+        except Exception:
+            return False        # a broken predicate must never disarm the e-stop
 
     def set_turn_speed(self, turn_speed: Optional[float] = None) -> None:
         """Pivot fraction 0..1, same contract as ScanAroundLayer.set_speeds.
@@ -125,6 +140,12 @@ class EmergencyStopLayer(BaseLayer):
         diag_clear_cm = trigger_cm * DIAG_CLEAR_MARGIN
         escaped = front >= clear_cm and min(left, right) >= diag_clear_cm
         elapsed = now - self._phase_started
+
+        # Only exempts a manoeuvre that has not started: once committed, the
+        # phase machine runs to completion rather than stopping mid-reverse.
+        if self._phase is None and self._target_in_grab_zone(sensors):
+            self._reset()
+            return ActionCommand(layer_id=self.layer_id, active=False)
 
         if self._phase == _Phase.SETTLE:
             if elapsed < SETTLE_S:

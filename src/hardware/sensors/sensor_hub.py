@@ -134,6 +134,23 @@ class SensorHub(SensorInterface):
     def has_real_battery_sensor(self) -> bool:
         return self._battery is not None
 
+    # ── Camera worker control ─────────────────────────────────────────────
+
+    def pause_camera(self):
+        """Stop YOLO inference (it competes with the arm's move pacing for
+        CPU — see CameraSensor's PAUSING note). No-op without a camera."""
+        if self._camera is not None and hasattr(self._camera, "pause"):
+            self._camera.pause()
+
+    def resume_camera(self):
+        if self._camera is not None and hasattr(self._camera, "resume"):
+            self._camera.resume()
+
+    def release_target(self):
+        """Forget the locked tin (call after a collection)."""
+        if self._camera is not None and hasattr(self._camera, "release_target"):
+            self._camera.release_target()
+
     # ── Debug passthrough ─────────────────────────────────────────────────
 
     def get_annotated_frame(self):
