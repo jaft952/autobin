@@ -25,8 +25,8 @@ Stage the bring-up with the flags (each stage assumes the previous passed):
 Prerequisites on the Pi:
     - tests/test_ultrasonic.py reads sane distances
     - tests/test_floor_scan.py zigzags correctly (TURN_90_S/SHIFT_S calibrated)
-    - arc grid calibrated via tests/test_arc_grasp.py (and/or pixel_to_arm
-      calibrated for the IK fallback)
+    - arc grid calibrated via tests/test_arc_grasp.py — it is the ONLY grasp
+      path; an uncalibrated spot is simply not grabbed
 
 NOTE: a grab is a blocking multi-second sequence — the loop (and printouts)
 pause during it. That is by design; the base is halted while it runs.
@@ -63,10 +63,6 @@ class PrintPlanner:
         print(f"   [arm] collect({[round(v, 1) for v in pose]}, {tin_pose})")
         return True
 
-    def ik_move(self, xyz, **kw):
-        print(f"   [arm] ik_move({[round(v, 3) for v in xyz]})")
-        return True
-
     def open_gripper(self):
         print("   [arm] gripper open")
 
@@ -98,11 +94,16 @@ def main():
         camera=camera,
     )
 
+    collect = CollectLitterLayer()
     layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
-              CollectLitterLayer(), EmergencyStopLayer()]
+              collect,
+              # Without this Layer 5 outvotes the grab and drives away from
+              # every tin the arm gets close enough to collect.
+              EmergencyStopLayer(grab_zone_check=collect.is_grabbable)]
     arbitrator = Arbitrator()
     motion = MotionExecutor(actuator=PrintActuator() if args.no_motors else None)
-    arm = ArmExecutor(planner=PrintPlanner() if args.no_arm else None)
+    arm = ArmExecutor(planner=PrintPlanner() if args.no_arm else None,
+                      sensors=sensors, grab_zone_check=collect.can_still_in_grab_zone)
 
     period = 1.0 / args.hz
     print(f"subsumption live @ {args.hz:.0f} Hz — "
@@ -123,7 +124,17 @@ def main():
             for layer in layers:
                 layer.notify_arbitration(layer.layer_id == winning.layer_id)
             motion.execute(winning)
-            arm.execute(winning)
+            if winning.arm_action == 'grab_arc':
+                # YOLO steals the GIL from the arm's 50 Hz move pacing; see
+                # RobotRuntime._run_arm.
+                sensors.pause_camera()
+                try:
+                    arm.execute(winning)
+                finally:
+                    sensors.resume_camera()
+                    sensors.release_target()
+            else:
+                arm.execute(winning)
             arbitrator.clear()
 
             msg = f"[L{winning.layer_id}] {winning.message}"

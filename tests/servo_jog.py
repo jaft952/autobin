@@ -29,22 +29,13 @@ from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arm.arm_settings import GRIPPER_OPEN, jog_profile
+from src.arm.arm_settings import GRIPPER_OPEN, SERVO_NEUTRAL_CMD, jog_profile
 from src.hardware.actuators.pca9685_driver import (
     ArmActuator, stepped_move, SERVO_RANGE_DEG, clamp_channel_angle,
 )
-from src.arm.kinematics import SERVO_NEUTRAL_CMD
-
-# Forward kinematics is optional (needs ikpy). If unavailable we still jog/print.
-try:
-    from src.arm.kinematics import ArmKinematics
-    _kin = ArmKinematics()
-except Exception as e:  # pragma: no cover
-    _kin = None
-    print(f"[note] forward-kinematics preview disabled ({e})")
 
 # CH1-5 from the calibrated model-zero; CH6 homes to the system's open angle
-# (kinematics' own gripper neutral predates the MG996R and sits past its stop).
+# (the model's own gripper neutral predates the MG996R and sits past its stop).
 NEUTRAL = [SERVO_NEUTRAL_CMD[i] for i in range(1, 7)]
 NEUTRAL[5] = GRIPPER_OPEN
 NUM_CH = 16   # jog any PCA9685 channel (hardware testing)
@@ -81,13 +72,6 @@ def main():
         print("\n  current servo angles (CH1-7):")
         print("   ", [round(a, 1) for a in angles[:7]])
         print("    arm only (CH1-5):", [round(a, 1) for a in angles[:5]])
-        if _kin is not None:
-            try:
-                tip = _kin.predict_tip(angles[:5])
-                print(f"    model thinks tip is at (x,y,z) = "
-                      f"{[round(v * 100, 1) for v in tip]} cm")
-            except Exception as e:
-                print(f"    (tip preview failed: {e})")
         print()
 
     print("=" * 60)

@@ -204,8 +204,11 @@ button:disabled { opacity: .38; cursor: not-allowed; }
 .log-line { white-space: pre-wrap; word-break: break-word; }
 .log-line .ts { color: #5b6b7b; margin-right: 8px; }
 .log-line .src { color: var(--blue); margin-right: 8px; }
+.log-line.DEBUG   { color: #5b6b7b; }
 .log-line.INFO    { color: #b8c4d0; }
+.log-line.SUCCESS { color: var(--green); }
 .log-line.WARNING { color: var(--amber); }
+.log-line.FAIL    { color: #ff8a5b; }
 .log-line.ERROR   { color: var(--red); }
 select {
   background: var(--panel2);

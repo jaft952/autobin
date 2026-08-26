@@ -40,6 +40,16 @@ class SensorInterface:
         against this point, not the bounding-box center."""
         return None
 
+    def get_litter_distance_cm(self):
+        """Monocular distance estimate to the locked litter (bbox-size
+        based), or None if no target / not estimable."""
+        return None
+
+    def get_litter_too_close(self) -> bool:
+        """True when the locked litter's bbox is close enough that the
+        base should back off regardless of the distance estimate."""
+        return False
+
     def get_litter_pose(self) -> dict:
         """Returns the litter's pose from segmentation, or None if unknown:
         {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180}.

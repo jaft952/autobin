@@ -64,9 +64,7 @@ class DifferentialKinematics:
         dynamically computed speed from a proportional visual-servoing controller."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
-        left = base * ratio * self.cal.motor_a_forward_trim
-        right = base * self.cal.motor_b_forward_trim
-        return WheelCommand(left, right, False, "forward")
+        return WheelCommand(base * ratio, base, True, "forward")
 
     def arc_forward_right(self, angle_deg: float | None = None, speed: float | None = None) -> WheelCommand:
         """Forward-right arc. angle_deg: 0=straight, 90=sharp right turn, 180=spin right.
@@ -74,24 +72,18 @@ class DifferentialKinematics:
         dynamically computed speed from a proportional visual-servoing controller."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
-        left = base * self.cal.motor_a_forward_trim
-        right = base * ratio * self.cal.motor_b_forward_trim
-        return WheelCommand(left, right, False, "forward")
+        return WheelCommand(base, base * ratio, True, "forward")
 
     def arc_backward_left(self, angle_deg: float | None = None, speed: float | None = None) -> WheelCommand:
         """Backward-left arc. angle_deg: 0=straight, 90=sharp left turn, 180=spin left.
         speed: overrides the calibrated arc_speed baseline for this call."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
-        left = -base * ratio * self.cal.motor_a_backward_trim
-        right = -base * self.cal.motor_b_backward_trim
-        return WheelCommand(left, right, False, "backward")
+        return WheelCommand(-base * ratio, -base, True, "backward")
 
     def arc_backward_right(self, angle_deg: float | None = None, speed: float | None = None) -> WheelCommand:
         """Backward-right arc. angle_deg: 0=straight, 90=sharp right turn, 180=spin right.
         speed: overrides the calibrated arc_speed baseline for this call."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
-        left = -base * self.cal.motor_a_backward_trim
-        right = -base * ratio * self.cal.motor_b_backward_trim
-        return WheelCommand(left, right, False, "backward")
+        return WheelCommand(-base, -base * ratio, True, "backward")

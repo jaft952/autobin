@@ -131,6 +131,15 @@ class PWMActuator:
         left_speed = command.left_speed
         right_speed = command.right_speed
 
+        # Motors plugged into each other's channels -> send each speed to the
+        # other side. This runs FIRST because trim and invert describe the
+        # CHANNEL, not the command: applying them before the swap put the
+        # straightness trim on the wrong wheel, and left a pure pivot (equal
+        # and opposite speeds) with two identical values, so swapping them
+        # afterwards did nothing at all and turns stayed mirrored.
+        if self.cal.swap_left_right:
+            left_speed, right_speed = right_speed, left_speed
+
         if command.apply_trim:
             if command.trim_set == "forward":
                 if left_speed > 0:
@@ -158,13 +167,8 @@ class PWMActuator:
         if self.cal.invert_right:
             right_speed = -right_speed
 
-        # Motors plugged into each other's channels -> send each speed to the
-        # other side so LEFT/RIGHT turns match the command.
-        if self.cal.swap_left_right:
-            left_speed, right_speed = right_speed, left_speed
-
-        # Telemetry for bench tools: the duty actually sent, after trim,
-        # stiction floor, clamp, invert and swap.
+        # Telemetry for bench tools: the duty actually sent, after swap, trim,
+        # stiction floor, clamp and invert.
         self.last_duty = (left_speed, right_speed)
         self._set_left(left_speed)
         self._set_right(right_speed)

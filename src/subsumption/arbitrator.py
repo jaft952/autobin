@@ -11,7 +11,6 @@ class ActionCommand:
     message: str = ""
     arm_params: Optional[Dict] = None      # payload for arm_action, e.g.
                                            # {'pose': [CH1..CH5]} for 'grab_arc'
-                                           # {'target_m': (x, y)} for 'grab_ik'
 
 class Arbitrator:
     """

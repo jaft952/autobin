@@ -25,3 +25,9 @@ class BaseLayer(ABC):
         when suppressed, or they run the sequence while the robot is standing
         still. Default: layers with no timers ignore it."""
         pass
+
+    def reset(self) -> None:
+        """Abandon any in-progress manoeuvre. Called when the robot is stopped
+        or switches mode, so a layer resumed minutes later does not act on a
+        stale phase timer. Default: layers with no state ignore it."""
+        pass

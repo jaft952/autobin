@@ -22,10 +22,10 @@ Usage (Pi):
                                                    #      when a can is seen
 
 Expected behavior (wheels live, no camera):
-    Robot drives a straight lane. When the wall closes to ~35 cm it pivots
-    ~90 deg, hops one robot-width sideways, pivots ~90 deg again, and drives
-    the return lane; the pivot side alternates each wall. Anything closer
-    than ~10 cm trips Layer 5 and halts the base until cleared.
+    Robot drives a straight lane. When the wall closes to TURN_AT_CM it
+    pivots ~90 deg, hops one robot-width sideways, pivots ~90 deg again, and
+    drives the return lane; the pivot side alternates each wall. Inside
+    SensorHub.EMERGENCY_STOP_CM Layer 5 takes over and runs its escape.
 
 Calibrating the pattern: pass --turn-90 / --shift / --speed / --turn-speed to
 seed starting values (they call ScanAroundLayer.set_timing/set_speeds); once

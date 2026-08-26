@@ -25,6 +25,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+import src.log_levels  # noqa: F401 -- registers log.success()/log.fail()
+
 
 class LogBuffer:
     """Thread-safe ring buffer of structured log entries."""

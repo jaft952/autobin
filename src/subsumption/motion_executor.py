@@ -38,8 +38,10 @@ from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 from src.subsumption.arbitrator import ActionCommand
 
-# arm_actions during which the base must HOLD position, not coast.
-_GRAB_ACTIONS = frozenset({"grab_arc", "grab_ik", "grab_sequence"})
+# arm_actions during which the base must HOLD position, not coast. 'hold' is
+# Layer 3 waiting for the detection to settle before it fires the grab — the
+# tin must not drift out of the arc band while it waits.
+_GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold"})
 
 
 class MotionExecutor:

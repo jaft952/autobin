@@ -19,6 +19,7 @@ from typing import Any
 
 from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
+from src.visual_servoing.reactive_controller import FAR_DISTANCE_CM, LOW_DISTANCE_CM
 
 # Tune on the Pi alongside the chassis steering constants:
 #   STEER_GAIN too low  -> drifts past the tin sideways
@@ -30,6 +31,12 @@ APPROACH_BASE_SPEED = 0.45   # forward fraction when the tin is mid-frame
 APPROACH_DIST_GAIN  = 0.5    # extra speed per unit of "farness" (0.5 - y)
 APPROACH_MIN_SPEED  = 0.3    # never crawl below this (motors stall)
 APPROACH_MAX_SPEED  = 0.7
+
+# Speed tiers keyed off the monocular distance estimate (same breakpoints as
+# reactive_controller, so the two stay in sync as they get re-tuned).
+APPROACH_CRUISE_SPEED  = APPROACH_MAX_SPEED
+APPROACH_STEP_SPEED    = APPROACH_MIN_SPEED
+APPROACH_BACKUP_SPEED  = -0.3
 
 
 class ApproachLitterLayer(BaseLayer):
@@ -50,10 +57,29 @@ class ApproachLitterLayer(BaseLayer):
         x, y = litter_pos
         error_x = x - 0.5                    # +ve = tin right of center
 
+        if sensors.get_litter_too_close():
+            return ActionCommand(
+                layer_id=self.layer_id,
+                active=True,
+                motion_vector=(APPROACH_BACKUP_SPEED, 0, 0),
+                arm_action='deploy',
+                message="TOO CLOSE, backing off",
+            )
+
         steer = -error_x * APPROACH_STEER_GAIN
         steer = max(-APPROACH_MAX_TURN, min(APPROACH_MAX_TURN, steer))
 
-        forward = APPROACH_BASE_SPEED + (0.5 - y) * APPROACH_DIST_GAIN
+        distance_cm = sensors.get_litter_distance_cm()
+        if distance_cm is None:
+            # No distance estimate (uncalibrated/degenerate bbox) — fall
+            # back to the old y-position proxy for "farness".
+            forward = APPROACH_BASE_SPEED + (0.5 - y) * APPROACH_DIST_GAIN
+        elif distance_cm > FAR_DISTANCE_CM:
+            forward = APPROACH_CRUISE_SPEED
+        elif distance_cm > LOW_DISTANCE_CM:
+            forward = APPROACH_BASE_SPEED
+        else:
+            forward = APPROACH_STEP_SPEED
         forward = max(APPROACH_MIN_SPEED, min(APPROACH_MAX_SPEED, forward))
 
         return ActionCommand(
@@ -61,5 +87,5 @@ class ApproachLitterLayer(BaseLayer):
             active=True,
             motion_vector=(forward, 0, steer),
             arm_action='deploy',             # travel pose, ready to grab
-            message=f"APPROACHING LITTER (ex={error_x:+.2f}, y={y:.2f})",
+            message=f"APPROACHING LITTER (ex={error_x:+.2f}, dist={distance_cm})",
         )
