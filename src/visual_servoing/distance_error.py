@@ -18,7 +18,6 @@ from typing import Optional
 from src.perception.detector import DetectionResult
 
 # calibration
-CAN_HEIGHT_CM = 14.5
 CALIBRATION_CONSTANT_PX_CM = 48258720
 
 STOP_DISTANCE_CM = 25.0
@@ -53,13 +52,17 @@ def compute_target_error(detection: DetectionResult,
     x, _y = base
     lateral_error = x - 0.5
 
-    bbox_area_px = detection.best.width * detection.best.height # type: ignore
     bbox_height_px = detection.best.height # type: ignore
-    
-    
+
+    # Prefer the actual segmented pixel count over the rectangular bbox --
+    # a bbox includes background around a round/angled can and overstates
+    # its footprint. Falls back to bbox area if no mask is available (e.g.
+    # the seg model didn't return one for this detection).
+    area_px = detection.best.mask_area or (detection.best.width * bbox_height_px) # type: ignore
+
     distance_cm = (
-        math.sqrt(CALIBRATION_CONSTANT_PX_CM / bbox_area_px)
-        if bbox_area_px > 0 else None
+        math.sqrt(CALIBRATION_CONSTANT_PX_CM / area_px)
+        if area_px > 0 else None
     )
 
     too_close = (detection.frame_height > 0
