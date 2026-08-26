@@ -92,15 +92,11 @@ class RobotRuntime:
         # ── Layers / arbitration / executors ─────────────────────────────
         idle_layer = SystemIdleLayer()
         self.scan_layer = ScanAroundLayer()
-        collect_layer = CollectLitterLayer()
-        # Layer 5 outvotes the grab, so at grab range it drove away from every
-        # tin instead of collecting it. is_grabbable() is pure, so asking it
-        # here does not disturb Layer 3's own stability clock.
-        self.emergency_layer = EmergencyStopLayer(
-            grab_zone_check=collect_layer.is_grabbable)
-        # Both mode lists share the SAME layer objects. Separate copies meant
-        # tuning done in SCAN was lost on the way to AUTO, and the unused copy
-        # came back mid-manoeuvre with a phase timer from minutes earlier.
+        self.collect_layer = CollectLitterLayer()
+        collect_layer = self.collect_layer
+
+        self.emergency_layer = EmergencyStopLayer()
+
         self._layers_scan = [idle_layer, self.scan_layer, self.emergency_layer]
         self._layers_auto = [idle_layer, self.scan_layer, ApproachLitterLayer(),
                              collect_layer, self.emergency_layer]
@@ -111,8 +107,7 @@ class RobotRuntime:
         self.arm = None
         try:
             from src.subsumption.arm_executor import ArmExecutor
-            # Does NOT move the arm at server boot — the first arm command
-            # after the operator presses START force-homes it.
+
             self.arm = ArmExecutor(
                 sensors=self.sensors if self.camera_available else None,
                 grab_zone_check=collect_layer.can_still_in_grab_zone,
@@ -177,9 +172,11 @@ class RobotRuntime:
     def _transition(self, new_state: str, why: str):
         with self._state_lock:
             old, self._state = self._state, new_state
-        # SCAN-only has no approach layer, so the patrol must keep driving
-        # past cans instead of standing down for them.
+
         self.scan_layer.yield_to_targets = (new_state == STATE_AUTO)
+
+        self.emergency_layer.grab_zone_check = (
+            self.collect_layer.is_grabbable if new_state == STATE_AUTO else None)
         for layer in self._all_layers:
             layer.reset()
         self.log.warning(f"{why}  [{old} -> {new_state}]")
@@ -254,9 +251,7 @@ class RobotRuntime:
             self.arm.execute(winning)
         finally:
             self.sensors.resume_camera()
-            # The tin is collected (or was knocked away): either way the lock
-            # must not survive, or the robot keeps aiming at an empty spot
-            # until LOST_GRACE_S expires instead of moving to the next tin.
+
             self.sensors.release_target()
 
     def _encode_frame(self):
@@ -302,8 +297,7 @@ class RobotRuntime:
         with self._arm_lock:
             planner = self._manual_arm_planner()
             if name == "home":
-                # goto() asserts every channel, so this works even when the
-                # tracked pose already claims home (e.g. right after boot).
+
                 planner.goto("home")
                 planner.open_gripper()
                 self.arm._at_home = True
