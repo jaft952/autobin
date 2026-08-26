@@ -20,7 +20,7 @@ def _make_arm():
     """The shared manual arm; a missing PCA9685 only disables 'g'."""
     try:
         from src.arm.grasp_planner import GraspPlanner
-        arm = GraspPlanner(release_on_start=True)
+        arm = GraspPlanner(release_on_start=False)
         print("[arm] ready — 'g' grabs, 'h' homes.")
         return arm
     except Exception as exc:
@@ -190,9 +190,9 @@ def main():
                     print(f"[grab] (no hardware) would send {solved}")
                 else:
                     # Same full cycle ArmExecutor runs: grab, drop in the bin,
-                    # ramp home under power, THEN cut PWM so nothing holds a
-                    # pose idle. Wheels braked the whole time — the shaking
-                    # can't drift the base off the solved spot.
+                    # ramp home under power (still powered after, ready for
+                    # the next grab). Wheels braked the whole time — the
+                    # shaking can't drift the base off the solved spot.
                     if wheels is not None:
                         wheels.brake()
                     try:
@@ -200,8 +200,10 @@ def main():
                     finally:
                         if wheels is not None:
                             wheels.stop()
-                    arm.goto("home")
-                    arm.release()
+                    # collect() already opens at the bin and returns home
+                    # under power -- releasing here (like the production
+                    # ArmExecutor never does between grabs) lets the gripper
+                    # drift unpowered before the next open_gripper() call.
             if key == ord("h") and arm is not None:
                 arm.goto("home")
                 arm.release()
