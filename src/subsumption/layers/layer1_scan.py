@@ -50,6 +50,13 @@ between almost any two phases (lane -> pivot flips one wheel, pivot -> lane
 flips the other), and instant flips spike current, stall the driver and brown
 out the rail (see docs/hardware_safety_patterns.md rule 7).
 
+Before every new lane (at boot, and again each time TURN2 finishes), the
+robot does a full look-around: eight 45 deg pivot steps with a dwell pause
+after each one, so the camera gets a still frame at every heading around the
+robot instead of relying on the drive-by pass to catch a target. This is a
+pure in-place pivot, so it needs no obstacle check of its own -- it never
+translates, so it cannot drive into anything while turning.
+
 Rule 3 note: the phase/timer state is INTERNAL to this layer and resets
 whenever the layer deactivates (a target appeared -> layers 2/3 take over and
 drive the robot somewhere else, so any remembered zigzag phase is meaningless
@@ -126,6 +133,12 @@ SETTLE_S   = 0.15   # wheels stop between phases before they flip direction
 # Set to 0.0 for a deterministic pattern (the unit tests do).
 TIMING_JITTER = 0.2
 
+# Full look-around before each new lane: eight 45 deg steps, not jittered, so
+# the eight steps still sum to a clean 360 and the sweep does not drift.
+LOOKAROUND_STEPS    = 8
+LOOKAROUND_STEP_DEG = 360.0 / LOOKAROUND_STEPS
+LOOKAROUND_DWELL_S  = 0.6   # hold still here so a frame can settle and be inferred
+
 
 def _jitter(seconds: float) -> float:
     if TIMING_JITTER <= 0.0:
@@ -146,7 +159,9 @@ def _side_room_cm(sensors: Any, getter: str) -> float:
 
 
 class _Phase(enum.Enum):
-    SETTLE     = enum.auto()   # brief halt between phases (direction flips)
+    SETTLE          = enum.auto()   # brief halt between phases (direction flips)
+    LOOKAROUND_TURN = enum.auto()   # one 45 deg step of the pre-lane look-around
+    LOOKAROUND_DWELL = enum.auto()  # holds still after a step so a frame settles
     DRIVE      = enum.auto()
     BACKOFF    = enum.auto()
     DODGE_TURN = enum.auto()   # pivot away from whatever is ahead
@@ -186,6 +201,7 @@ class ScanAroundLayer(BaseLayer):
         self._turn_s: float = self.turn_90_s          # this pivot's jittered time
         self._turn_left: bool = True           # pivot side; alternates per wall
         self._dodge_left: bool = True          # which way the current dodge went
+        self._lookaround_step: int = 0         # completed steps of the pre-lane sweep
         self._next_phase: _Phase = _Phase.DRIVE  # what the settle is settling for
         self._pivot_note: str = "L-- R--"      # side readings behind the last choice
         self._suppressed_since: Optional[float] = None
@@ -253,13 +269,26 @@ class ScanAroundLayer(BaseLayer):
         wall_ahead = front is not None and front <= TURN_AT_CM
 
         if self._phase is None:
-            self._enter(_Phase.DRIVE, now)
-            self._start_lane(now)
+            self._lookaround_step = 0
+            self._enter(_Phase.LOOKAROUND_TURN, now)
 
         # ---- phase transitions ------------------------------------------
         if self._phase == _Phase.SETTLE:
             if self._elapsed(now) >= SETTLE_S:
                 self._enter(self._next_phase, now)
+
+        elif self._phase == _Phase.LOOKAROUND_TURN:
+            if self._elapsed(now) >= self._lookaround_step_s():
+                self._enter(_Phase.LOOKAROUND_DWELL, now)
+
+        elif self._phase == _Phase.LOOKAROUND_DWELL:
+            if self._elapsed(now) >= LOOKAROUND_DWELL_S:
+                self._lookaround_step += 1
+                if self._lookaround_step >= LOOKAROUND_STEPS:
+                    self._start_lane(now)
+                    self._enter(_Phase.DRIVE, now)
+                else:
+                    self._enter(_Phase.LOOKAROUND_TURN, now)
 
         elif self._phase == _Phase.DRIVE:
             if wall_ahead and front <= BACKOFF_AT_CM:
@@ -310,8 +339,8 @@ class ScanAroundLayer(BaseLayer):
         elif self._phase == _Phase.TURN2:
             if self._elapsed(now) >= self._turn_s:
                 self._turn_left = not self._turn_left  # alternate -> zigzag
-                self._start_lane(now)
-                self._settle(_Phase.DRIVE, now)
+                self._lookaround_step = 0
+                self._enter(_Phase.LOOKAROUND_TURN, now)
 
         return self._output(front, left, right)
 
@@ -344,6 +373,10 @@ class ScanAroundLayer(BaseLayer):
         turn = self.turn_speed if self._turn_left else -self.turn_speed
         if self._phase == _Phase.SETTLE:
             return (0, 0, 0), f"settling before {self._next_phase.name.lower()}"
+        if self._phase == _Phase.LOOKAROUND_TURN:
+            return (0, 0, turn), f"look-around step {self._lookaround_step + 1}/{LOOKAROUND_STEPS}"
+        if self._phase == _Phase.LOOKAROUND_DWELL:
+            return (0, 0, 0), f"look-around dwell {self._lookaround_step + 1}/{LOOKAROUND_STEPS}"
         if self._phase == _Phase.DRIVE:
             bias = self._lane_bias(left, right)
             if bias == 0.0:
@@ -384,6 +417,12 @@ class ScanAroundLayer(BaseLayer):
     def _start_lane(self, now: float) -> None:
         self._lane_started = now
         self._lane_limit_s = _jitter(self.max_lane_s)
+
+    def _lookaround_step_s(self) -> float:
+        """Pivot time for one 45 deg look-around step, scaled off the same
+        calibrated TURN_90_S the zigzag pivots use (not jittered, see the
+        module docstring)."""
+        return self.turn_90_s * (LOOKAROUND_STEP_DEG / 90.0)
 
     def _elapsed(self, now: float) -> float:
         return now - self._phase_started

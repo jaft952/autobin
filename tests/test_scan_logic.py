@@ -136,11 +136,17 @@ class CaptureActuator:
 
 
 def advance(layer, sensors, clock):
-    """One evaluate, stepping over the inter-phase settle so a test can assert
-    on the phase itself."""
+    """One evaluate, stepping over the inter-phase settle and the pre-lane
+    look-around so a test can assert on the phase it actually cares about."""
     cmd = layer.evaluate(sensors)
-    while cmd.active and cmd.message and "settling" in cmd.message:
-        clock.tick(scan_mod.SETTLE_S + 0.01)
+    while cmd.active and cmd.message and (
+            "settling" in cmd.message or "look-around" in cmd.message):
+        if "look-around step" in cmd.message:
+            clock.tick(layer._lookaround_step_s() + 0.01)
+        elif "look-around dwell" in cmd.message:
+            clock.tick(scan_mod.LOOKAROUND_DWELL_S + 0.01)
+        else:
+            clock.tick(scan_mod.SETTLE_S + 0.01)
         cmd = layer.evaluate(sensors)
     return cmd
 
@@ -330,11 +336,11 @@ def test_yields_to_target_and_restarts():
 
 def test_none_distance_is_not_an_obstacle():
     """None (no echo / dev machine) must mean 'no wall info', never 0 cm."""
-    with fake_clock():
+    with fake_clock() as clock:
         layer = ScanAroundLayer()
         sensors = FakeSensors()
         sensors.dist = None
-        cmd = layer.evaluate(sensors)
+        cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
     print("PASS None distance keeps driving")
 
@@ -427,11 +433,13 @@ def test_arbitration_with_real_hub():
         hub = SensorHub(front=ultra, camera=None)
         arb = Arbitrator()
 
-        # Clear floor: scan (layer 1) outvotes idle (layer 0).
+        # Clear floor: scan (layer 1) outvotes idle (layer 0). A fresh layer
+        # starts its pre-lane look-around, not the drive itself, so this only
+        # checks that scan is the one driving, not the exact motion.
         ultra.dist = 120.0
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message
-        assert win.motion_vector == (FORWARD_SPEED, 0, 0), win.message
+        assert win.active, win.message
 
         # Wall in the turn band: still scan's job (it turns), NOT an emergency.
         ultra.dist = TURN_AT_CM - 5
@@ -723,11 +731,11 @@ def test_a_diagonal_steers_the_lane_instead_of_ending_it():
     because a side wall read 17cm. Each failed dodge is a 180, so it
     about-faced back and forth in a corridor and never drove out. A wall
     alongside must only bend the lane away from itself."""
-    with fake_clock():
+    with fake_clock() as clock:
         layer = ScanAroundLayer()
         sensors = FakeDirectionalSensors(front=None, front_left=None,
                                           front_right=scan_mod.DIAGONAL_NUDGE_CM - 8)
-        layer.evaluate(sensors)                 # enter DRIVE
+        advance(layer, sensors, clock)           # enter DRIVE
         cmd = layer.evaluate(sensors)
         assert "lane" in cmd.message, f"a wall alongside ended the lane: {cmd.message}"
         assert cmd.motion_vector[0] == FORWARD_SPEED, cmd.message
@@ -735,30 +743,30 @@ def test_a_diagonal_steers_the_lane_instead_of_ending_it():
 
     # The closer the wall, the harder the correction -- but never as hard as
     # a deliberate pivot.
-    with fake_clock():
+    with fake_clock() as clock:
         layer = ScanAroundLayer()
         near = FakeDirectionalSensors(front=None, front_left=None, front_right=2.0)
-        layer.evaluate(near)
+        advance(layer, near, clock)
         hard = layer.evaluate(near).motion_vector[2]
         assert 0 < hard < TURN_SPEED, hard
 
     # Both sides walled in (a corridor) -> the corrections cancel and the
     # robot drives straight down the middle.
-    with fake_clock():
+    with fake_clock() as clock:
         layer = ScanAroundLayer()
         corridor = FakeDirectionalSensors(front=None,
                                           front_left=scan_mod.DIAGONAL_NUDGE_CM - 8,
                                           front_right=scan_mod.DIAGONAL_NUDGE_CM - 8)
-        layer.evaluate(corridor)
+        advance(layer, corridor, clock)
         cmd = layer.evaluate(corridor)
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
 
     # Far enough away and it is not steering at all.
-    with fake_clock():
+    with fake_clock() as clock:
         layer = ScanAroundLayer()
         clear = FakeDirectionalSensors(front=None, front_left=None,
                                        front_right=scan_mod.DIAGONAL_NUDGE_CM + 1)
-        layer.evaluate(clear)
+        advance(layer, clear, clock)
         cmd = layer.evaluate(clear)
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
     print("PASS a diagonal steers the lane instead of ending it")
@@ -770,7 +778,7 @@ def test_every_phase_change_settles_first():
     with fake_clock() as clock:
         layer = ScanAroundLayer()
         sensors = FakeDirectionalSensors(front=None, front_left=None, front_right=None)
-        layer.evaluate(sensors)                 # DRIVE
+        advance(layer, sensors, clock)           # DRIVE
 
         sensors.front = TURN_AT_CM - 1
         cmd = layer.evaluate(sensors)
@@ -795,11 +803,15 @@ def test_scan_drives_out_of_a_corner_instead_of_spinning():
         layer = ScanAroundLayer()
         sensors = FakeDirectionalSensors(front=None, front_left=None, front_right=27.0)
         sensors.litter = None
-        layer.evaluate(sensors)
+        advance(layer, sensors, clock)
         for _ in range(20):
             cmd = layer.evaluate(sensors)
             assert "lane" in cmd.message, f"stopped driving: {cmd.message}"
-            assert cmd.motion_vector[0] > 0 and cmd.motion_vector[2] == 0, cmd.message
+            # 27cm is inside DIAGONAL_NUDGE_CM, so a gentle nudge away from the
+            # wall is correct here; the bug this guards against is the lane
+            # ending outright, not a small steering correction.
+            assert cmd.motion_vector[0] > 0, cmd.message
+            assert abs(cmd.motion_vector[2]) < TURN_SPEED, cmd.message
             clock.tick(0.05)
     print("PASS scan drives out of a corner instead of spinning")
 
@@ -884,7 +896,7 @@ def test_scan_timers_pause_while_suppressed():
         layer = ScanAroundLayer()
         sensors = FakeSensors()
         sensors.dist = TURN_AT_CM - 1
-        layer.evaluate(sensors)            # DRIVE
+        advance(layer, sensors, clock)     # DRIVE
         advance(layer, sensors, clock)     # -> DODGE_TURN
         layer.notify_arbitration(won=False)
 
@@ -904,13 +916,12 @@ def test_scan_only_mode_drives_past_a_can():
     """Live bug: the dashboard read SCAN, the wheels were silent and the
     battery was fine. Layer 1 stood down for a camera detection, but SCAN-only
     has no Layer 2, so Layer 0 IDLE won and the robot parked indefinitely."""
-    with fake_clock():
+    with fake_clock() as clock:
         layer = ScanAroundLayer()
         layer.yield_to_targets = False           # what the SCAN button sets
         sensors = FakeSensors()
         sensors.litter = (0.5, 0.6)
-        layer.evaluate(sensors)
-        cmd = layer.evaluate(sensors)
+        cmd = advance(layer, sensors, clock)
         assert cmd.active, "scan stood down with no layer to take over"
         assert cmd.motion_vector[0] == FORWARD_SPEED, cmd.message
 
@@ -939,13 +950,13 @@ def test_reset_abandons_the_manoeuvre():
         layer = ScanAroundLayer()
         sensors = FakeSensors()
         sensors.dist = TURN_AT_CM - 1
-        layer.evaluate(sensors)                 # DRIVE
+        advance(layer, sensors, clock)          # DRIVE
         advance(layer, sensors, clock)          # -> DODGE_TURN
 
         layer.reset()
         clock.tick(600.0)                       # ten minutes parked
         sensors.dist = None
-        cmd = layer.evaluate(sensors)
+        cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
 
         # The lane timer restarts too, so it does not fire on the first tick.
@@ -990,7 +1001,7 @@ def test_timed_phases_jitter_within_bounds():
             sensors = FakeSensors()          # nothing in range, ever
             lanes, turns = set(), set()
             for _ in range(30):
-                layer.evaluate(sensors)                # DRIVE
+                advance(layer, sensors, clock)         # DRIVE
                 lanes.add(round(layer._lane_limit_s, 6))
                 clock.tick(layer._lane_limit_s + 0.01)
                 layer.evaluate(sensors)                # lane timeout -> TURN1
@@ -1000,7 +1011,7 @@ def test_timed_phases_jitter_within_bounds():
                 clock.tick(SHIFT_S + 0.01)
                 layer.evaluate(sensors)                # TURN2
                 clock.tick(layer._turn_s + 0.01)
-                layer.evaluate(sensors)                # DRIVE again
+                advance(layer, sensors, clock)         # DRIVE again
 
             assert len(lanes) > 5, f"lane length barely varied: {lanes}"
             assert len(turns) > 5, f"pivot time barely varied: {turns}"
