@@ -48,10 +48,10 @@ import threading
 import time
 
 _SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(_SRC_DIR)                      # for "web.xxx" imports
+sys.path.append(_SRC_DIR)                       # for "web.xxx" imports
 sys.path.append(os.path.dirname(_SRC_DIR))      # for "src.xxx" imports
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory # type: ignore
 
 from web.logbuffer import LogBuffer, setup_logging
 from web.runtime import RobotRuntime
@@ -60,7 +60,7 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 app = Flask(__name__, static_folder=None)
 buffer = LogBuffer(capacity=1000)
-runtime: RobotRuntime = None          # created in main()
+runtime: RobotRuntime = None          # type: ignore # created in main()
 allow_poweroff = False
 
 
@@ -210,7 +210,7 @@ def api_arm_pose():
 def api_arm_named_pose():
     try:
         runtime.arm_named_pose((request.get_json(force=True) or {}).get("name", ""))
-        return _ok(**runtime.arm_pose())
+        return _ok(**runtime.arm_pose()) # type: ignore
     except Exception as exc:
         return _fail(exc)
 
@@ -222,7 +222,7 @@ def api_arm_gripper():
         if action not in ("open", "close"):
             raise ValueError("action must be open|close")
         runtime.arm_gripper(action)
-        return _ok(**runtime.arm_pose())
+        return _ok(**runtime.arm_pose()) # type: ignore
     except Exception as exc:
         return _fail(exc)
 
@@ -232,7 +232,7 @@ def api_arm_jog():
     try:
         body = request.get_json(force=True) or {}
         runtime.arm_jog(int(body["channel"]), float(body["delta"]))
-        return _ok(**runtime.arm_pose())
+        return _ok(**runtime.arm_pose()) # type: ignore
     except Exception as exc:
         return _fail(exc)
 

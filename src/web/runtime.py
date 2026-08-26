@@ -44,7 +44,7 @@ import src.subsumption.layers.layer1_scan as scan_mod
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
 from src.subsumption.layers.layer2_approach import ApproachLitterLayer
 from src.subsumption.layers.layer3_collect import CollectLitterLayer
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
+from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 
 STATE_STOPPED = "STOPPED"
 STATE_AUTO = "AUTO"
@@ -175,7 +175,7 @@ class RobotRuntime:
 
         self.scan_layer.yield_to_targets = (new_state == STATE_AUTO)
 
-        self.emergency_layer.grab_zone_check = (
+        self.emergency_layer.grab_zone_check = ( # type: ignore
             self.collect_layer.is_grabbable if new_state == STATE_AUTO else None)
         for layer in self._all_layers:
             layer.reset()
@@ -244,10 +244,12 @@ class RobotRuntime:
         during a grab anyway — the arm is in front of the lens.
         """
         if winning.arm_action != 'grab_arc':
+            assert self.arm is not None
             self.arm.execute(winning)
             return
         self.sensors.pause_camera()
         try:
+            assert self.arm is not None
             self.arm.execute(winning)
         finally:
             self.sensors.resume_camera()
@@ -291,7 +293,7 @@ class RobotRuntime:
     def arm_pose(self) -> Optional[dict]:
         if self.arm is None:
             return None
-        return self.arm.planner.get_pose()
+        return self.arm.planner.get_pose() # type: ignore
 
     def arm_named_pose(self, name: str):
         with self._arm_lock:
@@ -300,10 +302,12 @@ class RobotRuntime:
 
                 planner.goto("home")
                 planner.open_gripper()
+                assert self.arm is not None
                 self.arm._at_home = True
                 self.arm._force_next_home = False
             elif name == "bin":
                 planner.dump_to_bin()       # release whatever is held
+                assert self.arm is not None
                 self.arm._at_home = False
             else:
                 raise ValueError(f"unknown pose '{name}' (home|bin)")
@@ -323,7 +327,8 @@ class RobotRuntime:
     def arm_jog(self, channel: int, delta: float) -> float:
         with self._arm_lock:
             planner = self._manual_arm_planner()
-            new_val = planner.jog_channel(channel, delta)
+            new_val = planner.jog_channel(channel, delta) # type: ignore
+            assert self.arm is not None
             self.arm._at_home = False
         self.log.info(f"manual jog CH{channel + 1} {delta:+.1f} -> {new_val:.1f}")
         return new_val
