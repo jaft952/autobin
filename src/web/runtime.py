@@ -211,7 +211,9 @@ class RobotRuntime:
                     self._run_arm(winning)
 
             if winning.message != self.win_message:
-                self.log.info(f"[L{winning.layer_id}] {winning.message}")
+                duty = getattr(self.motion.actuator, "last_duty", None)
+                self.log.info(f"[L{winning.layer_id}] {winning.message} "
+                              f"(vec={winning.motion_vector} duty={duty})")
                 if winning.layer_id == 0:
                     self.log.warning("no layer wants to drive - base parked on IDLE")
             self.win_message, self.win_layer = winning.message, winning.layer_id
