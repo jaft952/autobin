@@ -278,6 +278,12 @@ class ScanAroundLayer(BaseLayer):
         if self._phase is None:
             if self._needs_lookaround:
                 self._lookaround_step = 0
+                # Clear the moment the sweep STARTS, not when it finishes: a
+                # target flickering in and cutting the sweep short is the
+                # sweep succeeding (that is the whole point of looking
+                # around), not a reason to owe another full restart on the
+                # very next flicker straight back.
+                self._needs_lookaround = False
                 self._enter(_Phase.LOOKAROUND_TURN, now)
             else:
                 # Just a flickered detection handing control back -- resume
