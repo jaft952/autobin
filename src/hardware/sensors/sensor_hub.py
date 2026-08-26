@@ -118,6 +118,11 @@ class SensorHub(SensorInterface):
             return False
         return self._camera.get_litter_too_close()
 
+    def get_litter_target_error(self):
+        if self._camera is None:
+            return None
+        return self._camera.get_litter_target_error()
+
     def get_aerial_trash_position(self):
         if self._camera is None:
             return None

@@ -215,6 +215,18 @@ class CameraSensor(SensorInterface):
         distance_cm = self.get_litter_distance_cm()
         return distance_cm is not None and distance_cm <= TOO_CLOSE_DISTANCE_CM
 
+    def get_litter_target_error(self): # type: ignore
+        """The exact TargetError tests/test_ibvs_centering.py's live loop
+        computes: same compute_target_error() call, against the same locked-
+        target DetectionResult (one detection, the locked box), not values
+        re-derived from the other getters above."""
+        box, result = self._current_target()
+        from src.visual_servoing.distance_error import compute_target_error
+        locked_result = DetectionResult(
+            detections=[box] if box is not None else [],
+            frame_width=result.frame_width, frame_height=result.frame_height)
+        return compute_target_error(locked_result)
+
     def get_litter_pose(self): # type: ignore
         """
         Returns the locked tin's pose estimated from its segmentation mask:

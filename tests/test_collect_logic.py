@@ -43,11 +43,15 @@ from src.subsumption.layers.layer2_approach import ApproachLitterLayer
 import src.subsumption.layers.layer3_collect as collect_mod
 from src.subsumption.layers.layer3_collect import (
     CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S, GRAB_CONFIRM_CM,
-    BACKOFF_SPEED,
+    RETREAT_GAP_S, RETREAT_PULSE_S,
 )
+from src.motion.calibration import MotionCalibration
+import src.visual_servoing.reactive_controller as reactive_mod
 import src.subsumption.layers.layer4_emergency as emergency_mod
 from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 from src.arm.arc_grasp import ArcGraspSolver, save_config, ch5_from_angle
+from src.visual_servoing.distance_error import (
+    TargetError, STOP_DISTANCE_CM, CENTER_TOLERANCE)
 
 
 # ── Test doubles ──────────────────────────────────────────────────────────
@@ -91,6 +95,7 @@ class FakeSensors:
         self.ground = None       # get_litter_ground_contact()
         self.pose = None         # get_litter_pose(): {'klass':..., 'angle':...}
         self.dist = None
+        self.litter_dist_cm = None   # get_litter_distance_cm()
 
     def get_litter_position(self):
         return self.center
@@ -111,10 +116,26 @@ class FakeSensors:
         return self.dist is not None and self.dist < 10.0
 
     def get_litter_distance_cm(self):
-        return None
+        return self.litter_dist_cm
 
     def get_litter_too_close(self):
         return False
+
+    def get_litter_target_error(self):
+        """Layer 2 now calls this exclusively -- build the same TargetError
+        compute_target_error() would, from this fake's own fields, so the
+        fixture stays a drop-in stand-in for a locked detection."""
+        if not self.center:
+            return TargetError(found=False, lateral_error=0.0, distance_cm=None,
+                                reached=False, too_close=False)
+        lateral_error = self.center[0] - 0.5
+        distance_cm = self.litter_dist_cm
+        reached = (distance_cm is not None
+                   and distance_cm <= STOP_DISTANCE_CM
+                   and abs(lateral_error) <= CENTER_TOLERANCE)
+        return TargetError(found=True, lateral_error=lateral_error,
+                            distance_cm=distance_cm, reached=reached,
+                            too_close=self.get_litter_too_close())
 
 
 class FakePlanner:
@@ -256,20 +277,39 @@ def test_latch_rides_out_a_blink():
 
 def test_too_close_backs_off():
     """Overshooting the nearest calibrated arc used to return inactive, so
-    Layer 2 kept closing in and made it worse until Layer 5 tripped."""
+    Layer 2 kept closing in and made it worse until Layer 5 tripped. The
+    retreat now pulses the same shape as test_ibvs_centering.py's
+    _retreat_pulse(): a brief stop, then a bounded backward pulse at
+    BACKUP_SPEED, not an indefinite backoff."""
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
         sensors.ground = (0.5, 0.95)            # below the grid's lowest arc
+
+        # Freshly overshot -> stopped gap first (a direction flip never goes
+        # straight into reverse), never a grab.
         cmd = layer.evaluate(sensors)
         assert cmd.active, cmd.message
-        assert cmd.motion_vector == (BACKOFF_SPEED, 0, 0), cmd.motion_vector
+        assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
         assert cmd.arm_action != 'grab_arc', cmd.arm_action
+
+        # Gap elapses -> the backward pulse, at the same BACKUP_SPEED
+        # tests/test_ibvs_centering.py uses (converted to a motion fraction).
+        clock.tick(RETREAT_GAP_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        expected_vx = -reactive_mod.BACKUP_SPEED / MotionCalibration().forward_speed
+        assert cmd.motion_vector == (expected_vx, 0, 0), cmd.motion_vector
+        assert cmd.motion_vector[0] < 0, "should be reversing"
+
+        # Pulse elapses -> back to the stopped gap, then pulses again.
+        clock.tick(RETREAT_PULSE_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
 
         # Backing off into the band grabs normally again.
         sensors.ground = (0.5, 0.6)
         assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-    print("PASS overshoot backs off instead of standing down")
+    print("PASS overshoot retreats in bounded pulses instead of standing down")
 
 
 def test_ultrasonic_vetoes_a_far_grab():
@@ -431,8 +471,14 @@ def test_emergency_stands_down_for_a_grabbable_tin():
 # ── Layer 2: steering signs ───────────────────────────────────────────────
 
 def test_approach_steering():
+    """Layer 2 now calls reactive_controller.compute_reactive_command()
+    directly (the same pipeline tests/test_ibvs_centering.py validates), so
+    it needs a real distance estimate to move at all -- unlike the old
+    implementation there is no y-position fallback when distance is
+    unknown, which is the whole point of sharing the one validated path."""
     layer = ApproachLitterLayer()
     sensors = FakeSensors()
+    sensors.litter_dist_cm = 60.0  # mid tier: FAR_DISTANCE_CM > 60 > LOW_DISTANCE_CM
 
     sensors.center = (0.8, 0.5)             # tin right -> steer right (< 0)
     v = layer.evaluate(sensors).motion_vector
@@ -441,11 +487,18 @@ def test_approach_steering():
     v = layer.evaluate(sensors).motion_vector
     assert v[2] > 0, v
 
-    sensors.center = (0.5, 0.2)             # far -> faster than close
+    sensors.center = (0.5, 0.5)
+    sensors.litter_dist_cm = 150.0          # far tier -> faster than close
     far_fwd = layer.evaluate(sensors).motion_vector[0]
-    sensors.center = (0.5, 0.8)
+    sensors.litter_dist_cm = 30.0           # low tier
     near_fwd = layer.evaluate(sensors).motion_vector[0]
     assert far_fwd > near_fwd > 0, (far_fwd, near_fwd)
+
+    # No distance estimate -> compute_reactive_command() has nothing to
+    # scale speed off, so it commands zero rather than guessing.
+    sensors.litter_dist_cm = None
+    v = layer.evaluate(sensors).motion_vector
+    assert v == (0, 0, 0), v
 
     sensors.center = None
     assert not layer.evaluate(sensors).active

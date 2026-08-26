@@ -202,6 +202,12 @@ class ScanAroundLayer(BaseLayer):
         self._turn_left: bool = True           # pivot side; alternates per wall
         self._dodge_left: bool = True          # which way the current dodge went
         self._lookaround_step: int = 0         # completed steps of the pre-lane sweep
+        # True only for a GENUINE fresh start (boot, operator reset, or a
+        # completed lane change) -- NOT for a target that merely flickered out
+        # of view for a tick and handed control straight back. Without this,
+        # a flickering detection retriggers the full 8-step sweep on every
+        # single dropped frame, fighting the very approach it just yielded to.
+        self._needs_lookaround: bool = True
         self._next_phase: _Phase = _Phase.DRIVE  # what the settle is settling for
         self._pivot_note: str = "L-- R--"      # side readings behind the last choice
         self._suppressed_since: Optional[float] = None
@@ -232,6 +238,7 @@ class ScanAroundLayer(BaseLayer):
 
     def reset(self) -> None:
         self._phase = None
+        self._needs_lookaround = True  # operator/mode change: re-scan on resume
         self._suppressed_since = None
 
     def timing_summary(self) -> str:
@@ -269,8 +276,14 @@ class ScanAroundLayer(BaseLayer):
         wall_ahead = front is not None and front <= TURN_AT_CM
 
         if self._phase is None:
-            self._lookaround_step = 0
-            self._enter(_Phase.LOOKAROUND_TURN, now)
+            if self._needs_lookaround:
+                self._lookaround_step = 0
+                self._enter(_Phase.LOOKAROUND_TURN, now)
+            else:
+                # Just a flickered detection handing control back -- resume
+                # driving plainly, no re-scan, no lane restart.
+                self._enter(_Phase.DRIVE, now)
+                self._start_lane(now)
 
         # ---- phase transitions ------------------------------------------
         if self._phase == _Phase.SETTLE:
@@ -285,6 +298,7 @@ class ScanAroundLayer(BaseLayer):
             if self._elapsed(now) >= LOOKAROUND_DWELL_S:
                 self._lookaround_step += 1
                 if self._lookaround_step >= LOOKAROUND_STEPS:
+                    self._needs_lookaround = False
                     self._start_lane(now)
                     self._enter(_Phase.DRIVE, now)
                 else:

@@ -1,91 +1,84 @@
 """
 src/subsumption/layers/layer2_approach.py
 
-Layer 2: Approach Litter — steers the base toward detected ground litter
-with the same continuous-arc philosophy as ChassisController's steering
-mode: turn component proportional to horizontal error, forward speed scaled
-by distance, so the base curves onto the tin instead of pivot-then-drive.
+Layer 2: Approach Litter -- steers the base toward detected ground litter
+by calling the SAME two functions, on the SAME data, as tests/test_ibvs_
+centering.py's validated live loop:
 
-Coordinates: get_litter_position() is normalized (x, y) with (0.5, 0.5) at
-frame center. x > 0.5 = tin right of center -> steer right = NEGATIVE
-v_theta (positive v_theta is CCW/left, see MotionExecutor). Small y = tin
-near frame top = far away -> drive brisker; large y = close -> creep, so
-Layer 3 gets a stable image to solve the grasp on.
+    error  = sensors.get_litter_target_error()   # compute_target_error()
+    wheels = compute_reactive_command(error, kin) # arc steering + speed tiers
 
-This layer stays active the whole time litter is visible; when the tin
-enters a grabbable region Layer 3 activates and subsumes it automatically.
+get_litter_target_error() (CameraSensor) calls compute_target_error() on
+its own locked-target DetectionResult -- it is not a value re-derived from
+this layer's other getters, so there is nothing here that can drift out of
+sync with the validated script: same function, same input, same constants.
+
+compute_reactive_command() returns a WheelCommand already in duty units
+(the ~20-32 scale PWMActuator expects directly), not the -1..1 motion
+fraction this layer must emit (Rule 1: hardware mixing happens once, in
+MotionExecutor, after arbitration -- a layer never touches wheel-level
+values). _to_motion_vector() undoes MotionExecutor's own mixing formula, so
+when MotionExecutor re-mixes the vector this layer emits, it reproduces the
+exact duty compute_reactive_command() intended.
 """
 from typing import Any
 
 from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
-from src.visual_servoing.reactive_controller import FAR_DISTANCE_CM, LOW_DISTANCE_CM
+from src.motion.calibration import MotionCalibration
+from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
+from src.visual_servoing.reactive_controller import compute_reactive_command
 
-# Tune on the Pi alongside the chassis steering constants:
-#   STEER_GAIN too low  -> drifts past the tin sideways
-#   STEER_GAIN too high -> S-curves around the centerline
-APPROACH_STEER_GAIN = 0.9
-APPROACH_MAX_TURN   = 0.5
+_CAL = MotionCalibration()
+_KIN = DifferentialKinematics(_CAL)
 
-APPROACH_BASE_SPEED = 0.45   # forward fraction when the tin is mid-frame
-APPROACH_DIST_GAIN  = 0.5    # extra speed per unit of "farness" (0.5 - y)
-APPROACH_MIN_SPEED  = 0.3    # never crawl below this (motors stall)
-APPROACH_MAX_SPEED  = 0.7
 
-# Speed tiers keyed off the monocular distance estimate (same breakpoints as
-# reactive_controller, so the two stay in sync as they get re-tuned).
-APPROACH_CRUISE_SPEED  = APPROACH_MAX_SPEED
-APPROACH_STEP_SPEED    = APPROACH_MIN_SPEED
-APPROACH_BACKUP_SPEED  = -0.3
+def _to_motion_vector(wheels: WheelCommand):
+    """Inverse of MotionExecutor's left = v_x - v_theta, right = v_x +
+    v_theta mix, so re-mixing this vector reproduces `wheels` exactly
+    (peak stays under the renormalize threshold at these duty levels)."""
+    scale = 2.0 * _CAL.forward_speed
+    v_x = (wheels.left_speed + wheels.right_speed) / scale
+    v_theta = (wheels.right_speed - wheels.left_speed) / scale
+    return (v_x, 0, v_theta)
 
 
 class ApproachLitterLayer(BaseLayer):
     """
     Layer 2: Approach Litter
     Priority: 2 (Low)
-    Behavior: Arcs the base toward detected ground litter, slowing as it
-              nears, until Layer 3 finds the tin grabbable and takes over.
+    Behavior: Arcs the base toward detected ground litter using the same
+              TargetError -> compute_reactive_command() pipeline validated
+              in tests/test_ibvs_centering.py, until Layer 3 finds the tin
+              grabbable and takes over.
     """
     def __init__(self):
         super().__init__(layer_id=2)
 
     def evaluate(self, sensors: Any) -> ActionCommand:
-        litter_pos = sensors.get_litter_position()
-        if not litter_pos:
+        error = sensors.get_litter_target_error()
+        if error is None or not error.found:
             return ActionCommand(layer_id=self.layer_id, active=False)
 
-        x, y = litter_pos
-        error_x = x - 0.5                    # +ve = tin right of center
-
-        if sensors.get_litter_too_close():
+        wheels = compute_reactive_command(error, _KIN)
+        if wheels is None:
+            # Reached: within STOP_DISTANCE_CM and centered. Hold position
+            # (stay active, do not go inactive) so Layer 0 Idle cannot win
+            # the gap before Layer 3 independently confirms grabbable.
             return ActionCommand(
                 layer_id=self.layer_id,
                 active=True,
-                motion_vector=(APPROACH_BACKUP_SPEED, 0, 0),
+                motion_vector=(0, 0, 0),
                 arm_action='deploy',
-                message="TOO CLOSE, backing off",
+                message=f"REACHED, holding (dist={error.distance_cm})",
             )
 
-        steer = -error_x * APPROACH_STEER_GAIN
-        steer = max(-APPROACH_MAX_TURN, min(APPROACH_MAX_TURN, steer))
-
-        distance_cm = sensors.get_litter_distance_cm()
-        if distance_cm is None:
-            # No distance estimate (uncalibrated/degenerate bbox) — fall
-            # back to the old y-position proxy for "farness".
-            forward = APPROACH_BASE_SPEED + (0.5 - y) * APPROACH_DIST_GAIN
-        elif distance_cm > FAR_DISTANCE_CM:
-            forward = APPROACH_CRUISE_SPEED
-        elif distance_cm > LOW_DISTANCE_CM:
-            forward = APPROACH_BASE_SPEED
-        else:
-            forward = APPROACH_STEP_SPEED
-        forward = max(APPROACH_MIN_SPEED, min(APPROACH_MAX_SPEED, forward))
-
+        label = "TOO CLOSE, backing off" if error.too_close else \
+            f"APPROACHING LITTER (ex={error.lateral_error:+.2f}, dist={error.distance_cm})"
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
-            motion_vector=(forward, 0, steer),
+            motion_vector=_to_motion_vector(wheels),
             arm_action='deploy',             # travel pose, ready to grab
-            message=f"APPROACHING LITTER (ex={error_x:+.2f}, dist={distance_cm})",
+            message=label,
         )

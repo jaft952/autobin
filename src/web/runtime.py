@@ -43,6 +43,7 @@ from src.subsumption.layers.layer0_idle import SystemIdleLayer
 import src.subsumption.layers.layer1_scan as scan_mod
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
 from src.subsumption.layers.layer2_approach import ApproachLitterLayer
+import src.visual_servoing.reactive_controller as reactive_mod
 from src.subsumption.layers.layer3_collect import CollectLitterLayer
 from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 
@@ -330,31 +331,57 @@ class RobotRuntime:
 
     def settings_registry(self):
         """Whitelisted live-tunable parameters:
-        (key, [(obj, attr), ...], lo, hi, step, label). Targets are the LIVE
-        layer objects -- the layers copy the module defaults in __init__, so
+        (key, group, [(obj, attr), ...], lo, hi, step, label). `group` is the
+        owning layer, purely for the dashboard to section the list under --
+        it plays no role in applying the setting. Targets are the LIVE layer
+        objects -- the layers copy the module defaults in __init__, so
         patching the module afterwards changed nothing."""
         scan, emerg = self.scan_layer, self.emergency_layer
+        L1, L2, L4, SYS = "Layer 1 - Scan", "Layer 2 - Approach", "Layer 4 - Emergency", "System"
         return [
-            ("scan.forward_speed", [(scan, "forward_speed")], 0.2, 1.0, 0.01, "Scan: lane speed (0-1)"),
-            # Layer 5 outvotes the scan pivot, so both must pivot at one speed.
-            ("scan.turn_speed",    [(scan, "turn_speed"), (emerg, "turn_speed")],
+            ("scan.forward_speed", L1, [(scan, "forward_speed")], 0.2, 1.0, 0.01, "Scan: lane speed (0-1)"),
+            # Layer 4 outvotes the scan pivot, so both must pivot at one speed.
+            ("scan.turn_speed",    L1, [(scan, "turn_speed"), (emerg, "turn_speed")],
              0.2, 1.0, 0.01, "Scan: pivot speed (0-1)"),
-            ("scan.turn_90_s",     [(scan, "turn_90_s")], 0.3, 3.0, 0.05, "Scan: 90° pivot time (s)"),
-            ("scan.shift_s",       [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
-            ("scan.max_lane_s",    [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
+            ("scan.turn_90_s",     L1, [(scan, "turn_90_s")], 0.3, 3.0, 0.05, "Scan: 90° pivot time (s)"),
+            ("scan.shift_s",       L1, [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
+            ("scan.max_lane_s",    L1, [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
             # Read from the module every tick, so patching the global works.
-            ("scan.turn_at_cm",    [(scan_mod, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
-            ("safety.estop_cm",    [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
-            ("loop.hz",            [(self, "hz")], 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
+            ("scan.turn_at_cm",    L1, [(scan_mod, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
+
+            # Layer 2 (approach) now calls reactive_controller.compute_reactive_
+            # command() directly -- the same validated function
+            # tests/test_ibvs_centering.py uses -- so these are the constants
+            # that actually drive it, read fresh from the module each call.
+            # Layer 3's overshoot retreat also reads BACKUP_SPEED live, so
+            # approach.backup_speed tunes both from one slider.
+            ("approach.far_distance_cm", L2, [(reactive_mod, "FAR_DISTANCE_CM")],
+             30.0, 200.0, 5.0, "Approach: far tier starts beyond (cm)"),
+            ("approach.low_distance_cm", L2, [(reactive_mod, "LOW_DISTANCE_CM")],
+             10.0, 100.0, 5.0, "Approach: mid tier starts within (cm)"),
+            ("approach.forward_high_speed", L2, [(reactive_mod, "FORWARD_HIGH_SPEED")],
+             10.0, 60.0, 1.0, "Approach: speed beyond far tier (duty)"),
+            ("approach.forward_mid_speed", L2, [(reactive_mod, "FORWARD_MID_SPEED")],
+             10.0, 60.0, 1.0, "Approach: speed between tiers (duty)"),
+            ("approach.forward_low_speed", L2, [(reactive_mod, "FORWARD_LOW_SPEED")],
+             10.0, 60.0, 1.0, "Approach: speed within low tier (duty)"),
+            ("approach.backup_speed", L2, [(reactive_mod, "BACKUP_SPEED")],
+             5.0, 40.0, 1.0, "Approach: backup speed when too close (duty, also Layer 3 retreat)"),
+            ("approach.max_steer_deg", L2, [(reactive_mod, "MAX_STEER_ANGLE_DEG")],
+             10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
+
+            ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
+
+            ("loop.hz", SYS, [(self, "hz")], 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
         ]
 
     def get_settings(self) -> list:
-        return [{"key": k, "value": round(float(getattr(*targets[0])), 3),
+        return [{"key": k, "group": group, "value": round(float(getattr(*targets[0])), 3),
                  "min": lo, "max": hi, "step": step, "label": label}
-                for k, targets, lo, hi, step, label in self.settings_registry()]
+                for k, group, targets, lo, hi, step, label in self.settings_registry()]
 
     def set_setting(self, key: str, value: float) -> float:
-        for k, targets, lo, hi, _step, _label in self.settings_registry():
+        for k, _group, targets, lo, hi, _step, _label in self.settings_registry():
             if k == key:
                 clamped = max(lo, min(hi, float(value)))
                 for obj, attr in targets:

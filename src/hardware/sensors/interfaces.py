@@ -46,6 +46,15 @@ class SensorInterface:
         base should back off regardless of the distance estimate."""
         return False
 
+    def get_litter_target_error(self):
+        """Returns the TargetError (src/visual_servoing/distance_error.py)
+        for the locked litter target, from calling compute_target_error()
+        on the sensor's own DetectionResult -- the same function and the
+        same data tests/test_ibvs_centering.py's validated loop uses, not a
+        value re-derived from the other getters above. None if unavailable
+        (no camera): callers must treat that the same as 'not found'."""
+        return None
+
     def get_litter_pose(self) -> dict:
         """Returns the litter's pose from segmentation, or None if unknown:
         {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180}.

@@ -274,20 +274,32 @@ function SettingsCard({ base, connected }) {
     load();
   };
 
+  // Section by owning layer, in the order the backend already returns them.
+  const groups = [];
+  for (const s of settings) {
+    let g = groups.find((x) => x.name === s.group);
+    if (!g) { g = { name: s.group, items: [] }; groups.push(g); }
+    g.items.push(s);
+  }
+
   return html`
     <div class="card">
       <div class="card-title">QUICK SETTINGS
         <span class="right"><button onClick=${load}>↻</button></span>
       </div>
       <div class="card-body">
-        ${settings.map((s) => html`
-          <div class="set-row" key=${s.key}>
-            <label title=${s.key}>${s.label}</label>
-            <input type="number" min=${s.min} max=${s.max} step=${s.step}
-                   value=${draft[s.key] !== undefined ? draft[s.key] : s.value}
-                   onChange=${(e) => setDraft({ ...draft, [s.key]: e.target.value })}
-                   onBlur=${() => commit(s)}
-                   onKeyDown=${(e) => e.key === "Enter" && e.target.blur()} />
+        ${groups.map((g) => html`
+          <div class="set-group" key=${g.name}>
+            <div class="set-group-title">${g.name}</div>
+            ${g.items.map((s) => html`
+              <div class="set-row" key=${s.key}>
+                <label title=${s.key}>${s.label}</label>
+                <input type="number" min=${s.min} max=${s.max} step=${s.step}
+                       value=${draft[s.key] !== undefined ? draft[s.key] : s.value}
+                       onChange=${(e) => setDraft({ ...draft, [s.key]: e.target.value })}
+                       onBlur=${() => commit(s)}
+                       onKeyDown=${(e) => e.key === "Enter" && e.target.blur()} />
+              </div>`)}
           </div>`)}
         <div class="set-note">applied live, session-only — edit the source constants to keep them</div>
       </div>

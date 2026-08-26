@@ -41,7 +41,7 @@ from src.subsumption.arbitrator import ActionCommand
 
 log = logging.getLogger("arm_executor")
 
-GRAB_COOLDOWN_S = 4.0
+GRAB_COOLDOWN_S = 3.0   # matches tests/test_ibvs_centering.py's _GRAB_COOLDOWN_S
 
 
 class ArmExecutor:
