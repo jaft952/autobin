@@ -95,7 +95,7 @@ BACKOFF_REAR_MIN_CM = 20.0  # abort the reverse if the rear closes to this
 # Diagonals steer the lane, they never end it. Full gain (at zero clearance)
 # is NUDGE_GAIN of the pivot speed, so the correction is always gentler than
 # a deliberate turn and two opposing walls cancel to a straight line.
-DIAGONAL_NUDGE_CM = 25.0
+DIAGONAL_NUDGE_CM = 30.0
 NUDGE_GAIN        = 0.35
 
 # Pivot-side override. Sides are compared saturated at PIVOT_ROOM_CM so a

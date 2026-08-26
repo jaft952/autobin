@@ -335,10 +335,10 @@ class RobotRuntime:
         patching the module afterwards changed nothing."""
         scan, emerg = self.scan_layer, self.emergency_layer
         return [
-            ("scan.forward_speed", [(scan, "forward_speed")], 0.2, 1.0, 0.05, "Scan: lane speed (0-1)"),
+            ("scan.forward_speed", [(scan, "forward_speed")], 0.2, 1.0, 0.01, "Scan: lane speed (0-1)"),
             # Layer 5 outvotes the scan pivot, so both must pivot at one speed.
             ("scan.turn_speed",    [(scan, "turn_speed"), (emerg, "turn_speed")],
-             0.2, 1.0, 0.05, "Scan: pivot speed (0-1)"),
+             0.2, 1.0, 0.01, "Scan: pivot speed (0-1)"),
             ("scan.turn_90_s",     [(scan, "turn_90_s")], 0.3, 3.0, 0.05, "Scan: 90° pivot time (s)"),
             ("scan.shift_s",       [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
             ("scan.max_lane_s",    [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
