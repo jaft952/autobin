@@ -57,10 +57,11 @@ const dash = (v, suffix = "") => (v == null ? "--" : v + suffix);
 
 /* ── Header: connect bar + system controls ───────────────────────────── */
 
-function Header({ base, connected, onConnect, status, onDead }) {
+function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
   const state = connected && status ? status.state : "OFFLINE";
   const [addr, setAddr] = useState(base.replace(/^https?:\/\//, ""));
   const [confirmOff, setConfirmOff] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
 
   const connect = (e) => {
     e.preventDefault();
@@ -79,6 +80,17 @@ function Header({ base, connected, onConnect, status, onDead }) {
     }
     await apiPost(base, "/api/system/shutdown");
     onDead("Pi powering off...");
+  };
+
+  const restart = async () => {
+    if (!confirmRestart) {
+      setConfirmRestart(true);
+      setTimeout(() => setConfirmRestart(false), 3000);
+      return;
+    }
+    setConfirmRestart(false);
+    await apiPost(base, "/api/system/restart");
+    onRestarting();
   };
 
   return html`
@@ -102,6 +114,10 @@ function Header({ base, connected, onConnect, status, onDead }) {
       <button class="btn-estop" disabled=${!connected}
               onClick=${() => apiPost(base, "/api/system/estop")}>■ EMERGENCY STOP</button>
 
+      <button class="btn-restart ${confirmRestart ? "armed" : ""}"
+              disabled=${!connected} onClick=${restart}>
+        ${confirmRestart ? "Confirm?" : "⟲ Restart server"}
+      </button>
       <button class="btn-shutdown ${confirmOff ? "armed" : ""}"
               disabled=${!connected} onClick=${shutdown}>
         ${confirmOff ? "Confirm?" : "⏻ Shutdown"}
@@ -332,12 +348,14 @@ function App() {
   const [lines, setLines] = useState([]);
   const [camEpoch, setCamEpoch] = useState(0);
   const [dead, setDead] = useState("");
+  const [restarting, setRestarting] = useState(false);
 
   useEffect(() => {
     if (!base) return;
     const es = new EventSource(base + "/api/events");
     es.onopen = () => {
       setConnected(true);
+      setRestarting(false);            // server is back — drop the banner
       setCamEpoch((n) => n + 1);       // (re)start the MJPEG <img>
     };
     es.onerror = () => setConnected(false);   // EventSource auto-retries
@@ -352,9 +370,11 @@ function App() {
   return html`
     <${Header} base=${base} connected=${connected} status=${status}
                onConnect=${(b) => { setLines([]); setStatus(null); setBase(b); }}
-               onDead=${setDead} />
+               onDead=${setDead} onRestarting=${() => setRestarting(true)} />
     ${dead ? html`<div class="dead-overlay">${dead}</div>` : null}
-    ${!dead && base && !connected
+    ${!dead && restarting
+      ? html`<div class="conn-banner">server restarting, re-reads edited source…</div>` : null}
+    ${!dead && !restarting && base && !connected
       ? html`<div class="conn-banner">connecting to ${base} … is web/server.py running on the Pi?</div>` : null}
     ${!base
       ? html`<div class="conn-banner">enter the Pi address above and press Connect</div>` : null}

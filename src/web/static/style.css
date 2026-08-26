@@ -106,6 +106,7 @@ button:disabled { opacity: .38; cursor: not-allowed; }
   letter-spacing: 1px;
 }
 .btn-estop:hover { filter: brightness(1.15); }
+.btn-restart.armed  { background: var(--amber); border-color: var(--amber); color: #14100a; }
 .btn-shutdown.armed { background: var(--amber); border-color: var(--amber); color: #14100a; }
 
 /* ── Layout ─────────────────────────────────────────────────────────── */

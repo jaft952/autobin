@@ -28,6 +28,7 @@ API summary (all JSON unless noted):
     POST /api/system/stop             stop layers, wheels halted
     POST /api/system/estop            EMERGENCY STOP
     POST /api/system/shutdown         stop the server and power off the Pi
+    POST /api/system/restart          re-exec the server (picks up edited source)
     GET  /api/camera/stream           MJPEG stream (multipart)
     GET  /api/arm/pose                commanded arm pose
     POST /api/arm/pose {name}         home | bin
@@ -163,6 +164,20 @@ def api_shutdown():
 
     threading.Thread(target=_later, daemon=True).start()
     return _ok(note="Pi powering off")
+
+
+@app.post("/api/system/restart")
+def api_restart():
+    """Re-exec this process so edited source files (layer speeds, thresholds,
+    etc.) are picked up on next import — a plain reconnect can't do that,
+    the old module stays loaded in memory until the process itself restarts."""
+    def _later():
+        time.sleep(0.5)                     # let the HTTP response flush
+        runtime.close()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_later, daemon=True).start()
+    return _ok(note="server restarting")
 
 
 # ── Camera ────────────────────────────────────────────────────────────────
