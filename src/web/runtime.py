@@ -164,8 +164,6 @@ class RobotRuntime:
         self.motion.stop()
 
     def estop(self):
-        # Cut power NOW from this thread — the loop may be inside a blocking
-        # grab and must not be waited on.
         self.motion.stop()
         self._transition(STATE_ESTOP, "EMERGENCY STOP")
 
