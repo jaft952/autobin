@@ -61,7 +61,6 @@ function Header({ base, connected, onConnect, status, onDead }) {
   const state = connected && status ? status.state : "OFFLINE";
   const [addr, setAddr] = useState(base.replace(/^https?:\/\//, ""));
   const [confirmOff, setConfirmOff] = useState(false);
-  const [poweroff, setPoweroff] = useState(false);
 
   const connect = (e) => {
     e.preventDefault();
@@ -78,8 +77,8 @@ function Header({ base, connected, onConnect, status, onDead }) {
       setTimeout(() => setConfirmOff(false), 3000);
       return;
     }
-    await apiPost(base, "/api/system/shutdown", { poweroff });
-    onDead(poweroff ? "Pi powering off..." : "Robot server stopped.");
+    await apiPost(base, "/api/system/shutdown");
+    onDead("Pi powering off...");
   };
 
   return html`
@@ -103,11 +102,6 @@ function Header({ base, connected, onConnect, status, onDead }) {
       <button class="btn-estop" disabled=${!connected}
               onClick=${() => apiPost(base, "/api/system/estop")}>■ EMERGENCY STOP</button>
 
-      <label class="poweroff-opt">
-        <input type="checkbox" checked=${poweroff}
-               onChange=${(e) => setPoweroff(e.target.checked)} />
-        power off Pi
-      </label>
       <button class="btn-shutdown ${confirmOff ? "armed" : ""}"
               disabled=${!connected} onClick=${shutdown}>
         ${confirmOff ? "Confirm?" : "⏻ Shutdown"}
@@ -145,16 +139,10 @@ function Bar({ pct }) {
 }
 
 function PowerCard({ s }) {
-  const batteryPct = s && s.battery != null ? Math.round(s.battery * 100) : null;
   return html`
     <div class="card">
       <div class="card-title">POWER STATUS</div>
       <div class="card-body stat-grid">
-        <div class="stat">
-          <div class="k">BATTERY ${s && s.battery_placeholder ? "(placeholder)" : ""}</div>
-          <div class="v">${dash(batteryPct, "%")}</div>
-          <${Bar} pct=${batteryPct} />
-        </div>
         <div class="stat">
           <div class="k">CPU TEMP</div>
           <div class="v">${dash(s && s.temp_c, " °C")}</div>

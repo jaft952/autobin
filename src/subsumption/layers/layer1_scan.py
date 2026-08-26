@@ -82,8 +82,8 @@ from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
 
 # Motion fractions (scaled by MotionExecutor / MotionCalibration duty).
-FORWARD_SPEED = 0.35   # lane cruising speed
-TURN_SPEED    = 0.37 # pivot speed (below this the base tends to stall)
+FORWARD_SPEED = 0.20   # lane cruising speed
+TURN_SPEED    = 0.30 # pivot speed (below this the base tends to stall)
 # Backing off reuses the live lane speed; a constant here would override
 # every speed calibration.
 

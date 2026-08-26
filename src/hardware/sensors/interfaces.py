@@ -4,10 +4,6 @@ class SensorInterface:
         """Poll the hardware to update current state. Called every tick by main loop."""
         pass
         
-    def get_battery_level(self) -> float:
-        """Returns battery percentage 0.0 - 1.0"""
-        return 1.0
-        
     def has_obstacle(self) -> bool:
         """Returns True if there is an imminent collision"""
         return False

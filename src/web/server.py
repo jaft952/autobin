@@ -9,8 +9,6 @@ Run on the Pi (needs: pip install flask):
 
     python web/server.py                     # full robot, port 8000
     python web/server.py --no-camera         # bench without YOLO/webcam
-    python web/server.py --allow-poweroff    # lets the Shutdown button also
-                                             # power off the Pi (sudo)
 
 Then on Windows:   python web/dashboard.py --pi <pi-ip>:8000
 (or open http://<pi-ip>:8000 directly — the Pi still serves the UI too,
@@ -29,7 +27,7 @@ API summary (all JSON unless noted):
     POST /api/system/scan             manual scanning (zigzag only)
     POST /api/system/stop             stop layers, wheels halted
     POST /api/system/estop            EMERGENCY STOP
-    POST /api/system/shutdown         graceful software shutdown (+optional poweroff)
+    POST /api/system/shutdown         stop the server and power off the Pi
     GET  /api/camera/stream           MJPEG stream (multipart)
     GET  /api/arm/pose                commanded arm pose
     POST /api/arm/pose {name}         home | bin
@@ -61,7 +59,6 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 app = Flask(__name__, static_folder=None)
 buffer = LogBuffer(capacity=1000)
 runtime: RobotRuntime = None          # type: ignore # created in main()
-allow_poweroff = False
 
 
 # ── CORS: the dashboard is served from Windows (different origin), so every
@@ -159,17 +156,13 @@ def api_estop():
 
 @app.post("/api/system/shutdown")
 def api_shutdown():
-    poweroff = bool((request.get_json(silent=True) or {}).get("poweroff")) and allow_poweroff
-
     def _later():
         time.sleep(0.5)                     # let the HTTP response flush
         runtime.close()
-        if poweroff:
-            os.system("sudo shutdown -h now")
-        os._exit(0)
+        os.system("sudo shutdown -h now")
 
     threading.Thread(target=_later, daemon=True).start()
-    return _ok(poweroff=poweroff, note="server going down")
+    return _ok(note="Pi powering off")
 
 
 # ── Camera ────────────────────────────────────────────────────────────────
@@ -273,16 +266,13 @@ def api_logs_clear():
 # ── Entrypoint ────────────────────────────────────────────────────────────
 
 def main():
-    global runtime, allow_poweroff
+    global runtime
     ap = argparse.ArgumentParser(description="AutoBin web dashboard")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--hz", type=float, default=20.0, help="control loop rate")
     ap.add_argument("--no-camera", action="store_true", help="skip YOLO/webcam")
-    ap.add_argument("--allow-poweroff", action="store_true",
-                    help="Shutdown button may also power off the Pi")
     args = ap.parse_args()
-    allow_poweroff = args.allow_poweroff
 
     log = setup_logging(buffer)
     log.info("AutoBin dashboard starting...")

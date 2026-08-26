@@ -92,7 +92,6 @@ class CameraSensor(SensorInterface):
         self._worker = None
         self._running = threading.Event()
         self._running.set()          # cleared only while the arm is grabbing
-        self._battery: float = 1.0   # Placeholder; replace with real battery sensor
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -235,10 +234,6 @@ class CameraSensor(SensorInterface):
     def get_aerial_trash_position(self): # type: ignore
         """Not used for floor litter. Returns None."""
         return None
-
-    def get_battery_level(self) -> float:
-        """Placeholder. Replace with actual battery sensor reading."""
-        return self._battery
 
     def has_obstacle(self) -> bool:
         """Placeholder. Replace with actual proximity sensor reading."""

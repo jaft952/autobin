@@ -108,8 +108,6 @@ button:disabled { opacity: .38; cursor: not-allowed; }
 .btn-estop:hover { filter: brightness(1.15); }
 .btn-shutdown.armed { background: var(--amber); border-color: var(--amber); color: #14100a; }
 
-.poweroff-opt { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
-
 /* ── Layout ─────────────────────────────────────────────────────────── */
 .cols {
   display: grid;

@@ -73,19 +73,12 @@ class RobotRuntime:
                 camera = CameraSensor()
             except Exception as exc:
                 self.log.warning(f"camera unavailable ({exc}) — running without it")
-        battery = None
-        try:
-            from src.hardware.sensors.battery_sensor import BatterySensor
-            battery = BatterySensor()
-        except Exception as exc:
-            self.log.warning(f"battery sensor unavailable ({exc}) — using placeholder")
         self.sensors = SensorHub(
             front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
             back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
             front_left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
             front_right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
             camera=camera,
-            battery=battery,
         )
         self.camera_available = camera is not None
 
@@ -385,8 +378,6 @@ class RobotRuntime:
             "message": self.win_message,
             "layer": self.win_layer,
             "distance_cm": round(dist, 1) if dist is not None else None,
-            "battery": round(self.sensors.get_battery_level(), 2),
-            "battery_placeholder": not self.sensors.has_real_battery_sensor(),
             "camera": self.camera_available,
             "arm": self.arm is not None,
             "uptime_s": int(time.monotonic() - self.started_at),
