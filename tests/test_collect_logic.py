@@ -45,8 +45,8 @@ from src.subsumption.layers.layer3_collect import (
     CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S, GRAB_CONFIRM_CM,
     BACKOFF_SPEED,
 )
-import src.subsumption.layers.layer5_emergency as emergency_mod
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
+import src.subsumption.layers.layer4_emergency as emergency_mod
+from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 from src.arm.arc_grasp import ArcGraspSolver, save_config, ch5_from_angle
 
 

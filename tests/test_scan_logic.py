@@ -39,8 +39,8 @@ from src.subsumption.layers.layer1_scan import (
 )
 from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
-import src.subsumption.layers.layer5_emergency as emergency_mod
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer, EMERGENCY_TURN_SPEED
+import src.subsumption.layers.layer4_emergency as emergency_mod
+from src.subsumption.layers.layer4_emergency import EmergencyStopLayer, EMERGENCY_TURN_SPEED
 from src.subsumption.motion_executor import MotionExecutor
 from src.hardware.sensors.sensor_hub import SensorHub
 

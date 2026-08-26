@@ -50,7 +50,7 @@ from src.subsumption.layers.layer0_idle import SystemIdleLayer
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
 from src.subsumption.layers.layer2_approach import ApproachLitterLayer
 from src.subsumption.layers.layer3_collect import CollectLitterLayer
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
+from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 
 
 class PrintPlanner:
