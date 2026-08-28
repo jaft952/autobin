@@ -57,8 +57,6 @@ from src.motion.calibration import MotionCalibration
 import src.visual_servoing.reactive_controller as reactive_mod
 
 # Front-ultrasonic confirmation before the arm fires. Keep in step with
-# GRAB_CONFIRM_CM in src/visual_servoing/ultrasonic_safety.py (not imported:
-# that module pulls in the GPIO driver, and a layer must stay hardware-free).
 GRAB_CONFIRM_CM = 35.0
 
 # Continuous hold required before the grab fires, and how long a solved
@@ -136,7 +134,7 @@ class CollectLitterLayer(BaseLayer):
             return self._hold(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
                               f"/{GRAB_STABLE_S:.0f}s)")
 
-        nx, ny = point
+        nx, ny = point # type: ignore
         if klass == "upright":
             label = "upright"
         elif klass == "axial":

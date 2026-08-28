@@ -11,7 +11,7 @@ Watch the joint and note the pulse values where motion begins and ends.
 EDIT `CHANNEL` to the joint you want to test. Keep a hand near the power switch.
 """
 import time
-from adafruit_servokit import ServoKit
+from adafruit_servokit import ServoKit # type: ignore
 
 CHANNEL = 0          # which servo channel to sweep (0 == CH1)
 PULSE_START_US = 500 # begin inside the known-safe band

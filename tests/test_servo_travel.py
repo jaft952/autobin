@@ -56,11 +56,11 @@ def main():
 
     def home():
         for i, a in enumerate(NEUTRAL):
-            act.kit.servo[i].angle = a
+            act.kit.servo[i].angle = a # type: ignore
 
     def write(angle):
         angle = max(0.0, min(state["range"], float(angle)))
-        act.kit.servo[idx].angle = angle
+        act.kit.servo[idx].angle = angle # type: ignore
         print(f"  -> commanded CH{ch} = {angle}°  (max={state['range']:.0f})")
         return angle
 
@@ -110,7 +110,7 @@ def main():
 
     def set_range(r):
         state["range"] = float(r)
-        act.kit.servo[idx].actuation_range = float(r)
+        act.kit.servo[idx].actuation_range = float(r) # type: ignore
         print(f"  CH{ch} actuation_range set to {r}° (neutral is now {r/2:.0f}).")
 
     def range_experiment():

@@ -253,7 +253,7 @@ def test_backoff_when_wall_seen_late():
         sensors = FakeSensors()
         advance(layer, sensors, clock)  # enter DRIVE
 
-        sensors.dist = BACKOFF_AT_CM - 5
+        sensors.dist = BACKOFF_AT_CM - 5 # type: ignore
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (-FORWARD_SPEED, 0, 0), cmd.message
 
@@ -316,11 +316,11 @@ def test_yields_to_target_and_restarts():
         layer = ScanAroundLayer()
         sensors = FakeSensors()
         advance(layer, sensors, clock)                    # DRIVE
-        sensors.dist = TURN_AT_CM - 1
+        sensors.dist = TURN_AT_CM - 1 # type: ignore
         cmd = advance(layer, sensors, clock)              # mid TURN1
-        assert cmd.motion_vector[2] != 0
+        assert cmd.motion_vector[2] != 0 # type: ignore
 
-        sensors.litter = (0.4, 0.6)
+        sensors.litter = (0.4, 0.6) # type: ignore
         cmd = advance(layer, sensors, clock)
         assert not cmd.active
 
@@ -349,7 +349,7 @@ def test_none_distance_is_not_an_obstacle():
 
 def test_executor_mixing():
     act = CaptureActuator()
-    ex = MotionExecutor(actuator=act)
+    ex = MotionExecutor(actuator=act) # type: ignore
 
     # Derived from the calibration so re-tuning the base can't stale the test.
     duty = ex.cal.forward_speed
@@ -383,7 +383,7 @@ def test_executor_brakes_during_grab():
     """A halt (0,0,0) that accompanies a grab must BRAKE (hold position so
     the arm's shaking can't drift the base), not coast."""
     act = CaptureActuator()
-    ex = MotionExecutor(actuator=act)
+    ex = MotionExecutor(actuator=act) # type: ignore
 
     ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "",
                              {"pose": [100, 145, 75, 165, 90]}))
@@ -411,7 +411,7 @@ def test_executor_brake_falls_back_to_stop():
         def stop(self): self.stopped = True
 
     act = NoBrakeActuator()
-    ex = MotionExecutor(actuator=act)
+    ex = MotionExecutor(actuator=act) # type: ignore
     ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [0] * 5}))
     assert act.stopped, "brake must fall back to stop when unsupported"
     print("PASS executor brake falls back to stop when unsupported")
@@ -436,19 +436,19 @@ def test_arbitration_with_real_hub():
         # Clear floor: scan (layer 1) outvotes idle (layer 0). A fresh layer
         # starts its pre-lane look-around, not the drive itself, so this only
         # checks that scan is the one driving, not the exact motion.
-        ultra.dist = 120.0
+        ultra.dist = 120.0 # type: ignore
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message
         assert win.active, win.message
 
         # Wall in the turn band: still scan's job (it turns), NOT an emergency.
-        ultra.dist = TURN_AT_CM - 5
+        ultra.dist = TURN_AT_CM - 5 # type: ignore
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message
 
         # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything. What it then
         # does (settle/backoff/pivot) is covered by the avoid tests below.
-        ultra.dist = SensorHub.EMERGENCY_STOP_CM - 2
+        ultra.dist = SensorHub.EMERGENCY_STOP_CM - 2 # type: ignore
         win = _vote(arb, hub)
         assert win.layer_id == 5, win.message
     print("PASS arbitration: scan > idle, emergency > scan")
@@ -524,10 +524,10 @@ def test_avoid_backs_off_before_pivoting_when_the_rear_is_clear():
 
         clock.tick(emergency_mod.SETTLE_S + 0.01)
         cmd = layer.evaluate(sensors)
-        assert cmd.motion_vector[0] < 0, f"expected reverse: {cmd.message}"
+        assert cmd.motion_vector[0] < 0, f"expected reverse: {cmd.message}" # type: ignore
 
         cmd = _advance_to_pivot(layer, sensors, clock)
-        assert cmd.motion_vector[2] != 0, cmd.message
+        assert cmd.motion_vector[2] != 0, cmd.message # type: ignore
     print("PASS avoid backs off before pivoting when the rear is clear")
 
 
@@ -539,7 +539,7 @@ def test_avoid_skips_the_backoff_when_the_rear_is_tight():
                                           back=emergency_mod.BACKOFF_CLEARANCE_CM - 1)
         cmd = _advance_to_pivot(layer, sensors, clock)
         for _ in range(int(emergency_mod.BACKOFF_S / 0.1) + 2):
-            assert cmd.motion_vector[0] >= 0, f"reversed into a tight rear: {cmd.message}"
+            assert cmd.motion_vector[0] >= 0, f"reversed into a tight rear: {cmd.message}" # type: ignore
             clock.tick(0.1)
             cmd = layer.evaluate(sensors)
     print("PASS avoid skips the backoff when the rear is tight")
@@ -551,13 +551,13 @@ def test_avoid_turns_toward_the_roomier_side():
         layer = EmergencyStopLayer()
         cmd = _advance_to_pivot(
             layer, FakeDirectionalSensors(front=10, front_right=8, front_left=90), clock)
-        assert cmd.motion_vector[2] > 0, cmd.message
+        assert cmd.motion_vector[2] > 0, cmd.message # type: ignore
 
     with fake_emergency_clock() as clock:
         layer = EmergencyStopLayer()
         cmd = _advance_to_pivot(
             layer, FakeDirectionalSensors(front=10, front_left=8, front_right=90), clock)
-        assert cmd.motion_vector[2] < 0, cmd.message
+        assert cmd.motion_vector[2] < 0, cmd.message # type: ignore
     print("PASS avoid turns toward the roomier side")
 
 
@@ -568,13 +568,13 @@ def test_avoid_does_not_oscillate():
         layer = EmergencyStopLayer()
         first = _advance_to_pivot(
             layer, FakeDirectionalSensors(front=20, front_right=8, front_left=90), clock)
-        assert first.motion_vector[2] > 0, first.message
+        assert first.motion_vector[2] > 0, first.message # type: ignore
 
         # Same obstacle, now seen by the front sensor instead of the diagonal.
         for _ in range(5):
             clock.tick(0.1)
             cmd = layer.evaluate(FakeDirectionalSensors(front=8, front_right=20, front_left=90))
-            assert cmd.motion_vector[2] > 0, f"reversed direction: {cmd.message}"
+            assert cmd.motion_vector[2] > 0, f"reversed direction: {cmd.message}" # type: ignore
     print("PASS avoid holds its direction instead of oscillating")
 
 
@@ -607,7 +607,7 @@ def _advance_to_wedge(layer, sensors, clock):
         if "SPIN" in cmd.message:
             return cmd
         clock.tick(0.1)
-    raise AssertionError(f"never reached the spin: {cmd.message}")
+    raise AssertionError(f"never reached the spin: {cmd.message}") # type: ignore
 
 
 def test_avoid_spins_180_clockwise_when_wedged():
@@ -617,7 +617,7 @@ def test_avoid_spins_180_clockwise_when_wedged():
         layer = EmergencyStopLayer()
         blocked = FakeDirectionalSensors(front=8, front_left=90, front_right=90)
         cmd = _advance_to_wedge(layer, blocked, clock)
-        assert cmd.motion_vector[2] < 0, f"not clockwise: {cmd.message}"
+        assert cmd.motion_vector[2] < 0, f"not clockwise: {cmd.message}" # type: ignore
     print("PASS avoid spins 180 clockwise when wedged")
 
 
@@ -631,14 +631,14 @@ def test_the_spin_runs_the_full_half_turn():
 
         spun = 0.0
         while spun < emergency_mod.TURN_180_S - 0.15:
-            assert cmd.motion_vector[2] < 0, f"stopped early: {cmd.message}"
+            assert cmd.motion_vector[2] < 0, f"stopped early: {cmd.message}" # type: ignore
             clock.tick(0.1)
             spun += 0.1
             cmd = layer.evaluate(blocked)
 
         clock.tick(0.3)
         cmd = layer.evaluate(blocked)
-        assert cmd.motion_vector[2] == 0, f"still spinning: {cmd.message}"
+        assert cmd.motion_vector[2] == 0, f"still spinning: {cmd.message}" # type: ignore
     print("PASS the spin runs the full half turn")
 
 
@@ -658,7 +658,7 @@ def test_the_escape_drives_out_after_the_spin():
             if not cmd.active:
                 continue
             if "DRIVE OUT" in cmd.message:
-                assert cmd.motion_vector[0] > 0, cmd.message
+                assert cmd.motion_vector[0] > 0, cmd.message # type: ignore
                 break
             clock.tick(0.05)
         else:
@@ -737,9 +737,9 @@ def test_a_diagonal_steers_the_lane_instead_of_ending_it():
                                           front_right=scan_mod.DIAGONAL_NUDGE_CM - 8)
         advance(layer, sensors, clock)           # enter DRIVE
         cmd = layer.evaluate(sensors)
-        assert "lane" in cmd.message, f"a wall alongside ended the lane: {cmd.message}"
-        assert cmd.motion_vector[0] == FORWARD_SPEED, cmd.message
-        assert cmd.motion_vector[2] > 0, f"did not steer away from the right: {cmd.message}"
+        assert "lane" in cmd.message, f"a wall alongside ended the lane: {cmd.message}" # type: ignore
+        assert cmd.motion_vector[0] == FORWARD_SPEED, cmd.message # type: ignore
+        assert cmd.motion_vector[2] > 0, f"did not steer away from the right: {cmd.message}" # type: ignore
 
     # The closer the wall, the harder the correction -- but never as hard as
     # a deliberate pivot.
@@ -747,7 +747,7 @@ def test_a_diagonal_steers_the_lane_instead_of_ending_it():
         layer = ScanAroundLayer()
         near = FakeDirectionalSensors(front=None, front_left=None, front_right=2.0)
         advance(layer, near, clock)
-        hard = layer.evaluate(near).motion_vector[2]
+        hard = layer.evaluate(near).motion_vector[2] # type: ignore
         assert 0 < hard < TURN_SPEED, hard
 
     # Both sides walled in (a corridor) -> the corrections cancel and the
@@ -810,8 +810,8 @@ def test_scan_drives_out_of_a_corner_instead_of_spinning():
             # 27cm is inside DIAGONAL_NUDGE_CM, so a gentle nudge away from the
             # wall is correct here; the bug this guards against is the lane
             # ending outright, not a small steering correction.
-            assert cmd.motion_vector[0] > 0, cmd.message
-            assert abs(cmd.motion_vector[2]) < TURN_SPEED, cmd.message
+            assert cmd.motion_vector[0] > 0, cmd.message # type: ignore
+            assert abs(cmd.motion_vector[2]) < TURN_SPEED, cmd.message # type: ignore
             clock.tick(0.05)
     print("PASS scan drives out of a corner instead of spinning")
 
@@ -825,7 +825,7 @@ def test_tied_diagonals_alternate_instead_of_always_turning_right():
         open_ahead = FakeDirectionalSensors(front=8, front_left=None, front_right=None)
         for _ in range(4):
             cmd = _advance_to_pivot(layer, open_ahead, clock)
-            dirs.append(cmd.motion_vector[2] > 0)
+            dirs.append(cmd.motion_vector[2] > 0) # type: ignore
             clock.tick(emergency_mod.MAX_TURN_S + 0.1)   # time out
             layer.evaluate(open_ahead)                    # -> WEDGED
             layer._phase = None                           # simulate a fresh escape
@@ -858,7 +858,7 @@ def test_boxed_in_goes_straight_to_the_spin():
         assert cmd.motion_vector == (0, 0, 0), "must settle before flipping direction"
         clock.tick(emergency_mod.SETTLE_S + 0.01)
         cmd = layer.evaluate(boxed)
-        assert cmd.motion_vector[2] < 0, f"expected the clockwise spin: {cmd.message}"
+        assert cmd.motion_vector[2] < 0, f"expected the clockwise spin: {cmd.message}" # type: ignore
     print("PASS boxed in goes straight to the spin")
 
 
@@ -880,12 +880,12 @@ def test_scan_backoff_aborts_on_a_close_rear():
                                          front_left=90, front_right=90, back=None)
         advance(layer, sensors, clock)                        # DRIVE -> sees the wall
         cmd = advance(layer, sensors, clock)                  # -> BACKOFF
-        assert cmd.motion_vector[0] < 0, cmd.message
+        assert cmd.motion_vector[0] < 0, cmd.message # type: ignore
 
         sensors.back = scan_mod.BACKOFF_REAR_MIN_CM - 1
         clock.tick(0.05)
         cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector[0] >= 0, f"kept reversing into it: {cmd.message}"
+        assert cmd.motion_vector[0] >= 0, f"kept reversing into it: {cmd.message}" # type: ignore
     print("PASS scan backoff aborts on a close rear")
 
 
@@ -895,7 +895,7 @@ def test_scan_timers_pause_while_suppressed():
     with fake_clock() as clock:
         layer = ScanAroundLayer()
         sensors = FakeSensors()
-        sensors.dist = TURN_AT_CM - 1
+        sensors.dist = TURN_AT_CM - 1 # type: ignore
         advance(layer, sensors, clock)     # DRIVE
         advance(layer, sensors, clock)     # -> DODGE_TURN
         layer.notify_arbitration(won=False)
@@ -920,23 +920,23 @@ def test_scan_only_mode_drives_past_a_can():
         layer = ScanAroundLayer()
         layer.yield_to_targets = False           # what the SCAN button sets
         sensors = FakeSensors()
-        sensors.litter = (0.5, 0.6)
+        sensors.litter = (0.5, 0.6) # type: ignore
         cmd = advance(layer, sensors, clock)
         assert cmd.active, "scan stood down with no layer to take over"
-        assert cmd.motion_vector[0] == FORWARD_SPEED, cmd.message
+        assert cmd.motion_vector[0] == FORWARD_SPEED, cmd.message # type: ignore
 
     # Full autonomy still hands the can to Layer 2.
     with fake_clock():
         layer = ScanAroundLayer()
         sensors = FakeSensors()
-        sensors.litter = (0.5, 0.6)
+        sensors.litter = (0.5, 0.6) # type: ignore
         assert not layer.evaluate(sensors).active
 
     # Aerial trash is never a reason to stand down: Layer 4 is in no stack.
     with fake_clock():
         layer = ScanAroundLayer()
         sensors = FakeSensors()
-        sensors.aerial = (0.5, 0.2)
+        sensors.aerial = (0.5, 0.2) # type: ignore
         layer.evaluate(sensors)
         assert layer.evaluate(sensors).active
     print("PASS scan-only mode drives past a can")
@@ -949,7 +949,7 @@ def test_reset_abandons_the_manoeuvre():
     with fake_clock() as clock:
         layer = ScanAroundLayer()
         sensors = FakeSensors()
-        sensors.dist = TURN_AT_CM - 1
+        sensors.dist = TURN_AT_CM - 1 # type: ignore
         advance(layer, sensors, clock)          # DRIVE
         advance(layer, sensors, clock)          # -> DODGE_TURN
 

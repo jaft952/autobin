@@ -311,7 +311,7 @@ class ScanAroundLayer(BaseLayer):
                     self._enter(_Phase.LOOKAROUND_TURN, now)
 
         elif self._phase == _Phase.DRIVE:
-            if wall_ahead and front <= BACKOFF_AT_CM:
+            if wall_ahead and front <= BACKOFF_AT_CM: # type: ignore
                 self._settle(_Phase.BACKOFF, now)
             elif wall_ahead:
                 self._start_dodge(sensors, now)

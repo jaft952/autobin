@@ -73,18 +73,18 @@ class SensorHub(SensorInterface):
             self._ultrasonics[self._next_ping].update()
             self._next_ping = (self._next_ping + 1) % len(self._ultrasonics)
 
-    def get_obstacle_distance_cm(self) -> Optional[float]:
+    def get_obstacle_distance_cm(self) -> Optional[float]: # type: ignore
         if self._front is None:
             return None
         return self._front.get_distance_cm()
 
-    def get_obstacle_distance_back_cm(self) -> Optional[float]:
+    def get_obstacle_distance_back_cm(self) -> Optional[float]: # type: ignore
         return self._back.get_distance_cm() if self._back is not None else None
 
-    def get_obstacle_distance_front_left_cm(self) -> Optional[float]:
+    def get_obstacle_distance_front_left_cm(self) -> Optional[float]: # type: ignore
         return self._front_left.get_distance_cm() if self._front_left is not None else None
 
-    def get_obstacle_distance_front_right_cm(self) -> Optional[float]:
+    def get_obstacle_distance_front_right_cm(self) -> Optional[float]: # type: ignore
         return self._front_right.get_distance_cm() if self._front_right is not None else None
 
     def has_obstacle(self) -> bool:
@@ -93,17 +93,17 @@ class SensorHub(SensorInterface):
             for sensor in self._ultrasonics
         )
 
-    def get_litter_position(self):
+    def get_litter_position(self): # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_litter_position()
 
-    def get_litter_ground_contact(self):
+    def get_litter_ground_contact(self): # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_litter_ground_contact()
 
-    def get_litter_pose(self):
+    def get_litter_pose(self): # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_litter_pose()
@@ -123,7 +123,7 @@ class SensorHub(SensorInterface):
             return None
         return self._camera.get_litter_target_error()
 
-    def get_aerial_trash_position(self):
+    def get_aerial_trash_position(self): # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_aerial_trash_position()

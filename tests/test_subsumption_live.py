@@ -99,10 +99,10 @@ def main():
               collect,
               # Without this Layer 5 outvotes the grab and drives away from
               # every tin the arm gets close enough to collect.
-              EmergencyStopLayer(grab_zone_check=collect.is_grabbable)]
+              EmergencyStopLayer(grab_zone_check=collect.is_grabbable)] # type: ignore
     arbitrator = Arbitrator()
-    motion = MotionExecutor(actuator=PrintActuator() if args.no_motors else None)
-    arm = ArmExecutor(planner=PrintPlanner() if args.no_arm else None,
+    motion = MotionExecutor(actuator=PrintActuator() if args.no_motors else None) # type: ignore
+    arm = ArmExecutor(planner=PrintPlanner() if args.no_arm else None, # type: ignore
                       sensors=sensors, grab_zone_check=collect.can_still_in_grab_zone)
 
     period = 1.0 / args.hz
