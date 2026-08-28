@@ -25,7 +25,6 @@ API summary (all JSON unless noted):
     GET  /api/status                  state + power + performance snapshot
     POST /api/system/start            full autonomy (AUTO)
     POST /api/system/scan             manual scanning (zigzag only)
-    POST /api/system/stop             stop layers, wheels halted
     POST /api/system/estop            EMERGENCY STOP
     POST /api/system/shutdown         stop the server and power off the Pi
     POST /api/system/restart          re-exec the server (picks up edited source)
@@ -102,8 +101,14 @@ EVENT_POLL_S = 0.05                   # log latency ceiling: ~50 ms
 
 @app.get("/api/events")
 def api_events():
+    # A reconnect (page refresh, network hiccup, EventSource auto-retry)
+    # otherwise always started from 0 and replayed the ENTIRE buffered
+    # history again — the client passes back the highest seq it already
+    # has so a reconnect only streams what it actually missed.
+    start_seq = request.args.get("after", 0, type=int)
+
     def gen():
-        last_seq = 0
+        last_seq = start_seq
         next_status = 0.0
         while True:
             now = time.monotonic()
@@ -140,12 +145,6 @@ def api_start():
 @app.post("/api/system/scan")
 def api_scan():
     runtime.start_scan()
-    return _ok(state=runtime.state)
-
-
-@app.post("/api/system/stop")
-def api_stop():
-    runtime.stop()
     return _ok(state=runtime.state)
 
 

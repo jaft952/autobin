@@ -109,8 +109,6 @@ function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
               onClick=${() => apiPost(base, "/api/system/start")}>▶ START</button>
       <button class="btn-scan" disabled=${!connected || state === "SCAN"}
               onClick=${() => apiPost(base, "/api/system/scan")}>⌕ SCAN ONLY</button>
-      <button disabled=${!connected || state === "STOPPED"}
-              onClick=${() => apiPost(base, "/api/system/stop")}>⏹ STOP</button>
       <button class="btn-estop" disabled=${!connected}
               onClick=${() => apiPost(base, "/api/system/estop")}>■ EMERGENCY STOP</button>
 
@@ -201,7 +199,8 @@ const CH_LABELS = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist", "CH5 ro
 function ArmCard({ base, status, connected }) {
   const [pose, setPose] = useState(null);
   const [err, setErr] = useState("");
-  const enabled = connected && status && status.arm && status.state === "STOPPED";
+  const enabled = connected && status && status.arm
+    && (status.state === "STOPPED" || status.state === "ESTOP");
 
   const refresh = useCallback(async () => {
     if (connected && status && status.arm) {
@@ -246,7 +245,7 @@ function ArmCard({ base, status, connected }) {
             <button disabled=${!enabled} onClick=${() => act("/api/arm/jog", { channel: ch, delta: +5 })}>+5</button>
           </div>`)}
         ${!enabled && connected && status && status.arm
-          ? html`<div class="arm-hint">manual control needs system STOPPED</div>` : null}
+          ? html`<div class="arm-hint">manual control needs the base halted (STOPPED or ESTOP)</div>` : null}
         ${err ? html`<div class="arm-hint">${err}</div>` : null}
       </div>
     </div>`;
@@ -330,8 +329,8 @@ function LogPanel({ base, lines, onClear }) {
       <div class="card-title">LOG
         <span class="right log-controls">
           <select value=${filter} onChange=${(e) => setFilter(e.target.value)}>
-            <option>ALL</option><option>DEBUG</option><option>SUCCESS</option>
-            <option>WARNING</option><option>FAIL</option><option>ERROR</option>
+            <option>ALL</option><option>DEBUG</option><option>INFO</option>
+            <option>SUCCESS</option><option>WARNING</option><option>FAIL</option><option>ERROR</option>
           </select>
           <button onClick=${() => setFollow(!follow)}>${follow ? "⏸ pause" : "▶ follow"}</button>
           <button onClick=${clear}>clear</button>
@@ -361,10 +360,12 @@ function App() {
   const [camEpoch, setCamEpoch] = useState(0);
   const [dead, setDead] = useState("");
   const [restarting, setRestarting] = useState(false);
+  const lastSeqRef = useRef(0);   // highest log seq seen, so a reconnect asks for only what it missed
 
   useEffect(() => {
     if (!base) return;
-    const es = new EventSource(base + "/api/events");
+    lastSeqRef.current = 0;   // switching servers (Connect) — nothing carries over
+    const es = new EventSource(`${base}/api/events?after=${lastSeqRef.current}`);
     es.onopen = () => {
       setConnected(true);
       setRestarting(false);            // server is back — drop the banner
@@ -374,6 +375,7 @@ function App() {
     es.addEventListener("status", (e) => setStatus(JSON.parse(e.data)));
     es.addEventListener("logs", (e) => {
       const entries = JSON.parse(e.data);
+      if (entries.length) lastSeqRef.current = entries[entries.length - 1].seq;
       setLines((old) => [...old, ...entries].slice(-800));
     });
     return () => es.close();

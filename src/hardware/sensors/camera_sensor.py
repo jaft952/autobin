@@ -119,6 +119,23 @@ class CameraSensor(SensorInterface):
     def resume(self):
         self._running.set()
 
+    def wait_for_fresh_frames(self, n: int = 2, timeout: float = 2.0) -> int:
+        """Block until the worker has published `n` NEW inference results
+        (not just elapsed time), so a caller resuming after a pause acts on
+        real post-resume frames instead of guessing how long inference
+        takes. Returns how many were actually seen (< n on timeout)."""
+        start_at = self._latest_at
+        deadline = time.monotonic() + timeout
+        seen = 0
+        last_at = start_at
+        while seen < n and time.monotonic() < deadline:
+            time.sleep(0.02)
+            at = self._latest_at
+            if at != last_at:
+                seen += 1
+                last_at = at
+        return seen
+
     def _run(self):
         """Capture + infer as fast as the model allows; publish the result."""
         while self._alive:

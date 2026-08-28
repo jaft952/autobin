@@ -140,6 +140,11 @@ class SensorHub(SensorInterface):
         if self._camera is not None and hasattr(self._camera, "resume"):
             self._camera.resume()
 
+    def wait_for_fresh_frames(self, n: int = 2, timeout: float = 2.0) -> int:
+        if self._camera is not None and hasattr(self._camera, "wait_for_fresh_frames"):
+            return self._camera.wait_for_fresh_frames(n, timeout)
+        return 0
+
     def release_target(self):
         """Forget the locked tin (call after a collection)."""
         if self._camera is not None and hasattr(self._camera, "release_target"):

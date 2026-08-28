@@ -105,6 +105,7 @@ class RobotRuntime:
             self.arm = ArmExecutor(
                 sensors=self.sensors if self.camera_available else None,
                 grab_zone_check=collect_layer.can_still_in_grab_zone,
+                resume_camera=self.sensors.resume_camera if self.camera_available else None,
             )
         except Exception as exc:
             self.log.warning(f"arm unavailable ({exc}) — manual arm + grabs disabled")
@@ -152,10 +153,6 @@ class RobotRuntime:
 
     def start_scan(self):
         self._transition(STATE_SCAN, "manual SCANNING (zigzag patrol only)")
-
-    def stop(self):
-        self._transition(STATE_STOPPED, "system STOP")
-        self.motion.stop()
 
     def estop(self):
         self.motion.stop()
@@ -213,8 +210,11 @@ class RobotRuntime:
 
             if winning.message != self.win_message:
                 duty = getattr(self.motion.actuator, "last_duty", None)
-                self.log.info(f"[L{winning.layer_id}] {winning.message} "
-                              f"(vec={winning.motion_vector} duty={duty})")
+                # DEBUG: which layer is driving right now, per tick -- not a
+                # one-off event, so it belongs with the print() chatter, not
+                # the INFO/SUCCESS/WARNING/FAIL/ERROR event log.
+                self.log.debug(f"[L{winning.layer_id}] {winning.message} "
+                               f"(vec={winning.motion_vector} duty={duty})")
                 if winning.layer_id == 0:
                     self.log.warning("no layer wants to drive - base parked on IDLE")
             self.win_message, self.win_layer = winning.message, winning.layer_id
@@ -275,13 +275,13 @@ class RobotRuntime:
         with self._stream_lock:
             self._stream_clients = max(0, self._stream_clients - 1)
 
-    # ── Manual arm control (STOPPED only) ─────────────────────────────────
+    # ── Manual arm control (base halted only: STOPPED or ESTOP) ───────────
 
     def _manual_arm_planner(self):
         if self.arm is None:
             raise RuntimeError("arm hardware not available")
-        if self._state != STATE_STOPPED:
-            raise RuntimeError(f"manual arm only in STOPPED state (now {self._state})")
+        if self._state not in (STATE_STOPPED, STATE_ESTOP):
+            raise RuntimeError(f"manual arm only while halted (now {self._state})")
         return self.arm.planner
 
     def arm_pose(self) -> Optional[dict]:

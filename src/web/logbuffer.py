@@ -104,7 +104,10 @@ def setup_logging(buffer: LogBuffer, log_file: str = "logs/autobin.log",
     """Wire everything: root logger -> buffer + file, print() -> buffer.
     Returns a logger for the web package's own messages."""
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(logging.DEBUG)   # DEBUG carries the per-tick "which layer
+    # is running" chatter (runtime.py logs it via self.log.debug); INFO
+    # stays for one-off milestone/record events (startup, mode switches,
+    # manual actions, settings changes).
 
     buf_handler = BufferLogHandler(buffer)
     buf_handler.setFormatter(logging.Formatter("%(message)s"))
@@ -123,8 +126,15 @@ def setup_logging(buffer: LogBuffer, log_file: str = "logs/autobin.log",
     root.addHandler(console)
 
     if capture_prints:
-        sys.stdout = TeeStream(sys.stdout, buffer, "INFO", "print")
+        # DEBUG: routine print() narration ("[arm] resuming...", model/
+        # camera startup lines) — same bucket as the per-tick layer chatter,
+        # tuckable away from the INFO/SUCCESS/WARNING/FAIL/ERROR event log.
+        sys.stdout = TeeStream(sys.stdout, buffer, "DEBUG", "print")
         sys.stderr = TeeStream(sys.stderr, buffer, "ERROR", "stderr")
+
+    # ultralytics/opencv logging at DEBUG would otherwise flood the buffer
+    # now that root is DEBUG-level.
+    logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
     # The dashboard polls every second — werkzeug's per-request access lines
     # would flood the very log panel that's polling.
