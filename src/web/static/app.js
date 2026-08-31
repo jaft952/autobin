@@ -13,6 +13,24 @@ const html = htm.bind(React.createElement);
 
 /* ── Pi address handling ─────────────────────────────────────────────── */
 
+/* Served over https = through the public Cloudflare Tunnel. The Pi itself
+   only speaks http, so in tunnel mode all traffic stays same-origin and the
+   typed "Pi address" becomes an access key the server checks. */
+const TUNNEL = location.protocol === "https:";
+
+function addrToKey(a) {
+  return (a || "").trim()
+    .replace(/^https?:\/\//, "").replace(/:\d+$/, "").replace(/\/+$/, "");
+}
+
+function piKey() {
+  return localStorage.getItem("pi_key") || "";
+}
+
+function keyQuery() {
+  return TUNNEL ? `&key=${encodeURIComponent(piKey())}` : "";
+}
+
 function normalizeAddr(a) {
   a = (a || "").trim();
   if (!a) return "";
@@ -23,10 +41,21 @@ function normalizeAddr(a) {
 function initialApiBase() {
   const fromUrl = new URLSearchParams(location.search).get("pi");
   if (fromUrl) {
+    // Scrub ?pi= from the address bar so history/bookmarks/copied links
+    // never carry the key.
+    history.replaceState(null, "", location.pathname);
     localStorage.setItem("pi_addr", fromUrl);
+    if (TUNNEL) {
+      localStorage.setItem("pi_key", addrToKey(fromUrl));
+      return location.origin;
+    }
     return normalizeAddr(fromUrl);
   }
   const saved = localStorage.getItem("pi_addr");
+  if (TUNNEL) {
+    if (saved) localStorage.setItem("pi_key", addrToKey(saved));
+    return location.origin;
+  }
   if (saved) return normalizeAddr(saved);
   // Served by the Pi's own Flask (single-machine mode): same origin works.
   if (location.protocol.startsWith("http")) return location.origin;
@@ -35,14 +64,18 @@ function initialApiBase() {
 
 /* ── API helpers ─────────────────────────────────────────────────────── */
 
+function keyHeaders() {
+  return TUNNEL ? { "X-Pi-Key": piKey() } : {};
+}
+
 async function apiGet(base, path) {
-  const r = await fetch(base + path);
+  const r = await fetch(base + path, { headers: keyHeaders() });
   return r.json();
 }
 async function apiPost(base, path, body) {
   const r = await fetch(base + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...keyHeaders() },
     body: JSON.stringify(body || {}),
   });
   return r.json();
@@ -65,6 +98,12 @@ function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
 
   const connect = (e) => {
     e.preventDefault();
+    if (TUNNEL) {
+      // Typed address is the access key; traffic stays same-origin.
+      localStorage.setItem("pi_key", addrToKey(addr));
+      if (addr.trim()) onConnect(location.origin);
+      return;
+    }
     const norm = normalizeAddr(addr);
     if (norm) {
       localStorage.setItem("pi_addr", norm.replace(/^https?:\/\//, ""));
@@ -101,6 +140,11 @@ function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
         <input value=${addr} placeholder="pi address, e.g. 192.168.137.50:8000"
                onChange=${(e) => setAddr(e.target.value)} />
         <button type="submit">Connect</button>
+        ${TUNNEL && piKey()
+          ? html`<button type="button" title="clear the saved access key"
+                   onClick=${() => { localStorage.removeItem("pi_key");
+                                     setAddr(""); location.reload(); }}>
+                   Forget key</button>` : null}
       </form>
       <span class="badge ${state}">${state}</span>
       <div class="spacer"></div>
@@ -134,7 +178,7 @@ function CameraCard({ base, status, camEpoch }) {
       </div>
       <div class="cam-wrap">
         ${hasCam
-          ? html`<img key=${camEpoch} src="${base}/api/camera/stream?e=${camEpoch}" alt="camera" />`
+          ? html`<img key=${camEpoch} src="${base}/api/camera/stream?e=${camEpoch}${keyQuery()}" alt="camera" />`
           : html`<div class="cam-off">no camera on this run<br/>
                    <small>(--no-camera, or webcam/YOLO failed — see log)</small>
                  </div>`}
@@ -354,6 +398,7 @@ function LogPanel({ base, lines, onClear }) {
 
 function App() {
   const [base, setBase] = useState(initialApiBase());
+  const [epoch, setEpoch] = useState(0);  // bump to force SSE reconnect (key change)
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState(null);
   const [lines, setLines] = useState([]);
@@ -365,7 +410,8 @@ function App() {
   useEffect(() => {
     if (!base) return;
     lastSeqRef.current = 0;   // switching servers (Connect) — nothing carries over
-    const es = new EventSource(`${base}/api/events?after=${lastSeqRef.current}`);
+    const es = new EventSource(
+      `${base}/api/events?after=${lastSeqRef.current}${keyQuery()}`);
     es.onopen = () => {
       setConnected(true);
       setRestarting(false);            // server is back — drop the banner
@@ -379,11 +425,12 @@ function App() {
       setLines((old) => [...old, ...entries].slice(-800));
     });
     return () => es.close();
-  }, [base]);
+  }, [base, epoch]);
 
   return html`
     <${Header} base=${base} connected=${connected} status=${status}
-               onConnect=${(b) => { setLines([]); setStatus(null); setBase(b); }}
+               onConnect=${(b) => { setLines([]); setStatus(null); setBase(b);
+                                    setEpoch((n) => n + 1); }}
                onDead=${setDead} onRestarting=${() => setRestarting(true)} />
     ${dead ? html`<div class="dead-overlay">${dead}</div>` : null}
     ${!dead && restarting

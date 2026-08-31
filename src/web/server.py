@@ -41,6 +41,7 @@ API summary (all JSON unless noted):
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -61,6 +62,69 @@ buffer = LogBuffer(capacity=1000)
 runtime: RobotRuntime = None          # type: ignore # created in main()
 
 
+# ── Public-tunnel gate: requests arriving through Cloudflare Tunnel carry a
+#    CF-Connecting-IP header; those must present one of the Pi's own IPs as a
+#    key before any /api/ route works. Direct LAN requests are untouched. ──
+
+def _local_ips():
+    try:
+        return set(subprocess.check_output(["hostname", "-I"],
+                                           text=True).split())
+    except Exception:
+        return set()
+
+
+LOCAL_IPS = _local_ips()
+ENV_KEY = os.environ.get("AUTOBIN_KEY", "")
+
+# Brute-force lockout: visitor IP -> (fail_count, locked_until_monotonic).
+_KEY_FAILS: dict = {}
+_KEY_FAILS_LOCK = threading.Lock()
+MAX_KEY_FAILS = 10
+KEY_LOCKOUT_S = 900
+
+
+def _key_valid(key):
+    global LOCAL_IPS
+    if not key:
+        return False
+    if ENV_KEY and key == ENV_KEY:
+        return True
+    if key in LOCAL_IPS:
+        return True
+    # IPs may have changed since boot (WiFi came up after autostart).
+    LOCAL_IPS = _local_ips()
+    return key in LOCAL_IPS
+
+
+@app.before_request
+def gate_tunnel_requests():
+    visitor = request.headers.get("CF-Connecting-IP")
+    if visitor is None:
+        return None
+    if not request.path.startswith("/api/"):
+        return None
+
+    now = time.monotonic()
+    with _KEY_FAILS_LOCK:
+        fails, locked_until = _KEY_FAILS.get(visitor, (0, 0.0))
+        if now < locked_until:
+            return jsonify({"ok": False, "error": "locked out"}), 429
+
+    key = (request.headers.get("X-Pi-Key")
+           or request.args.get("key", "")).strip()
+    if _key_valid(key):
+        with _KEY_FAILS_LOCK:
+            _KEY_FAILS.pop(visitor, None)
+        return None
+
+    with _KEY_FAILS_LOCK:
+        fails += 1
+        locked = now + KEY_LOCKOUT_S if fails >= MAX_KEY_FAILS else 0.0
+        _KEY_FAILS[visitor] = (fails, locked)
+    return jsonify({"ok": False, "error": "unauthorized"}), 403
+
+
 # ── CORS: the dashboard is served from Windows (different origin), so every
 #    response — including Flask's automatic OPTIONS preflights — must carry
 #    these headers. LAN-only tool, hence the permissive '*'. ───────────────
@@ -69,7 +133,7 @@ runtime: RobotRuntime = None          # type: ignore # created in main()
 def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Pi-Key"
     return resp
 
 
