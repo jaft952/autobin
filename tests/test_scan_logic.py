@@ -44,8 +44,9 @@ from src.subsumption.motion_executor import MotionExecutor
 from src.hardware.sensors.sensor_hub import SensorHub
 
 # The patrol jitters every timed phase to break up its path; assertions on
-# exact phase durations need it off.
+# exact phase durations need it off. Same for the TURN2 wall bounce.
 scan_mod.TIMING_JITTER = 0.0
+scan_mod.BOUNCE_EXTRA = 0.0
 
 
 # ── Test doubles ──────────────────────────────────────────────────────────

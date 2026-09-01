@@ -129,8 +129,20 @@ SETTLE_S   = 0.15   # wheels stop between phases before they flip direction
 # Set to 0.0 for a deterministic pattern (the unit tests do).
 TIMING_JITTER = 0.2
 
+# Wall bounce: TURN2 sweeps 90..90*(1+BOUNCE_EXTRA) deg instead of a fixed
+# 90. In a small walled pen the fixed second pivot chained every corner into
+# dodge 90 + TURN2 90 on the same side -- a perimeter orbit that never
+# entered the middle. A randomized second pivot bounces the next lane into
+# the interior at an unrepeatable angle (randomized billiard), which is what
+# covers the middle without odometry. 0.0 = deterministic (the unit tests).
+BOUNCE_EXTRA = 1.0
+
 # Full look-around before each new lane: eight 45 deg steps, not jittered, so
 # the eight steps still sum to a clean 360 and the sweep does not drift.
+# Disabled for now (bounce patrol covers the floor without it; the sweep's
+# start-stop pivots near walls kept triggering the emergency layer) -- the
+# machinery is kept intact, flip this to re-enable.
+LOOKAROUND_ENABLED  = False
 LOOKAROUND_STEPS    = 8
 LOOKAROUND_STEP_DEG = 360.0 / LOOKAROUND_STEPS
 LOOKAROUND_DWELL_S  = 0.6   # hold still here so a frame can settle and be inferred
@@ -272,7 +284,7 @@ class ScanAroundLayer(BaseLayer):
         wall_ahead = front is not None and front <= TURN_AT_CM
 
         if self._phase is None:
-            if self._needs_lookaround:
+            if self._needs_lookaround and LOOKAROUND_ENABLED:
                 self._lookaround_step = 0
                 # Clear the moment the sweep STARTS, not when it finishes: a
                 # target flickering in and cutting the sweep short is the
@@ -346,9 +358,15 @@ class ScanAroundLayer(BaseLayer):
         elif self._phase == _Phase.TURN2:
             if self._elapsed(now) >= self._turn_s:
                 self._turn_left = not self._turn_left  # alternate -> zigzag
-                self._lookaround_left = self._pick_lookaround_side(sensors)
-                self._lookaround_step = 0
-                self._enter(_Phase.LOOKAROUND_TURN, now)
+                if LOOKAROUND_ENABLED:
+                    self._lookaround_left = self._pick_lookaround_side(sensors)
+                    self._lookaround_step = 0
+                    self._enter(_Phase.LOOKAROUND_TURN, now)
+                else:
+                    # Settle first: pivot -> forward flips one wheel's
+                    # direction (safety doc rule 7).
+                    self._start_lane(now)
+                    self._settle(_Phase.DRIVE, now)
 
         return self._output(front, left, right)
 
@@ -418,8 +436,12 @@ class ScanAroundLayer(BaseLayer):
     def _enter(self, phase: _Phase, now: float) -> None:
         self._phase = phase
         self._phase_started = now
-        if phase in (_Phase.TURN1, _Phase.TURN2):
+        if phase == _Phase.TURN1:
             self._turn_s = _jitter(self.turn_90_s)
+        elif phase == _Phase.TURN2:
+            # The bounce (see BOUNCE_EXTRA): 90..180 deg, never less than 90
+            # so the lane change still completes.
+            self._turn_s = self.turn_90_s * (1.0 + random.uniform(0.0, BOUNCE_EXTRA))
 
     def _start_lane(self, now: float) -> None:
         self._lane_started = now
