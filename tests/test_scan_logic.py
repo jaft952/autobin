@@ -13,7 +13,6 @@ a fake sensors object whose ultrasonic distance we script. Covers:
 
     - full zigzag cycle: DRIVE -> TURN1 -> SHIFT -> TURN2 -> DRIVE,
       and the pivot side alternating at the next wall
-    - late wall (< BACKOFF_AT_CM) -> reverses before pivoting
     - open floor (no wall) -> lane timeout still turns
     - wall appearing mid-SHIFT (corner) -> skips straight to TURN2
     - target detected -> layer yields and restarts the pattern afterwards
@@ -34,8 +33,8 @@ import src.subsumption.layers.layer1_scan as scan_mod
 from src.subsumption.layers.layer1_scan import (
     ScanAroundLayer,
     FORWARD_SPEED, TURN_SPEED,
-    TURN_AT_CM, BACKOFF_AT_CM,
-    TURN_90_S, SHIFT_S, BACKOFF_S, MAX_LANE_S,
+    TURN_AT_CM,
+    TURN_90_S, SHIFT_S, MAX_LANE_S,
 )
 from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
@@ -167,9 +166,9 @@ def test_full_zigzag_cycle():
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
         assert cmd.arm_action == 'stow'
 
-        # Wall in the turn band (not the backoff band) -> dodge away from it.
-        # Both sides read equally open, so it swings LEFT (v_theta > 0 = CCW).
-        wall = (TURN_AT_CM + BACKOFF_AT_CM) / 2
+        # Wall inside the turn band -> dodge away from it. Both sides read
+        # equally open, so it swings LEFT (v_theta > 0 = CCW).
+        wall = TURN_AT_CM - 5
         sensors.front = wall
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (0, 0, TURN_SPEED), cmd.message
@@ -244,25 +243,6 @@ def test_an_obstacle_is_dodged_without_ending_the_lane():
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
         assert "lane" in cmd.message, cmd.message
     print("PASS an obstacle is dodged without ending the lane")
-
-
-def test_backoff_when_wall_seen_late():
-    """Wall closer than BACKOFF_AT_CM -> reverse first to make pivot room."""
-    with fake_clock() as clock:
-        layer = ScanAroundLayer()
-        sensors = FakeSensors()
-        advance(layer, sensors, clock)  # enter DRIVE
-
-        sensors.dist = BACKOFF_AT_CM - 5 # type: ignore
-        cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector == (-FORWARD_SPEED, 0, 0), cmd.message
-
-        # Backoff is timed; afterwards the dodge starts.
-        clock.tick(BACKOFF_S + 0.01)
-        cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector == (0, 0, TURN_SPEED), cmd.message
-        assert "dodging" in cmd.message, cmd.message
-    print("PASS backoff before pivot when wall is close")
 
 
 def test_lane_timeout_without_wall():
@@ -871,24 +851,6 @@ def test_rear_obstacle_alone_is_ignored():
     print("PASS rear obstacle alone is ignored while driving forward")
 
 
-def test_scan_backoff_aborts_on_a_close_rear():
-    """Layer 1's backoff is the only phase that reverses, so it is the only
-    one the rear sensor may cut short."""
-    with fake_clock() as clock:
-        layer = ScanAroundLayer()
-        sensors = FakeDirectionalSensors(front=BACKOFF_AT_CM - 1,
-                                         front_left=90, front_right=90, back=None)
-        advance(layer, sensors, clock)                        # DRIVE -> sees the wall
-        cmd = advance(layer, sensors, clock)                  # -> BACKOFF
-        assert cmd.motion_vector[0] < 0, cmd.message # type: ignore
-
-        sensors.back = scan_mod.BACKOFF_REAR_MIN_CM - 1
-        clock.tick(0.05)
-        cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector[0] >= 0, f"kept reversing into it: {cmd.message}" # type: ignore
-    print("PASS scan backoff aborts on a close rear")
-
-
 def test_scan_timers_pause_while_suppressed():
     """Layer 1's phases are timed open-loop, so a suppressed layer must not
     burn through them while a higher layer is driving the robot."""
@@ -1030,7 +992,6 @@ def test_timed_phases_jitter_within_bounds():
 
 ALL_TESTS = [
     test_full_zigzag_cycle,
-    test_backoff_when_wall_seen_late,
     test_lane_timeout_without_wall,
     test_corner_wall_during_the_pass,
     test_an_obstacle_is_dodged_without_ending_the_lane,
@@ -1050,7 +1011,6 @@ ALL_TESTS = [
     test_the_escape_drives_out_after_the_spin,
     test_the_escape_never_gives_up_and_widens_each_retry,
     test_rear_obstacle_alone_is_ignored,
-    test_scan_backoff_aborts_on_a_close_rear,
     test_boxed_in_goes_straight_to_the_spin,
     test_a_distant_wall_does_not_steer_the_escape,
     test_tied_diagonals_alternate_instead_of_always_turning_right,

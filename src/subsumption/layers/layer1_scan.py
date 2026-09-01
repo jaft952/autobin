@@ -23,9 +23,8 @@ Something ahead is not automatically a wall. The robot DODGES first and only
 treats the blockage as a wall when the dodge fails to get past it, so a bin in
 the middle of the floor no longer ends the lane and costs a whole strip.
 
-    DRIVE ──(front < TURN_AT_CM)──> DODGE_TURN   (or BACKOFF first if close)
+    DRIVE ──(front < TURN_AT_CM)──> DODGE_TURN
     DRIVE ──(lane timeout)──> TURN1
-    BACKOFF ──(timed)──> DODGE_TURN
     DODGE_TURN ──(timed ~90 deg toward the open side)──> DODGE_PASS
     DODGE_PASS ──(the blocked side reads clear)──> DODGE_BACK   [obstacle]
     DODGE_PASS ──(DODGE_MAX_S, or blocked again)──> TURN2       [wall]
@@ -96,8 +95,6 @@ TURN_SPEED    = 0.30 # pivot speed (below this the base tends to stall)
 
 # Ultrasonic thresholds (cm).
 TURN_AT_CM    = 20.0  # front sensor: end the lane and start the zigzag turn
-BACKOFF_AT_CM = 15.0  # we noticed the wall late -> reverse first for clearance
-BACKOFF_REAR_MIN_CM = 20.0  # abort the reverse if the rear closes to this
 
 # Diagonals steer the lane, they never end it. Full gain (at zero clearance)
 # is NUDGE_GAIN of the pivot speed, so the correction is always gentler than
@@ -123,7 +120,6 @@ DODGE_MAX_S    = 2.0   # still blocked after this -> wall, do the lane change
 # Timed phases (seconds) — calibrate on the Pi, see module docstring.
 TURN_90_S  = 0.9
 SHIFT_S    = 1.2
-BACKOFF_S  = 0.45
 MAX_LANE_S = 30.0
 SETTLE_S   = 0.15   # wheels stop between phases before they flip direction
 
@@ -163,7 +159,6 @@ class _Phase(enum.Enum):
     LOOKAROUND_TURN = enum.auto()   # one 45 deg step of the pre-lane look-around
     LOOKAROUND_DWELL = enum.auto()  # holds still after a step so a frame settles
     DRIVE      = enum.auto()
-    BACKOFF    = enum.auto()
     DODGE_TURN = enum.auto()   # pivot away from whatever is ahead
     DODGE_PASS = enum.auto()   # drive past it, watching the side it is on
     DODGE_BACK = enum.auto()   # pivot back onto the lane heading
@@ -311,21 +306,11 @@ class ScanAroundLayer(BaseLayer):
                     self._enter(_Phase.LOOKAROUND_TURN, now)
 
         elif self._phase == _Phase.DRIVE:
-            if wall_ahead and front <= BACKOFF_AT_CM: # type: ignore
-                self._settle(_Phase.BACKOFF, now)
-            elif wall_ahead:
+            if wall_ahead:
                 self._start_dodge(sensors, now)
             elif (now - self._lane_started) >= self._lane_limit_s:
                 self._turn_left = self._pivot_side(sensors)
                 self._settle(_Phase.TURN1, now)
-
-        elif self._phase == _Phase.BACKOFF:
-            # Cut the reverse short if something is behind us: this is the only
-            # phase in the pattern that moves backwards, so it is the only one
-            # the rear sensor has any say over.
-            rear = _side_room_cm(sensors, "get_obstacle_distance_back_cm")
-            if self._elapsed(now) >= BACKOFF_S or rear < BACKOFF_REAR_MIN_CM:
-                self._start_dodge(sensors, now)
 
         elif self._phase == _Phase.DODGE_TURN:
             if self._elapsed(now) >= self.turn_90_s:
@@ -403,8 +388,6 @@ class ScanAroundLayer(BaseLayer):
                 return (self.forward_speed, 0, 0), "lane"
             return ((self.forward_speed, 0, bias),
                     f"lane (nudge {bias:+.2f}, L{_fmt(left)} R{_fmt(right)})")
-        if self._phase == _Phase.BACKOFF:
-            return (-self.forward_speed, 0, 0), "backing off wall"
         dodge = self.turn_speed if self._dodge_left else -self.turn_speed
         dodge_side = 'left' if self._dodge_left else 'right'
         if self._phase == _Phase.DODGE_TURN:
