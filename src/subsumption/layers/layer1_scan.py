@@ -195,6 +195,7 @@ class ScanAroundLayer(BaseLayer):
         self._lane_limit_s: float = self.max_lane_s   # this lane's jittered cap
         self._turn_s: float = self.turn_90_s          # this pivot's jittered time
         self._turn_left: bool = True           # pivot side; alternates per wall
+        self._lookaround_left: bool = True     # sweep direction; picked fresh each sweep
         self._dodge_left: bool = True          # which way the current dodge went
         self._lookaround_step: int = 0         # completed steps of the pre-lane sweep
         # True only for a GENUINE fresh start (boot, operator reset, or a
@@ -279,6 +280,7 @@ class ScanAroundLayer(BaseLayer):
                 # around), not a reason to owe another full restart on the
                 # very next flicker straight back.
                 self._needs_lookaround = False
+                self._lookaround_left = self._pick_lookaround_side(sensors)
                 self._enter(_Phase.LOOKAROUND_TURN, now)
             else:
                 # Just a flickered detection handing control back -- resume
@@ -344,6 +346,7 @@ class ScanAroundLayer(BaseLayer):
         elif self._phase == _Phase.TURN2:
             if self._elapsed(now) >= self._turn_s:
                 self._turn_left = not self._turn_left  # alternate -> zigzag
+                self._lookaround_left = self._pick_lookaround_side(sensors)
                 self._lookaround_step = 0
                 self._enter(_Phase.LOOKAROUND_TURN, now)
 
@@ -379,7 +382,8 @@ class ScanAroundLayer(BaseLayer):
         if self._phase == _Phase.SETTLE:
             return (0, 0, 0), f"settling before {self._next_phase.name.lower()}"
         if self._phase == _Phase.LOOKAROUND_TURN:
-            return (0, 0, turn), f"look-around step {self._lookaround_step + 1}/{LOOKAROUND_STEPS}"
+            lookaround_turn = self.turn_speed if self._lookaround_left else -self.turn_speed
+            return (0, 0, lookaround_turn), f"look-around step {self._lookaround_step + 1}/{LOOKAROUND_STEPS}"
         if self._phase == _Phase.LOOKAROUND_DWELL:
             return (0, 0, 0), f"look-around dwell {self._lookaround_step + 1}/{LOOKAROUND_STEPS}"
         if self._phase == _Phase.DRIVE:
@@ -462,6 +466,16 @@ class ScanAroundLayer(BaseLayer):
         if intended < PIVOT_TIGHT_CM and other >= intended + PIVOT_MARGIN_CM:
             return not self._turn_left
         return self._turn_left
+
+    def _pick_lookaround_side(self, sensors: Any) -> bool:
+        """Which way the pre-lane sweep starts turning. Independent of
+        _turn_left's zigzag alternation -- this only picks which side the
+        FIRST few steps face, since the sweep covers all 360 deg either way.
+        Turning toward the roomier side first means an early step gets a
+        clear shot instead of starting by facing straight at a nearby wall."""
+        left = _side_room_cm(sensors, "get_obstacle_distance_front_left_cm")
+        right = _side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
+        return left >= right
 
     @staticmethod
     def _clearances(sensors: Any):
