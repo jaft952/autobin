@@ -120,6 +120,7 @@ class RobotRuntime:
         self._frame_lock = threading.Lock()
         self._stream_clients = 0              # MJPEG viewers; 0 -> skip encoding
         self._stream_lock = threading.Lock()
+        self._lookaround_cam_paused = False   # YOLO paused for a sweep step
         self._cpu_prev = None                 # (idle, total) from /proc/stat
 
         self._alive = True
@@ -203,6 +204,18 @@ class RobotRuntime:
                 layer.notify_arbitration(layer.layer_id == winning.layer_id)
             self.arbitrator.clear()
 
+            # Frames captured mid-pivot are motion blur; inference on them is
+            # wasted CPU that jitters the soft-PWM. Pause YOLO for the moving
+            # half of each look-around step, resume for the still dwell.
+            turning = (winning.layer_id == 1
+                       and "look-around step" in winning.message)
+            if turning != self._lookaround_cam_paused:
+                if turning:
+                    self.sensors.pause_camera()
+                else:
+                    self.sensors.resume_camera()
+                self._lookaround_cam_paused = turning
+
             self.motion.execute(winning)
             if self.arm is not None:
                 with self._arm_lock:
@@ -221,6 +234,9 @@ class RobotRuntime:
         else:
             # STOPPED / ESTOP: enforce halted wheels every tick.
             self.motion.stop()
+            if self._lookaround_cam_paused:
+                self.sensors.resume_camera()
+                self._lookaround_cam_paused = False
 
         # Annotating + JPEG-encoding a frame costs real CPU on the Pi — only
         # pay it while someone is actually watching the camera stream.
