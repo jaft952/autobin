@@ -75,6 +75,14 @@ RETREAT_GAP_S = 0.05
 RETREAT_PULSE_S = 0.3
 _CAL_FORWARD_SPEED = MotionCalibration().forward_speed  # duty -> fraction scale
 
+# Layer 2 drives right up to the tick the arc grid first solves. Braking
+# straight from that speed (MotionExecutor brakes, not coasts, for 'hold')
+# jolts the chassis hard enough to knock the tin back out of the band that
+# was just solved. Coast for this long first so momentum bleeds off under
+# rolling friction, then brake to actually hold position -- same shape as
+# the SETTLE_S halt-before-flip used in layer1_scan.py / layer4_emergency.py.
+SETTLE_S = 0.15
+
 
 class CollectLitterLayer(BaseLayer):
     """
@@ -94,6 +102,8 @@ class CollectLitterLayer(BaseLayer):
         self._retreat_until: float = 0.0
         self._was_too_close: bool = False
         self._suppressed_since: Optional[float] = None
+        self._settle_until: float = 0.0
+        self._prev_halted: bool = False   # were we already coasting/braking last tick?
 
     def reset(self) -> None:
         self._ready_since = None
@@ -102,6 +112,8 @@ class CollectLitterLayer(BaseLayer):
         self._retreat_until = 0.0
         self._was_too_close = False
         self._suppressed_since = None
+        self._settle_until = 0.0
+        self._prev_halted = False
 
     # ── Arbitration ───────────────────────────────────────────────────────
 
@@ -117,6 +129,7 @@ class CollectLitterLayer(BaseLayer):
         if band == BAND_TOO_CLOSE:
             self._ready_since = None
             self._latched_until = 0.0
+            self._prev_halted = False
             return self._retreat_pulse(now)
         self._was_too_close = False
 
@@ -125,21 +138,23 @@ class CollectLitterLayer(BaseLayer):
             if now < self._latched_until:
                 # A blink, not a departure: hold the base rather than handing
                 # the tin back to Layer 2 to be re-approached from scratch.
-                return self._hold("GRAB HOLD (detection blinked)")
+                return self._hold_or_settle(now, "GRAB HOLD (detection blinked)")
+            self._prev_halted = False
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         self._latched_until = now + GRABBABLE_LATCH_S
 
         if not self._ultrasonic_confirms(sensors):
             self._ready_since = None
+            self._prev_halted = False
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         if self._ready_since is None:
             self._ready_since = now
         stable_s = now - self._ready_since
         if stable_s < GRAB_STABLE_S:
-            return self._hold(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
-                              f"/{GRAB_STABLE_S:.0f}s)")
+            return self._hold_or_settle(
+                now, f"GRAB HOLD (stabilizing {stable_s:.1f}s/{GRAB_STABLE_S:.0f}s)")
 
         nx, ny = point # type: ignore
         if klass == "upright":
@@ -148,6 +163,7 @@ class CollectLitterLayer(BaseLayer):
             label = "lying end-on"
         else:
             label = f"lying CH5={solved[4]:.0f}"
+        self._prev_halted = True
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
@@ -169,6 +185,8 @@ class CollectLitterLayer(BaseLayer):
             self._latched_until += paused
         if self._retreat_until:
             self._retreat_until += paused
+        if self._settle_until:
+            self._settle_until += paused
         self._suppressed_since = None
 
     def is_grabbable(self, sensors: Any) -> bool:
@@ -214,6 +232,21 @@ class CollectLitterLayer(BaseLayer):
             motion_vector=(0, 0, 0), arm_action='deploy',
             message="OVERSHOT past nearest arc - pulse gap",
         )
+
+    def _hold_or_settle(self, now: float, message: str) -> ActionCommand:
+        """First tick handing off from Layer 2's driving motion coasts instead
+        of braking, so an instant brake at speed can't knock the tin out of
+        the band the arc grid just solved. Already halted -> straight to hold."""
+        if not self._prev_halted:
+            self._settle_until = now + SETTLE_S
+            self._prev_halted = True
+        if now < self._settle_until:
+            return ActionCommand(
+                layer_id=self.layer_id, active=True,
+                motion_vector=(0, 0, 0), arm_action='deploy',
+                message="SETTLING before hold (coasting to a stop)",
+            )
+        return self._hold(message)
 
     def _hold(self, message: str) -> ActionCommand:
         """Base held still, arm parked at the travel pose. 'hold' brakes the
