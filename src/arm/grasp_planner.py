@@ -170,13 +170,17 @@ class GraspPlanner:
             return False
         print(f"[arm] collect ({tin_pose}) at CH1-5 = {solved}")
         self.open_gripper()
-        # TESTING: skip pre-lift/post-lift, go straight grab -> bin, see outcome.
-        # for ch in (1, 2, 3):                         # CH2/CH3/CH4 -> lift high
-        #     self.move_channel(ch, self.poses["lift"][ch])
+        # Without this, the first channel in grab_order sweeps straight from
+        # HOME (travel pose) to the solved angle in one uninterrupted move --
+        # e.g. CH4 (wrist) alone can swing 150+ degrees, which visibly rocks
+        # the chassis and shifts it off the tin the arc grid just solved for.
+        # Staging through "lift" first keeps each leg's sweep small.
+        for ch in (1, 2, 3):                         # CH2/CH3/CH4 -> lift high
+            self.move_channel(ch, self.poses["lift"][ch])
         for ch in grab_order(tin_pose):
             self.move_channel(ch, float(solved[ch]))
         self.close_gripper()
-        # self.move_channel(1, self.poses["lift"][1])  # lift shoulder, holding
+        self.move_channel(1, self.poses["lift"][1])  # lift shoulder, holding
         if not dump:
             print("[arm] grabbed — still holding.")
             return True
