@@ -242,22 +242,18 @@ def test_grab_waits_for_stability():
         sensors.ground = (0.5, 0.6) # type: ignore
 
         cmd = layer.evaluate(sensors)
-        assert cmd.active and cmd.arm_action == 'deploy', cmd.message  # coasts before braking (see SETTLE_S)
+        assert cmd.active and cmd.arm_action == 'hold', cmd.message
         assert cmd.motion_vector == (0, 0, 0), cmd.message
 
-        clock.tick(collect_mod.SETTLE_S + 0.01)
-        cmd = layer.evaluate(sensors)
-        assert cmd.arm_action == 'hold', cmd.message   # settled -> now brakes and holds
-
-        clock.tick(GRAB_STABLE_S - collect_mod.SETTLE_S - 0.1)   # still short of the window
+        clock.tick(GRAB_STABLE_S - 0.05)        # still short of the window
         assert layer.evaluate(sensors).arm_action == 'hold'
 
-        clock.tick(0.2)
+        clock.tick(0.1)
         assert layer.evaluate(sensors).arm_action == 'grab_arc'
 
         # A tin that leaves and comes back starts the clock over.
         layer.reset()
-        assert layer.evaluate(sensors).arm_action == 'deploy'
+        assert layer.evaluate(sensors).arm_action == 'hold'
     print("PASS grab waits out GRAB_STABLE_S")
 
 
@@ -374,9 +370,7 @@ def test_is_grabbable_does_not_disturb_the_clock():
             assert layer.is_grabbable(sensors)
         clock.tick(GRAB_STABLE_S + 0.01)
         # Polling alone never started the clock, so this is still the first
-        # stable frame -- settles before braking, not a grab yet.
-        assert layer.evaluate(sensors).arm_action == 'deploy'
-        clock.tick(collect_mod.SETTLE_S + 0.01)
+        # stable frame, not a grab.
         assert layer.evaluate(sensors).arm_action == 'hold'
         assert not layer.is_grabbable(FakeSensors())
     print("PASS is_grabbable is pure")
@@ -823,7 +817,7 @@ def test_arbitration_stack():
         # first holding it still until the reading has been stable long enough.
         sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
         win = winner()
-        assert win.layer_id == 3 and win.arm_action == 'deploy', win.message  # settles before braking
+        assert win.layer_id == 3 and win.arm_action == 'hold', win.message
         collect_clock.tick(GRAB_STABLE_S + 0.01)
         win = winner()
         assert win.layer_id == 3 and win.arm_action == 'grab_arc', win.message
