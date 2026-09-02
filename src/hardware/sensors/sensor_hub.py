@@ -126,6 +126,21 @@ class SensorHub(SensorInterface):
         if self._camera is not None and hasattr(self._camera, "release_target"):
             self._camera.release_target()
 
+    def camera_off(self) -> None:
+        """Battery-save toggle: release the camera hardware. No-op without one."""
+        if self._camera is not None and hasattr(self._camera, "camera_off"):
+            self._camera.camera_off()
+
+    def camera_on(self) -> None:
+        if self._camera is not None and hasattr(self._camera, "camera_on"):
+            self._camera.camera_on()
+
+    @property
+    def camera_enabled(self) -> bool:
+        if self._camera is None:
+            return False
+        return getattr(self._camera, "camera_enabled", True)
+
     # ── Debug passthrough ─────────────────────────────────────────────────
 
     def get_annotated_frame(self):

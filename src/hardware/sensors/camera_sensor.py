@@ -92,6 +92,7 @@ class CameraSensor(SensorInterface):
         self._worker = None
         self._running = threading.Event()
         self._running.set()          # cleared only while the arm is grabbing
+        self._camera_enabled = True  # dashboard battery-save toggle
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -117,7 +118,25 @@ class CameraSensor(SensorInterface):
         self._running.clear()
 
     def resume(self):
-        self._running.set()
+        if self._camera_enabled:   # don't let a grab's auto-resume override a manual camera_off()
+            self._running.set()
+
+    def camera_off(self) -> None:
+        """Release the camera hardware (dashboard battery-save toggle).
+        Pauses the worker first so it isn't mid-read when the capture closes."""
+        self._camera_enabled = False
+        self.pause()
+        self._detector.stop()
+
+    def camera_on(self) -> None:
+        """Reopen the camera hardware and resume inference."""
+        self._detector.reopen_camera()
+        self._camera_enabled = True
+        self.resume()
+
+    @property
+    def camera_enabled(self) -> bool:
+        return self._camera_enabled
 
     def wait_for_fresh_frames(self, n: int = 2, timeout: float = 2.0) -> int:
         """Block until the worker has published `n` NEW inference results

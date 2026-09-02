@@ -201,6 +201,10 @@ class AluminiumCanDetector:
             self._cap.release()
             print("✓ Camera released")
 
+    def reopen_camera(self):
+        """Reopen just the camera hardware after stop() -- no model reload."""
+        self._open_camera()
+
     def read_frame(self):
         """Grab frame without inference; updates cache for get_annotated_frame()."""
         if not self._cap or not self._cap.isOpened():

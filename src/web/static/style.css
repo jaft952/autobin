@@ -145,6 +145,7 @@ button:disabled { opacity: .38; cursor: not-allowed; }
             display: flex; align-items: center; justify-content: center; }
 .cam-wrap img { width: 100%; display: block; }
 .cam-off { color: var(--muted); padding: 60px 0; text-align: center; }
+.btn-cam { width: 100%; border-radius: 0; border-width: 0; border-top: 1px solid var(--border); }
 .cam-overlay {
   position: absolute; left: 0; right: 0; bottom: 0;
   padding: 6px 10px;

@@ -29,6 +29,8 @@ API summary (all JSON unless noted):
     POST /api/system/shutdown         stop the server and power off the Pi
     POST /api/system/restart          re-exec the server (picks up edited source)
     GET  /api/camera/stream           MJPEG stream (multipart)
+    POST /api/camera/off              release the camera hardware (battery save)
+    POST /api/camera/on               reopen the camera hardware
     GET  /api/arm/pose                commanded arm pose
     POST /api/arm/pose {name}         home | bin
     POST /api/arm/gripper {action}    open | close
@@ -134,6 +136,10 @@ def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Pi-Key"
+    if request.path == "/" or request.path.startswith("/static/"):
+        # A stale cached app.js/index.html silently hides new UI features
+        # behind a hard-refresh -- always serve the current file.
+        resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
@@ -265,6 +271,24 @@ def api_camera_stream():
             runtime.stream_client_disconnected()
 
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.post("/api/camera/off")
+def api_camera_off():
+    try:
+        runtime.camera_off()
+        return _ok(camera_on=False)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@app.post("/api/camera/on")
+def api_camera_on():
+    try:
+        runtime.camera_on()
+        return _ok(camera_on=True)
+    except Exception as exc:
+        return _fail(exc)
 
 
 # ── Manual arm ────────────────────────────────────────────────────────────

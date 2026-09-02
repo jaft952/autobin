@@ -275,6 +275,20 @@ class RobotRuntime:
         with self._stream_lock:
             self._stream_clients = max(0, self._stream_clients - 1)
 
+    # ── Manual camera control (dashboard battery-save toggle) ─────────────
+
+    def camera_off(self):
+        if not self.camera_available:
+            raise RuntimeError("no camera on this run")
+        self.sensors.camera_off()
+        self.log.info("camera OFF (manual, battery save)")
+
+    def camera_on(self):
+        if not self.camera_available:
+            raise RuntimeError("no camera on this run")
+        self.sensors.camera_on()
+        self.log.info("camera ON (manual)")
+
     # ── Manual arm control (base halted only: STOPPED or ESTOP) ───────────
 
     def _manual_arm_planner(self):
@@ -408,6 +422,7 @@ class RobotRuntime:
             "layer": self.win_layer,
             "distance_cm": round(dist, 1) if dist is not None else None,
             "camera": self.camera_available,
+            "camera_on": self.sensors.camera_enabled,
             "arm": self.arm is not None,
             "uptime_s": int(time.monotonic() - self.started_at),
             "loop_hz": round(hz_actual, 1),

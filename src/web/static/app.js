@@ -171,20 +171,28 @@ function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
 
 function CameraCard({ base, status, camEpoch }) {
   const hasCam = status && status.camera;
+  const camOn = status && status.camera_on;
+  const showStream = hasCam && camOn;
   return html`
     <div class="card">
       <div class="card-title">CAMERA VIEW
-        <span class="right">${hasCam ? "live · YOLO overlay" : "offline"}</span>
+        <span class="right">${hasCam ? (camOn ? "live · YOLO overlay" : "off (battery save)") : "offline"}</span>
       </div>
       <div class="cam-wrap">
-        ${hasCam
+        ${showStream
           ? html`<img key=${camEpoch} src="${base}/api/camera/stream?e=${camEpoch}${keyQuery()}" alt="camera" />`
-          : html`<div class="cam-off">no camera on this run<br/>
-                   <small>(--no-camera, or webcam/YOLO failed — see log)</small>
+          : html`<div class="cam-off">${hasCam ? "camera off — press below to resume" : "no camera on this run"}<br/>
+                   <small>${hasCam ? "" : "(--no-camera, or webcam/YOLO failed — see log)"}</small>
                  </div>`}
         ${status && status.message
           ? html`<div class="cam-overlay">[L${status.layer}] ${status.message}</div>` : null}
       </div>
+      ${hasCam
+        ? html`<button class="btn-cam"
+                  onClick=${() => apiPost(base, camOn ? "/api/camera/off" : "/api/camera/on")}>
+                  ${camOn ? "◼ Turn camera OFF" : "▶ Turn camera ON"}
+                </button>`
+        : null}
     </div>`;
 }
 
