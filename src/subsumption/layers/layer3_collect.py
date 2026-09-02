@@ -145,9 +145,14 @@ class CollectLitterLayer(BaseLayer):
         self._latched_until = now + GRABBABLE_LATCH_S
 
         if not self._ultrasonic_confirms(sensors):
+            # Hold, don't stand down: a single noisy HC-SR04 ping reading a
+            # hair past GRAB_CONFIRM_CM must not hand the wheels back to
+            # Layer 2 for even one tick -- its own steering correction is a
+            # visible flick, and it moves the base off the spot the arc grid
+            # already solved for, right before the grab fires on the next
+            # good reading.
             self._ready_since = None
-            self._prev_halted = False
-            return ActionCommand(layer_id=self.layer_id, active=False)
+            return self._hold_or_settle(now, "GRAB HOLD (ultrasonic not yet confirming range)")
 
         if self._ready_since is None:
             self._ready_since = now

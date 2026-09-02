@@ -327,7 +327,10 @@ def test_ultrasonic_vetoes_a_far_grab():
         sensors.dist = GRAB_CONFIRM_CM + 10.0 # type: ignore
         layer.evaluate(sensors)
         clock.tick(GRAB_STABLE_S + 0.01)
-        assert not layer.evaluate(sensors).active, "grabbed past the veto"
+        cmd = layer.evaluate(sensors)
+        assert cmd.active and cmd.motion_vector == (0, 0, 0), \
+            "must hold the base, not stand down, once the arc grid solves"
+        assert cmd.arm_action != 'grab_arc', "grabbed past the veto"
 
         sensors.dist = GRAB_CONFIRM_CM - 5.0 # type: ignore
         assert settle(layer, sensors, clock).arm_action == 'grab_arc'
