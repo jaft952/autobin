@@ -6,8 +6,8 @@ from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
 from src.hardware.sensors.sensor_hub import SensorHub
 
-# Keep in step with layer1_scan's TURN_SPEED: this layer outvotes it, so a
-# higher value here makes the robot speed up as it nears an obstacle.
+# Keep in step with src.scanning.tuning.TURN_SPEED: this layer outvotes it,
+# so a higher value here makes the robot speed up as it nears an obstacle.
 EMERGENCY_TURN_SPEED = 0.2
 
 # Release the turn only once everything is this much further than the

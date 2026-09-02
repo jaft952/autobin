@@ -29,8 +29,7 @@ Expected behavior (wheels live, no camera):
 
 Calibrating the pattern: pass --turn-90 / --shift / --speed / --turn-speed to
 seed starting values (they call ScanAroundLayer.set_timing/set_speeds); once
-a set works, write it into src/subsumption/layers/layer1_scan.py as the new
-default.
+a set works, write it into src/scanning/tuning.py as the new default.
 
 Live speed adjustment: while the loop is running, type into the same
 terminal and press Enter:

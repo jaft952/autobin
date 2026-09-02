@@ -29,9 +29,10 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-import src.subsumption.layers.layer1_scan as scan_mod
-from src.subsumption.layers.layer1_scan import (
-    ScanAroundLayer,
+import src.scanning.tuning as scan_mod
+import src.scanning.layer as scan_layer_mod
+from src.subsumption.layers.layer1_scan import ScanAroundLayer
+from src.scanning.tuning import (
     FORWARD_SPEED, TURN_SPEED,
     TURN_AT_CM,
     TURN_90_S, SHIFT_S, MAX_LANE_S,
@@ -66,14 +67,14 @@ class FakeClock:
 
 @contextmanager
 def fake_clock():
-    """Patch time.monotonic for the scan module, restore on exit."""
+    """Patch time.monotonic for the scan layer, restore on exit."""
     clock = FakeClock()
-    real = scan_mod.time.monotonic
-    scan_mod.time.monotonic = clock
+    real = scan_layer_mod.time.monotonic
+    scan_layer_mod.time.monotonic = clock
     try:
         yield clock
     finally:
-        scan_mod.time.monotonic = real
+        scan_layer_mod.time.monotonic = real
 
 
 class FakeSensors:
@@ -136,17 +137,11 @@ class CaptureActuator:
 
 
 def advance(layer, sensors, clock):
-    """One evaluate, stepping over the inter-phase settle and the pre-lane
-    look-around so a test can assert on the phase it actually cares about."""
+    """One evaluate, stepping over the inter-phase settle so a test can
+    assert on the phase it actually cares about."""
     cmd = layer.evaluate(sensors)
-    while cmd.active and cmd.message and (
-            "settling" in cmd.message or "look-around" in cmd.message):
-        if "look-around step" in cmd.message:
-            clock.tick(layer._lookaround_step_s() + 0.01)
-        elif "look-around dwell" in cmd.message:
-            clock.tick(scan_mod.LOOKAROUND_DWELL_S + 0.01)
-        else:
-            clock.tick(scan_mod.SETTLE_S + 0.01)
+    while cmd.active and cmd.message and "settling" in cmd.message:
+        clock.tick(scan_mod.SETTLE_S + 0.01)
         cmd = layer.evaluate(sensors)
     return cmd
 
@@ -414,9 +409,7 @@ def test_arbitration_with_real_hub():
         hub = SensorHub(front=ultra, camera=None)
         arb = Arbitrator()
 
-        # Clear floor: scan (layer 1) outvotes idle (layer 0). A fresh layer
-        # starts its pre-lane look-around, not the drive itself, so this only
-        # checks that scan is the one driving, not the exact motion.
+        # Clear floor: scan (layer 1) outvotes idle (layer 0).
         ultra.dist = 120.0 # type: ignore
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message

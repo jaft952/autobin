@@ -40,7 +40,7 @@ from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
 from src.subsumption.motion_executor import MotionExecutor
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
-import src.subsumption.layers.layer1_scan as scan_mod
+import src.scanning.tuning as scan_tuning
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
 from src.subsumption.layers.layer2_approach import ApproachLitterLayer
 import src.visual_servoing.reactive_controller as reactive_mod
@@ -120,7 +120,6 @@ class RobotRuntime:
         self._frame_lock = threading.Lock()
         self._stream_clients = 0              # MJPEG viewers; 0 -> skip encoding
         self._stream_lock = threading.Lock()
-        self._lookaround_cam_paused = False   # YOLO paused for a sweep step
         self._cpu_prev = None                 # (idle, total) from /proc/stat
 
         self._alive = True
@@ -204,18 +203,6 @@ class RobotRuntime:
                 layer.notify_arbitration(layer.layer_id == winning.layer_id)
             self.arbitrator.clear()
 
-            # Frames captured mid-pivot are motion blur; inference on them is
-            # wasted CPU that jitters the soft-PWM. Pause YOLO for the moving
-            # half of each look-around step, resume for the still dwell.
-            turning = (winning.layer_id == 1
-                       and "look-around step" in winning.message)
-            if turning != self._lookaround_cam_paused:
-                if turning:
-                    self.sensors.pause_camera()
-                else:
-                    self.sensors.resume_camera()
-                self._lookaround_cam_paused = turning
-
             self.motion.execute(winning)
             if self.arm is not None:
                 with self._arm_lock:
@@ -234,9 +221,6 @@ class RobotRuntime:
         else:
             # STOPPED / ESTOP: enforce halted wheels every tick.
             self.motion.stop()
-            if self._lookaround_cam_paused:
-                self.sensors.resume_camera()
-                self._lookaround_cam_paused = False
 
         # Annotating + JPEG-encoding a frame costs real CPU on the Pi — only
         # pay it while someone is actually watching the camera stream.
@@ -363,7 +347,7 @@ class RobotRuntime:
             ("scan.shift_s",       L1, [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
             ("scan.max_lane_s",    L1, [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
             # Read from the module every tick, so patching the global works.
-            ("scan.turn_at_cm",    L1, [(scan_mod, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
+            ("scan.turn_at_cm",    L1, [(scan_tuning, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
 
             # Layer 2 (approach) now calls reactive_controller.compute_reactive_
             # command() directly -- the same validated function

@@ -189,7 +189,7 @@ class CameraSensor(SensorInterface):
         Returns None if no can is locked (or detection has gone stale).
 
         Used by:
-            layer1_scan.py    — to check if a target exists
+            src/scanning       — to check if a target exists
             layer2_approach.py — to calculate motion vector towards the can
         """
         box, result = self._current_target()
