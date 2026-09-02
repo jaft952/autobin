@@ -30,6 +30,10 @@ class SensorInterface:
         """Returns (x, y) coordinates of ground litter relative to robot, or None"""
         return None
 
+    def get_litter_locked(self) -> bool:
+        """True while a tin is held by TargetLock, including its occlusion grace window (unlike get_litter_position())."""
+        return False
+
     def get_litter_ground_contact(self) -> tuple:
         """Returns normalized (x, y) of the litter's ground-contact point
         (where it touches the floor), or None. Grasp solvers are calibrated

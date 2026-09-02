@@ -93,6 +93,7 @@ class CollectLitterLayer(BaseLayer):
         self._retreating: bool = False   # True = mid-pulse, False = mid-gap
         self._retreat_until: float = 0.0
         self._was_too_close: bool = False
+        self._suppressed_since: Optional[float] = None
 
     def reset(self) -> None:
         self._ready_since = None
@@ -100,11 +101,17 @@ class CollectLitterLayer(BaseLayer):
         self._retreating = False
         self._retreat_until = 0.0
         self._was_too_close = False
+        self._suppressed_since = None
 
     # ── Arbitration ───────────────────────────────────────────────────────
 
+    def notify_arbitration(self, won: bool) -> None:
+        if not won and self._suppressed_since is None:
+            self._suppressed_since = time.monotonic()
+
     def evaluate(self, sensors: Any) -> ActionCommand:
         now = time.monotonic()
+        self._absorb_suppressed_time(now)
         solved, klass, point, band = self._solve(sensors)
 
         if band == BAND_TOO_CLOSE:
@@ -150,6 +157,19 @@ class CollectLitterLayer(BaseLayer):
             arm_params={'pose': solved, 'tin_pose': klass},
             message=f"ARC GRAB ({label}) @ nx={nx:.2f} ny={ny:.2f}",
         )
+
+    def _absorb_suppressed_time(self, now: float) -> None:
+        """Open-loop timers must not count time spent suppressed by Layer 5."""
+        if self._suppressed_since is None:
+            return
+        paused = now - self._suppressed_since
+        if self._ready_since is not None:
+            self._ready_since += paused
+        if self._latched_until:
+            self._latched_until += paused
+        if self._retreat_until:
+            self._retreat_until += paused
+        self._suppressed_since = None
 
     def is_grabbable(self, sensors: Any) -> bool:
         """Can the arc grid solve this tin from where the robot stands?

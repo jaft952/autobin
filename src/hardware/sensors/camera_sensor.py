@@ -183,20 +183,16 @@ class CameraSensor(SensorInterface):
         self._selected_at = -1.0
 
     def get_litter_position(self): # type: ignore
-        """
-        Returns normalized (x, y) of the LOCKED aluminium can (largest bbox
-        area at lock time), where (0.5, 0.5) is the center of the frame.
-        Returns None if no can is locked (or detection has gone stale).
-
-        Used by:
-            src/scanning       — to check if a target exists
-            layer2_approach.py — to calculate motion vector towards the can
-        """
+        """Normalized (x, y) of the locked can, or None if not locked / stale."""
         box, result = self._current_target()
         if box is None or result.frame_width == 0:
             return None
         return (box.center_x / result.frame_width,
                 box.center_y / result.frame_height)
+
+    def get_litter_locked(self) -> bool: # type: ignore
+        """True while TargetLock holds a tin, including mid-blink inside its grace window."""
+        return self._target_lock.locked
 
     def get_litter_ground_contact(self): # type: ignore
         """

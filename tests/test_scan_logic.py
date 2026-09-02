@@ -924,11 +924,13 @@ def test_reset_abandons_the_manoeuvre():
 def test_median_filter_absorbs_a_dropped_ping():
     """Live log: a wall read 16cm, then 38cm, then 16cm again within a few
     ticks -- one dropped echo per sensor was swinging every threshold."""
+    import threading
     from collections import deque
     from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, MEDIAN_WINDOW
 
     sensor = UltrasonicSensor.__new__(UltrasonicSensor)
     sensor._history = deque(maxlen=MEDIAN_WINDOW)
+    sensor._lock = threading.Lock()
 
     for raw in (16.0, 16.0):
         sensor._record(raw)

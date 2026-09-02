@@ -23,6 +23,14 @@ from . import geometry
 from .phases import Phase, HANDLERS
 
 
+def _target_locked(sensors: Any) -> bool:
+    """Survives the occlusion grace window, unlike a bare get_litter_position() truthiness check."""
+    getter = getattr(sensors, "get_litter_locked", None)
+    if getter is not None:
+        return bool(getter())
+    return bool(sensors.get_litter_position())
+
+
 class ScanAroundLayer(BaseLayer):
     """Priority 1 (very low). Zigzag patrol searching for targets; active
     only while no target is detected."""
@@ -84,7 +92,7 @@ class ScanAroundLayer(BaseLayer):
             self._suppressed_since = time.monotonic()
 
     def evaluate(self, sensors: Any) -> ActionCommand:
-        if self.yield_to_targets and sensors.get_litter_position():
+        if self.yield_to_targets and _target_locked(sensors):
             self._phase = None
             self._suppressed_since = None
             return ActionCommand(layer_id=self.layer_id, active=False)

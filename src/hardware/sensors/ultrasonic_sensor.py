@@ -1,21 +1,8 @@
-"""
-Low-level HC-SR04 driver.
-
-Responsibilities
-----------------
-- Configure GPIO.
-- Trigger a measurement.
-- Convert echo time into distance.
-- Expose the latest measured distance.
-
-No robot logic belongs here.
-No emergency stop.
-No grasp validation.
-No wall avoidance.
-"""
+"""Low-level HC-SR04 driver: GPIO trigger/echo -> distance. No robot logic here."""
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
@@ -49,6 +36,7 @@ class UltrasonicSensor:
         self._pins = pins
         self._distance_cm: Optional[float] = None
         self._history: deque = deque(maxlen=MEDIAN_WINDOW)
+        self._lock = threading.Lock()   # update() runs on UltrasonicArray's thread, get_distance_cm() on the control loop
 
         if GPIO is None:
             return
@@ -99,28 +87,17 @@ class UltrasonicSensor:
         self._record(distance_cm if distance_cm >= MIN_VALID_DISTANCE_CM else None)
 
     def _record(self, reading: Optional[float]) -> None:
-        """Median-filter the raw ping. None (no echo) is kept in the window so
-        a genuinely empty field of view still reports None once the window
-        agrees -- a dropout alone can no longer move the reported distance."""
-        self._history.append(reading)
-        valid = sorted(r for r in self._history if r is not None)
-        # Lower of the two middles on an even count: when the window is split,
-        # report the nearer obstacle rather than the roomier one.
-        self._distance_cm = valid[(len(valid) - 1) // 2] if len(valid) * 2 > len(self._history) else None
+        """Median filter: None (no echo) stays in the window so a dropout alone can't move the reading."""
+        with self._lock:
+            self._history.append(reading)
+            valid = sorted(r for r in self._history if r is not None)
+            # Lower of the two middles on an even count: report the nearer obstacle.
+            self._distance_cm = (valid[(len(valid) - 1) // 2]
+                                  if len(valid) * 2 > len(self._history) else None)
 
     def get_distance_cm(self) -> Optional[float]:
-        """
-        Return the latest measured distance.
-
-        Returns
-        -------
-        float
-            Latest distance in centimetres.
-
-        None
-            No valid reading.
-        """
-        return self._distance_cm
+        with self._lock:
+            return self._distance_cm
 
     def close(self) -> None:
         if GPIO is None:
