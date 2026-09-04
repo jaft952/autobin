@@ -43,13 +43,6 @@ def lane_bias(left, right, turn_speed: float) -> float:
     return max(-1.0, min(1.0, bias)) * turn_speed
 
 
-def dodge_side_clear(sensors: Any, dodge_left: bool) -> bool:
-    """True once the diagonal opposite the dodge direction has opened up."""
-    getter = ("get_obstacle_distance_front_right_cm" if dodge_left
-              else "get_obstacle_distance_front_left_cm")
-    return side_room_cm(sensors, getter) >= tuning.DODGE_CLEAR_CM
-
-
 def pivot_side(sensors: Any, turn_left: bool):
     """Lane-change pivot direction: keep alternating unless the intended
     side is clearly too tight and the other side is clearly roomier.

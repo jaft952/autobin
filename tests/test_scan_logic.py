@@ -16,6 +16,8 @@ a fake sensors object whose ultrasonic distance we script. Covers:
     - open floor (no wall) -> lane timeout still turns
     - wall appearing mid-SHIFT (corner) -> skips straight to TURN2
     - target detected -> layer yields and restarts the pattern afterwards
+    - obstacle avoidance (dodge) is NOT this layer's job -- any front
+      obstacle just ends the lane like a wall; Layer 5 handles avoidance
     - MotionExecutor: vector -> wheel mixing, sign convention, renormalize, stop
     - arbitration: scan beats idle; emergency (< 10 cm) beats scan
 
@@ -149,9 +151,8 @@ def advance(layer, sensors, clock):
 # ── Scan layer: the zigzag state machine ─────────────────────────────────
 
 def test_full_zigzag_cycle():
-    """A wall the dodge cannot beat becomes the ~180 deg lane change: the
-    dodge pivot is the first half, the pass along the wall is the sideways
-    hop, and TURN2 finishes it."""
+    """Wall reached -> pivot 1 -> shift -> pivot 2 -> drive, alternating pivot
+    side at the next wall. Dodging obstacles is Layer 5's job, not scan's."""
     with fake_clock() as clock:
         layer = ScanAroundLayer()
         sensors = FakeDirectionalSensors(front=None, front_left=None, front_right=None)
@@ -162,26 +163,22 @@ def test_full_zigzag_cycle():
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
         assert cmd.arm_action == 'stow'
 
-        # Wall inside the turn band -> dodge away from it. Both sides read
+        # Wall inside the turn band -> end the lane, pivot 1. Both sides read
         # equally open, so it swings LEFT (v_theta > 0 = CCW).
         wall = TURN_AT_CM - 5
         sensors.front = wall
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (0, 0, TURN_SPEED), cmd.message
-        assert "dodging left" in cmd.message, cmd.message
+        assert "turn 1" in cmd.message.lower(), cmd.message
 
-        clock.tick(TURN_90_S * 0.5)
-        cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector == (0, 0, TURN_SPEED), cmd.message
-
-        # Pivot done -> drive past whatever it is.
-        clock.tick(TURN_90_S * 0.5 + 0.01)
+        # Pivot done -> shift sideways one lane width.
+        clock.tick(TURN_90_S + 0.01)
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
-        assert "passing obstacle" in cmd.message, cmd.message
+        assert "shift" in cmd.message.lower(), cmd.message
 
-        # Still blocked ahead -> a wall, not an obstacle. Straight to pivot 2,
-        # SAME side, completing the 180.
+        # Shift done -> pivot 2, same side, completing the 180.
+        clock.tick(SHIFT_S + 0.01)
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (0, 0, TURN_SPEED), cmd.message
         assert "turn 2" in cmd.message.lower(), cmd.message
@@ -192,53 +189,12 @@ def test_full_zigzag_cycle():
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
 
-        # Next wall -> the dodge swings the other way, because the dodge picks
-        # the roomier side and the left one is now the tight one.
+        # Next wall -> pivot alternates to the other side.
         sensors.front = wall
-        sensors.front_left = scan_mod.DODGE_CLEAR_CM - 5
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (0, 0, -TURN_SPEED), cmd.message
-        assert "dodging right" in cmd.message, cmd.message
+        assert "turn 1" in cmd.message.lower(), cmd.message
     print("PASS full zigzag cycle + side alternation")
-
-
-def test_an_obstacle_is_dodged_without_ending_the_lane():
-    """A bin in the middle of the floor is not a wall: pivot away, drive past
-    it, pivot back, same lane. Ending the lane there cost a whole strip."""
-    with fake_clock() as clock:
-        layer = ScanAroundLayer()
-        sensors = FakeDirectionalSensors(front=None, front_left=None, front_right=None)
-        advance(layer, sensors, clock)                              # DRIVE
-
-        sensors.front = TURN_AT_CM - 1
-        cmd = advance(layer, sensors, clock)
-        assert "dodging left" in cmd.message, cmd.message
-
-        # Pivoted away; the obstacle now sits on the right diagonal.
-        clock.tick(TURN_90_S + 0.01)
-        sensors.front = None
-        sensors.front_right = scan_mod.DODGE_CLEAR_CM - 10
-        cmd = advance(layer, sensors, clock)
-        assert "passing obstacle" in cmd.message, cmd.message
-
-        # A side that clears too early is ignored: a 45 deg beam may simply
-        # never have caught the obstacle in the first place.
-        sensors.front_right = None
-        clock.tick(scan_mod.DODGE_MIN_S * 0.5)
-        cmd = advance(layer, sensors, clock)
-        assert "passing obstacle" in cmd.message, cmd.message
-
-        # Past it -> pivot back the other way, then resume the same lane.
-        clock.tick(scan_mod.DODGE_MIN_S * 0.5 + 0.01)
-        cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector == (0, 0, -TURN_SPEED), cmd.message
-        assert "back onto the lane" in cmd.message, cmd.message
-
-        clock.tick(TURN_90_S + 0.01)
-        cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector == (FORWARD_SPEED, 0, 0), cmd.message
-        assert "lane" in cmd.message, cmd.message
-    print("PASS an obstacle is dodged without ending the lane")
 
 
 def test_lane_timeout_without_wall():
@@ -259,30 +215,6 @@ def test_lane_timeout_without_wall():
         cmd = advance(layer, sensors, clock)
         assert cmd.motion_vector == (0, 0, TURN_SPEED), cmd.message
     print("PASS lane timeout turns without a wall")
-
-
-def test_corner_wall_during_the_pass():
-    """Wall ahead again during the pass (corner) -> stop dodging and finish
-    the lane change."""
-    with fake_clock() as clock:
-        layer = ScanAroundLayer()
-        sensors = FakeDirectionalSensors(front=None, front_left=None, front_right=None)
-        advance(layer, sensors, clock)                    # DRIVE
-        sensors.front = TURN_AT_CM - 1
-        advance(layer, sensors, clock)                    # DODGE_TURN
-        clock.tick(TURN_90_S + 0.01)
-        sensors.front = None
-        sensors.front_right = scan_mod.DODGE_CLEAR_CM - 10
-        cmd = advance(layer, sensors, clock)              # DODGE_PASS
-        assert "passing obstacle" in cmd.message, cmd.message
-
-        # Corner: wall reappears ahead well before DODGE_MAX_S is up.
-        clock.tick(scan_mod.DODGE_MAX_S * 0.2)
-        sensors.front = TURN_AT_CM - 1
-        cmd = advance(layer, sensors, clock)
-        assert cmd.motion_vector == (0, 0, TURN_SPEED), cmd.message
-        assert "turn 2" in cmd.message.lower(), cmd.message
-    print("PASS corner: wall during the pass finishes the lane change")
 
 
 def test_yields_to_target_and_restarts():
@@ -761,7 +693,7 @@ def test_every_phase_change_settles_first():
 
         clock.tick(scan_mod.SETTLE_S + 0.01)
         cmd = layer.evaluate(sensors)
-        assert "dodging" in cmd.message, cmd.message
+        assert "turn 1" in cmd.message.lower(), cmd.message
 
         # ...and again on the way out of the pivot.
         clock.tick(TURN_90_S + 0.01)
@@ -853,18 +785,18 @@ def test_scan_timers_pause_while_suppressed():
         sensors = FakeSensors()
         sensors.dist = TURN_AT_CM - 1 # type: ignore
         advance(layer, sensors, clock)     # DRIVE
-        advance(layer, sensors, clock)     # -> DODGE_TURN
+        advance(layer, sensors, clock)     # -> TURN1
         layer.notify_arbitration(won=False)
 
         # Suppressed for longer than a full pivot: the phase must survive it.
         clock.tick(layer.turn_90_s * 3)
         cmd = layer.evaluate(sensors)
-        assert "dodging" in cmd.message, cmd.message
+        assert "turn 1" in cmd.message.lower(), cmd.message
 
         layer.notify_arbitration(won=True)
         clock.tick(layer.turn_90_s + 0.01)
         cmd = advance(layer, sensors, clock)
-        assert "passing obstacle" in cmd.message, cmd.message
+        assert "shift" in cmd.message.lower(), cmd.message
     print("PASS scan timers pause while suppressed")
 
 
@@ -907,7 +839,7 @@ def test_reset_abandons_the_manoeuvre():
         sensors = FakeSensors()
         sensors.dist = TURN_AT_CM - 1 # type: ignore
         advance(layer, sensors, clock)          # DRIVE
-        advance(layer, sensors, clock)          # -> DODGE_TURN
+        advance(layer, sensors, clock)          # -> TURN1
 
         layer.reset()
         clock.tick(600.0)                       # ten minutes parked
@@ -989,8 +921,6 @@ def test_timed_phases_jitter_within_bounds():
 ALL_TESTS = [
     test_full_zigzag_cycle,
     test_lane_timeout_without_wall,
-    test_corner_wall_during_the_pass,
-    test_an_obstacle_is_dodged_without_ending_the_lane,
     test_yields_to_target_and_restarts,
     test_none_distance_is_not_an_obstacle,
     test_executor_mixing,

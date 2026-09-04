@@ -1,50 +1,3 @@
-"""
-src/subsumption/layers/layer3_collect.py
-
-Layer 3: Collect Litter — decides WHEN the tin is grabbable, halts the base,
-and emits the grab as a semantic command. Execution (the actual servo
-sequence) lives in ArmExecutor, after arbitration.
-
---- GRASP STRATEGY: arc grasp only ---
-ArcGraspSolver.solve_with_band(nx, ny) interpolates a full hand-tuned
-[CH1..CH5] pose from the calibrated arc grid. Every pose in that grid
-physically worked on the real arm (sag/offsets baked in).
-    -> arm_action='grab_arc', arm_params={'pose': [CH1..CH5]}
-
-The model-IK fallback was removed on 2026-08-25 (source archived in
-docs/ik_removed_2026-08-25.zip): it never fired, because it needed a
-pixel_to_arm homography nobody had calibrated, and it aimed with a less
-accurate solver than the grid it was backing up.
-
-POSE ROUTING (v3): the segmentation mask classifies the tin as upright /
-lying / axial (get_litter_pose). Upright tins use the upright arc grid;
-lying tins use the separate LYING grid, with CH5 (wrist roll) computed from
-the tin's floor angle. "axial" (seen end-on) grabs as straight-at-robot.
-
---- WHY THE BAND MATTERS ---
-solve_with_band() also says WHY a None is None. BAND_TOO_FAR means keep
-approaching, so this layer stands down and Layer 2 drives on. BAND_TOO_CLOSE
-means the base has already overshot the nearest calibrated arc: standing
-down there let Layer 2 keep closing in, which only made it worse, until
-Layer 5 tripped and drove away from the tin. This layer now backs off
-instead — the same recovery tests/test_ibvs_centering.py's live loop does.
-
---- WHY GRABBING WAITS ---
-Camera inference mis-estimates position for a beat (motion blur, a partly
-occluded mask), so ONE good frame is not evidence the tin is really in
-position. Two gates, both mirrored from that same live loop:
-    GRAB_STABLE_S      the whole trigger must hold continuously this long
-    GRABBABLE_LATCH_S  one blank frame does not hand the tin back to Layer 2
-While stabilizing, the layer stays active with a zero motion vector so the
-base holds still and the reading can settle.
-
-The solved position uses the litter's GROUND-CONTACT point (bbox bottom
-center) for upright tins and the bbox CENTER for lying ones: that is what
-each calibration grid was anchored to.
-
-All solving here is pure math on calibration YAMLs (no hardware imports) —
-Rule 2 holds.
-"""
 from __future__ import annotations
 
 import time
@@ -56,38 +9,14 @@ from src.arm.arc_grasp import ArcGraspSolver, BAND_TOO_CLOSE
 from src.motion.calibration import MotionCalibration
 import src.visual_servoing.reactive_controller as reactive_mod
 
-# Front-ultrasonic confirmation before the arm fires. Keep in step with
 GRAB_CONFIRM_CM = 35.0
-
-# Continuous hold required before the grab fires, and how long a solved
-# answer survives a blank frame. See "WHY GRABBING WAITS" above.
-# Widened 1.0 -> 2.0: this re-solves and re-checks the tin's position every
-# tick and resets the clock on any disturbance, so a longer dwell gives a
-# late flick (e.g. right as the arm activates) more time to show up in a
-# re-solve before the grab commits, instead of firing on a position that's
-# about to be knocked out of alignment.
 GRAB_STABLE_S = 2.0
 GRABBABLE_LATCH_S = 2.0
 
-# Overshot past the nearest calibrated arc: retreat in the same shape as
-# tests/test_ibvs_centering.py's _retreat_pulse() -- a brief stop, then a
-# bounded backward pulse at the same BACKUP_SPEED (reactive_controller.py),
-# not an indefinite backoff at a separately-tuned fraction. Re-expressed as a
-# non-blocking timed phase (RETREAT_GAP_S / RETREAT_PULSE_S) because a layer
-# may never block or sleep -- the script's stop() -> sleep(0.05) ->
-# apply(backward) -> sleep(0.3) -> stop() cycle becomes GAP then PULSE below.
+
 RETREAT_GAP_S = 0.05
 RETREAT_PULSE_S = 0.3
 _CAL_FORWARD_SPEED = MotionCalibration().forward_speed  # duty -> fraction scale
-
-# NOTE: a coast-before-brake step was tried here (SETTLE_S) to soften the
-# Layer2->Layer3 handoff, but it made things worse: coasting cuts power
-# entirely, so if Layer 2's last command still had a steering component
-# (nonzero v_theta), the base's existing angular momentum carried through
-# UNOPPOSED for the whole coast window -- a visible flick, worse than the
-# jolt it was meant to fix. brake() resists that momentum immediately;
-# removing the coast step was the actual fix. Do not reintroduce it without
-# also checking Layer 2's last v_theta was already ~0.
 
 
 class CollectLitterLayer(BaseLayer):

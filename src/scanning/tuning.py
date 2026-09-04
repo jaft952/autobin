@@ -13,10 +13,6 @@ PIVOT_ROOM_CM   = 40.0   # side-room reading cap used when comparing left/right
 PIVOT_TIGHT_CM  = 25.0   # side distance considered too tight to pivot into
 PIVOT_MARGIN_CM = 5.0    # other side must be this much roomier to override alternation
 
-DODGE_CLEAR_CM = 30.0   # side distance meaning the obstacle has been passed
-DODGE_MIN_S    = 0.5    # ignore a "clear" reading before this long (sensor lag)
-DODGE_MAX_S    = 2.0    # still blocked after this long -> treat as a wall
-
 TURN_90_S  = 0.9   # calibrated seconds for a ~90 deg pivot
 SHIFT_S    = 1.2   # calibrated seconds to drive ~one lane width
 MAX_LANE_S = 30.0  # longest straight run before turning anyway

@@ -5,9 +5,9 @@ No wheel encoders/IMU, so the base can't know where it is: it reacts to
 the ultrasonic instead of following a map. Drive a lane until the front
 sensor sees a wall, pivot ~90 deg, shift sideways ~one lane width, pivot
 ~90 deg again, alternating pivot side each wall so the path sweeps across
-the room. A close obstacle (not a wall) gets dodged first; only a dodge
-that fails to clear becomes a lane change. See src/scanning/phases.py for
-the state machine and src/scanning/geometry.py for the sensor helpers.
+the room. Obstacle avoidance itself (dodging, emergency escape) is Layer 5's
+job; this layer only ends the lane and turns. See src/scanning/phases.py
+for the state machine and src/scanning/geometry.py for the sensor helpers.
 """
 from __future__ import annotations
 
@@ -49,7 +49,6 @@ class ScanAroundLayer(BaseLayer):
         self._lane_limit_s: float = self.max_lane_s
         self._turn_s: float = self.turn_90_s
         self._turn_left: bool = True           # pivot side; alternates per wall
-        self._dodge_left: bool = True          # which way the current dodge went
         self._next_phase: Phase = Phase.DRIVE  # what the settle is settling for
         self._pivot_note: str = "L-- R--"
         self._suppressed_since: Optional[float] = None
@@ -141,14 +140,6 @@ class ScanAroundLayer(BaseLayer):
                 return (self.forward_speed, 0, 0), "lane"
             return ((self.forward_speed, 0, bias),
                     f"lane (nudge {bias:+.2f}, L{geometry.fmt(left)} R{geometry.fmt(right)})")
-        dodge = self.turn_speed if self._dodge_left else -self.turn_speed
-        dodge_side = 'left' if self._dodge_left else 'right'
-        if self._phase == Phase.DODGE_TURN:
-            return (0, 0, dodge), f"dodging {dodge_side} ({self._pivot_note})"
-        if self._phase == Phase.DODGE_PASS:
-            return (self.forward_speed, 0, 0), f"passing obstacle on the {'right' if self._dodge_left else 'left'}"
-        if self._phase == Phase.DODGE_BACK:
-            return (0, 0, -dodge), "back onto the lane"
         side = 'left' if self._turn_left else 'right'
         if self._phase == Phase.TURN1:
             return (0, 0, turn), f"turn 1 ({side}, v_theta {turn:+.2f}, {self._pivot_note})"
@@ -179,16 +170,6 @@ class ScanAroundLayer(BaseLayer):
 
     def _elapsed(self, now: float) -> float:
         return now - self._phase_started
-
-    def _start_dodge(self, sensors: Any, now: float) -> None:
-        """Pivot toward whichever diagonal has more room. Never alternates
-        for its own sake -- dodging into the tighter side wedges the robot
-        into a corner."""
-        left = geometry.side_room_cm(sensors, "get_obstacle_distance_front_left_cm")
-        right = geometry.side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
-        self._pivot_note = f"L{left:.0f} R{right:.0f}"
-        self._dodge_left = left >= right
-        self._settle(Phase.DODGE_TURN, now)
 
     def _pivot_side(self, sensors: Any) -> bool:
         new_left, note = geometry.pivot_side(sensors, self._turn_left)
