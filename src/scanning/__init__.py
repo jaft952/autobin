@@ -1,14 +1,12 @@
 """
-Zigzag floor-coverage scan: no odometry, so the base reacts to the
-ultrasonic instead of following a map. See layer.py for the full picture.
+Zigzag floor-coverage scan geometry and tuning. The layer that drives it
+lives in src/subsumption/layers/layer1_scan.py.
 """
-from .layer import ScanAroundLayer
 from .tuning import (
     FORWARD_SPEED, TURN_SPEED, TURN_AT_CM, TURN_90_S, SHIFT_S, MAX_LANE_S,
 )
 
 __all__ = [
-    "ScanAroundLayer",
     "FORWARD_SPEED", "TURN_SPEED", "TURN_AT_CM",
     "TURN_90_S", "SHIFT_S", "MAX_LANE_S",
 ]
