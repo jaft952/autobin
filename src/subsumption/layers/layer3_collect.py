@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
+from src.hardware.sensors.interfaces import LitterSnapshot
 from src.arm.arc_grasp import ArcGraspSolver, BAND_TOO_CLOSE
 from src.motion.calibration import MotionCalibration
 import src.visual_servoing.reactive_controller as reactive_mod
@@ -12,6 +13,12 @@ import src.visual_servoing.reactive_controller as reactive_mod
 GRAB_CONFIRM_CM = 35.0
 GRAB_STABLE_S = 2.0
 GRABBABLE_LATCH_S = 2.0
+
+# Largest nx/ny swing, over the GRAB_STABLE_S window, that still counts as
+# "the tin has stopped moving in frame". Solvable for 2 s is not the same as
+# still for 2 s: the chassis rocks when Layer 2's drive is braked, and a
+# steadily drifting solution used to fire the grab anyway.
+POSE_STABLE_EPS = 0.03
 
 
 RETREAT_GAP_S = 0.05
@@ -37,6 +44,7 @@ class CollectLitterLayer(BaseLayer):
         self._retreat_until: float = 0.0
         self._was_too_close: bool = False
         self._suppressed_since: Optional[float] = None
+        self._points: list = []          # (t, nx, ny) inside the stable window
 
     def reset(self) -> None:
         self._ready_since = None
@@ -45,6 +53,7 @@ class CollectLitterLayer(BaseLayer):
         self._retreat_until = 0.0
         self._was_too_close = False
         self._suppressed_since = None
+        self._points.clear()
 
     # ── Arbitration ───────────────────────────────────────────────────────
 
@@ -58,13 +67,13 @@ class CollectLitterLayer(BaseLayer):
         solved, klass, point, band = self._solve(sensors)
 
         if band == BAND_TOO_CLOSE:
-            self._ready_since = None
+            self._restart_stability()
             self._latched_until = 0.0
             return self._retreat_pulse(now)
         self._was_too_close = False
 
         if solved is None:
-            self._ready_since = None
+            self._restart_stability()
             if now < self._latched_until:
                 # A blink, not a departure: hold the base rather than handing
                 # the tin back to Layer 2 to be re-approached from scratch.
@@ -80,8 +89,11 @@ class CollectLitterLayer(BaseLayer):
             # visible flick, and it moves the base off the spot the arc grid
             # already solved for, right before the grab fires on the next
             # good reading.
-            self._ready_since = None
+            self._restart_stability()
             return self._hold("GRAB HOLD (ultrasonic not yet confirming range)")
+
+        nx, ny = point # type: ignore
+        self._track_point(now, nx, ny)
 
         if self._ready_since is None:
             self._ready_since = now
@@ -90,7 +102,11 @@ class CollectLitterLayer(BaseLayer):
             return self._hold(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
                               f"/{GRAB_STABLE_S:.0f}s)")
 
-        nx, ny = point # type: ignore
+        drift = self._point_drift()
+        if drift > POSE_STABLE_EPS:
+            return self._hold(f"GRAB HOLD (target still moving, "
+                              f"drift {drift:.3f}/{POSE_STABLE_EPS})")
+
         if klass == "upright":
             label = "upright"
         elif klass == "axial":
@@ -118,6 +134,7 @@ class CollectLitterLayer(BaseLayer):
             self._latched_until += paused
         if self._retreat_until:
             self._retreat_until += paused
+        self._points.clear()
         self._suppressed_since = None
 
     def is_grabbable(self, sensors: Any) -> bool:
@@ -164,6 +181,26 @@ class CollectLitterLayer(BaseLayer):
             message="OVERSHOT past nearest arc - pulse gap",
         )
 
+    def _restart_stability(self) -> None:
+        """Abandon the settling window: neither the elapsed time nor the
+        points collected in it describe the tin any more."""
+        self._ready_since = None
+        self._points.clear()
+
+    def _track_point(self, now: float, nx: float, ny: float) -> None:
+        self._points.append((now, nx, ny))
+        cutoff = now - GRAB_STABLE_S
+        self._points = [p for p in self._points if p[0] >= cutoff]
+
+    def _point_drift(self) -> float:
+        """Widest nx or ny swing across the stable window. 0.0 until there
+        are two samples to compare."""
+        if len(self._points) < 2:
+            return 0.0
+        xs = [p[1] for p in self._points]
+        ys = [p[2] for p in self._points]
+        return max(max(xs) - min(xs), max(ys) - min(ys))
+
     def _hold(self, message: str) -> ActionCommand:
         """Base held still, arm parked at the travel pose. 'hold' brakes the
         wheels (see MotionExecutor._GRAB_ACTIONS) so the tin does not drift
@@ -178,7 +215,9 @@ class CollectLitterLayer(BaseLayer):
 
     def _solve(self, sensors: Any):
         """(solved_or_None, klass, (nx, ny) or None, band)."""
-        klass, angle = self._litter_pose(sensors)
+        snap = self._snapshot(sensors)
+        klass = snap.klass or "upright"
+        angle = snap.angle
         # Reference point differs per pose, and must match what the
         # calibration tool told the user to click:
         #   upright -> ground contact (bbox bottom-center): the tin meets the
@@ -187,9 +226,9 @@ class CollectLitterLayer(BaseLayer):
         #              while the silhouette center tracks the graspable
         #              middle at every angle.
         if klass in ("lying", "axial"):
-            pos = sensors.get_litter_position()
+            pos = snap.center
         else:
-            pos = self._litter_point(sensors)
+            pos = snap.ground_contact or snap.center
         if pos is None:
             return None, klass, None, None
 
@@ -213,21 +252,22 @@ class CollectLitterLayer(BaseLayer):
         return distance is None or distance <= GRAB_CONFIRM_CM
 
     @staticmethod
-    def _litter_point(sensors: Any) -> Optional[tuple]:
-        """Ground-contact point if the sensor provides it, else bbox center."""
-        getter = getattr(sensors, "get_litter_ground_contact", None)
+    def _snapshot(sensors: Any) -> LitterSnapshot:
+        """All litter facts this solve needs, from ONE frame. Falls back to
+        the individual getters for sensors that predate snapshot(); those can
+        straddle two frames, which is the bug snapshot() exists to close."""
+        getter = getattr(sensors, "snapshot", None)
         if getter is not None:
-            pos = getter()
-            if pos is not None:
-                return pos
-        return sensors.get_litter_position()
+            snap = getter()
+            if snap is not None:
+                return snap
 
-    @staticmethod
-    def _litter_pose(sensors: Any) -> tuple:
-        """(klass, angle_deg) from the segmentation mask, defaulting to
-        ("upright", None) when the sensor has no pose information."""
-        getter = getattr(sensors, "get_litter_pose", None)
-        info = getter() if getter is not None else None
-        if not info:
-            return "upright", None
-        return info.get("klass", "upright"), info.get("angle")
+        pose_getter = getattr(sensors, "get_litter_pose", None)
+        info = pose_getter() if pose_getter is not None else None
+        contact_getter = getattr(sensors, "get_litter_ground_contact", None)
+        return LitterSnapshot(
+            center=sensors.get_litter_position(),
+            ground_contact=contact_getter() if contact_getter is not None else None,
+            klass=info.get("klass") if info else None,
+            angle=info.get("angle") if info else None,
+        )

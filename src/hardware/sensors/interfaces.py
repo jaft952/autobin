@@ -1,3 +1,18 @@
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass(frozen=True)
+class LitterSnapshot:
+    """One frame's worth of locked-tin facts. klass is None when the mask
+    gave no pose -- that means "unknown", which a caller must not read as
+    "upright"."""
+    center: Optional[tuple]
+    ground_contact: Optional[tuple]
+    klass: Optional[str]
+    angle: Optional[float]
+
+
 class SensorInterface:
     """Base class for Hardware Sensors using Polled Abstraction."""
     def update(self):
@@ -38,6 +53,12 @@ class SensorInterface:
         """Returns normalized (x, y) of the litter's ground-contact point
         (where it touches the floor), or None. Grasp solvers are calibrated
         against this point, not the bounding-box center."""
+        return None
+
+    def snapshot(self):
+        """A LitterSnapshot built from ONE inference result, or None when
+        there is no camera. A decision needing several litter facts must use
+        this: reading them through separate getters can straddle two frames."""
         return None
 
     def get_litter_distance_cm(self):

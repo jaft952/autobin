@@ -41,7 +41,7 @@ import math
 import threading
 import time
 
-from src.hardware.sensors.interfaces import SensorInterface
+from src.hardware.sensors.interfaces import LitterSnapshot, SensorInterface
 from src.perception.detector import (
     AluminiumCanDetector, DetectionResult, RUNTIME_MODEL_PATH,
 )
@@ -181,17 +181,37 @@ class CameraSensor(SensorInterface):
     def _current_target(self):
         """(box, result) of the LOCKED tin — the largest-bbox one, held until
         it leaves the frame. Selection runs once per new inference result, so
-        the three getters in one tick all describe the same tin."""
+        the three getters in one tick all describe the same tin.
+
+        Selection is inside the lock: reading the result and then selecting
+        outside it let the worker publish a new frame in between, and two
+        getters in the same tick could describe two different frames."""
         with self._result_lock:
             result = self._latest_result
             at = self._latest_at
-            stale = time.monotonic() - at > STALE_AFTER_S
-        if stale:
-            return None, result
-        if at != self._selected_at:
-            self._selected_at = at
-            self._selected_box = self._target_lock.select(result.detections)
-        return self._selected_box, result
+            if time.monotonic() - at > STALE_AFTER_S:
+                return None, result
+            if at != self._selected_at:
+                self._selected_at = at
+                self._selected_box = self._target_lock.select(result.detections)
+            return self._selected_box, result
+
+    def snapshot(self) -> LitterSnapshot:
+        """Every fact about the locked tin a grasp needs, from ONE frame.
+        Callers that read pose and position through separate getters can
+        straddle two frames and solve the wrong grid for the wrong point."""
+        box, result = self._current_target()
+        if box is None or result.frame_width == 0 or result.frame_height == 0:
+            return LitterSnapshot(None, None, None, None)
+        o = box.orientation
+        u, v = box.base_center
+        return LitterSnapshot(
+            center=(box.center_x / result.frame_width,
+                    box.center_y / result.frame_height),
+            ground_contact=(u / result.frame_width, v / result.frame_height),
+            klass=o.klass if o is not None else None,
+            angle=o.angle if o is not None else None,
+        )
 
     def release_target(self):
         """Forget the current tin now (e.g. after a collection) so the next

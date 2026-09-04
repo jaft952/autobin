@@ -38,10 +38,12 @@ from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 from src.subsumption.arbitrator import ActionCommand
 
-# arm_actions during which the base must HOLD position, not coast. 'hold' is
-# Layer 3 waiting for the detection to settle before it fires the grab — the
-# tin must not drift out of the arc band while it waits.
-_GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold"})
+# arm_actions during which a ZERO vector must HOLD position, not coast.
+# 'hold' is Layer 3 settling before it fires the grab; 'deploy' with a zero
+# vector is Layer 2 parked on REACHED. Both mean "stay on this spot", and
+# alternating brake with coast between them jerks the chassis. A nonzero
+# vector never reaches this set, so Layer 2 driving on 'deploy' is unaffected.
+_GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold", "deploy"})
 
 
 class MotionExecutor:

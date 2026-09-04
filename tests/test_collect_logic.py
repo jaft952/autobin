@@ -46,6 +46,7 @@ from src.subsumption.layers.layer3_collect import (
     RETREAT_GAP_S, RETREAT_PULSE_S,
 )
 from src.motion.calibration import MotionCalibration
+from src.hardware.sensors.interfaces import LitterSnapshot
 import src.visual_servoing.reactive_controller as reactive_mod
 import src.subsumption.layers.layer4_emergency as emergency_mod
 from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
@@ -841,6 +842,68 @@ def test_arbitration_stack():
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 
+def test_drifting_target_blocks_the_grab():
+    """Solvable for GRAB_STABLE_S is not the same as STILL for it. The base
+    rocks when Layer 2's drive is braked, and the grab used to fire off a
+    reading that was still sliding."""
+    with fake_collect_clock() as clock:
+        layer = CollectLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+        sensors.ground = (0.5, 0.55) # type: ignore
+
+        for i in range(40):                      # 4 s of a wobbling reading
+            clock.tick(0.1)
+            sensors.ground = (0.5, 0.65 if i % 2 else 0.55) # type: ignore
+            cmd = layer.evaluate(sensors)
+            assert cmd.active and cmd.arm_action != 'grab_arc',                 f"grabbed a moving target on tick {i}"
+
+        for _ in range(25):                      # settled -> grab goes ahead
+            clock.tick(0.1)
+            cmd = layer.evaluate(sensors)
+        assert cmd.arm_action == 'grab_arc', cmd.message
+    print("PASS a drifting reading holds instead of grabbing")
+
+
+def test_solve_reads_one_snapshot():
+    """Pose and position must come from the SAME frame. Read through the
+    separate getters they can straddle two, solving the wrong grid for the
+    wrong point."""
+    with fake_collect_clock():
+        layer = CollectLitterLayer(arc_solver=make_solver(upright=False, lying=True))
+        sensors = FakeSensors()
+        # Getters describe an upright tin; the snapshot describes a lying one
+        # at a different point. Only the lying grid can solve, so a solved
+        # pose proves the snapshot won.
+        sensors.pose = {"klass": "upright", "angle": None} # type: ignore
+        sensors.ground = (0.5, 0.2) # type: ignore
+        sensors.center = (0.5, 0.2) # type: ignore
+        sensors.snapshot = lambda: LitterSnapshot( # type: ignore
+            center=(0.5, 0.6), ground_contact=(0.5, 0.9),
+            klass="lying", angle=90.0)
+
+        solved, klass, point, _band = layer._solve(sensors)
+        assert klass == "lying", klass
+        assert point == (0.5, 0.6), point      # lying -> bbox center
+        assert solved is not None
+    print("PASS solve reads pose and point from one snapshot")
+
+
+def test_unknown_pose_is_not_reported_as_a_mask():
+    """No mask means unknown. LitterSnapshot must say None rather than
+    inventing 'upright', so a later caller can tell the two apart."""
+    snap = LitterSnapshot(center=(0.5, 0.6), ground_contact=None,
+                          klass=None, angle=None)
+    assert snap.klass is None
+    with fake_collect_clock():
+        layer = CollectLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+        sensors.snapshot = lambda: snap # type: ignore
+        # Solving still defaults to the upright grid -- the default lives in
+        # the layer, where it is visible, not hidden in the sensor.
+        assert layer._solve(sensors)[1] == "upright"
+    print("PASS an absent mask reads as unknown, not as upright")
+
+
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -849,6 +912,9 @@ ALL_TESTS = [
     test_latch_rides_out_a_blink,
     test_too_close_backs_off,
     test_ultrasonic_vetoes_a_far_grab,
+    test_drifting_target_blocks_the_grab,
+    test_solve_reads_one_snapshot,
+    test_unknown_pose_is_not_reported_as_a_mask,
     test_inactive_when_outside_the_grid,
     test_prefers_ground_contact_over_center,
     test_is_grabbable_does_not_disturb_the_clock,
