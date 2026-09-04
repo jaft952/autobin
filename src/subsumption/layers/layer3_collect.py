@@ -61,7 +61,12 @@ GRAB_CONFIRM_CM = 35.0
 
 # Continuous hold required before the grab fires, and how long a solved
 # answer survives a blank frame. See "WHY GRABBING WAITS" above.
-GRAB_STABLE_S = 1.0
+# Widened 1.0 -> 2.0: this re-solves and re-checks the tin's position every
+# tick and resets the clock on any disturbance, so a longer dwell gives a
+# late flick (e.g. right as the arm activates) more time to show up in a
+# re-solve before the grab commits, instead of firing on a position that's
+# about to be knocked out of alignment.
+GRAB_STABLE_S = 2.0
 GRABBABLE_LATCH_S = 2.0
 
 # Overshot past the nearest calibrated arc: retreat in the same shape as
