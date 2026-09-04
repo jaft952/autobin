@@ -853,6 +853,50 @@ def test_reset_abandons_the_manoeuvre():
     print("PASS reset abandons the manoeuvre")
 
 
+
+def test_front_sensor_takes_every_other_ping_slot():
+    """Plain round-robin refreshed the front reading only every ~0.26s. The
+    front is the one the grab and the e-stop read, so it gets every other
+    slot -- without shortening the gap between any two pings."""
+    from src.hardware.sensors.ultrasonic_array import build_schedule
+
+    front, back, left, right = "F", "B", "L", "R"
+    schedule = build_schedule([front, back, left, right], priority=front)
+    assert schedule == [front, back, front, left, front, right], schedule
+    assert schedule.count(front) * 2 == len(schedule)
+
+    # Degenerate wirings must not crash or drop a sensor.
+    assert build_schedule([back, left], priority=None) == [back, left]
+    assert build_schedule([back, left], priority=front) == [back, left]
+    assert build_schedule([front], priority=front) == [front]
+    print("PASS front sensor takes every other ping slot")
+
+
+def test_reading_carries_its_age():
+    """A threshold check needs to know whether the number is 50ms or 700ms
+    old -- the round-robin means it can be several ticks behind."""
+    import threading
+    from collections import deque
+    from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, MEDIAN_WINDOW
+
+    sensor = UltrasonicSensor.__new__(UltrasonicSensor)
+    sensor._history = deque(maxlen=MEDIAN_WINDOW)
+    sensor._lock = threading.Lock()
+    sensor._updated_at = None
+
+    assert sensor.get_distance_age_s() is None, "no ping yet -> no age"
+
+    sensor._record(30.0)
+    age = sensor.get_distance_age_s()
+    assert age is not None and age >= 0.0, age
+
+    # A no-echo ping still refreshes the age: it is the age of the DECISION,
+    # not of the last successful echo.
+    sensor._record(None)
+    assert sensor.get_distance_age_s() is not None
+    print("PASS reading carries its age")
+
+
 def test_median_filter_absorbs_a_dropped_ping():
     """Live log: a wall read 16cm, then 38cm, then 16cm again within a few
     ticks -- one dropped echo per sensor was swinging every threshold."""
@@ -945,6 +989,8 @@ ALL_TESTS = [
     test_every_phase_change_settles_first,
     test_scan_drives_out_of_a_corner_instead_of_spinning,
     test_median_filter_absorbs_a_dropped_ping,
+    test_front_sensor_takes_every_other_ping_slot,
+    test_reading_carries_its_age,
     test_scan_timers_pause_while_suppressed,
     test_timed_phases_jitter_within_bounds,
     test_reset_abandons_the_manoeuvre,

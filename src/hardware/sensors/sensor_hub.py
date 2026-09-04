@@ -21,7 +21,8 @@ class SensorHub(SensorInterface):
         self._front_right = front_right
         self._camera = camera
         self._ultrasonics = [s for s in (front, back, front_left, front_right) if s is not None]
-        self._ultrasonic_array = UltrasonicArray(self._ultrasonics)
+        # front first: it is the only one the grab decision reads.
+        self._ultrasonic_array = UltrasonicArray(self._ultrasonics, priority=front)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -48,6 +49,12 @@ class SensorHub(SensorInterface):
         if self._front is None:
             return None
         return self._front.get_distance_cm()
+
+    def get_obstacle_age_s(self) -> Optional[float]: # type: ignore
+        """Age of the front reading, or None (no sensor / no ping yet)."""
+        if self._front is None:
+            return None
+        return self._front.get_distance_age_s()
 
     def get_obstacle_distance_back_cm(self) -> Optional[float]: # type: ignore
         return self._back.get_distance_cm() if self._back is not None else None
@@ -83,6 +90,14 @@ class SensorHub(SensorInterface):
         if self._camera is None:
             return None
         return self._camera.get_litter_pose()
+
+    def snapshot(self):
+        """One frame's locked-tin facts (CameraSensor.snapshot()), or None
+        without a camera. Prefer this over the getters above when one
+        decision needs several of them."""
+        if self._camera is None:
+            return None
+        return self._camera.snapshot()
 
     def get_litter_distance_cm(self):
         if self._camera is None:

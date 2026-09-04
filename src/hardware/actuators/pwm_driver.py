@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from src.hardware import pigpio_link
 from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 
@@ -106,19 +107,6 @@ class _PigpioPWM:
         self._pi.set_PWM_dutycycle(self._pin, 0)
 
 
-def _connect_pigpio():
-    """A pigpiod connection, or None (daemon not running / not installed /
-    Pi 5, where pigpio is unsupported). None -> RPi.GPIO soft PWM fallback."""
-    try:
-        import pigpio  # type: ignore
-        pi = pigpio.pi()
-        if pi.connected:
-            return pi
-    except Exception:
-        pass
-    return None
-
-
 class PWMActuator:
     """Hardware module: converts wheel command into GPIO + PWM signals.
     Implements src.hardware.actuators.interfaces.ActuatorInterface.
@@ -143,7 +131,7 @@ class PWMActuator:
 
         # Prefer pigpiod (DMA-timed, duty immune to CPU load); fall back to
         # RPi.GPIO soft PWM when the daemon is not available.
-        self._pi = _connect_pigpio()
+        self._pi = pigpio_link.connect()
         if self._pi is not None:
             self.pwm_in1 = _PigpioPWM(self._pi, self.pins.in1, pwm_freq)
             self.pwm_in2 = _PigpioPWM(self._pi, self.pins.in2, pwm_freq)
