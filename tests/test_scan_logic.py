@@ -32,7 +32,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 import src.scanning.tuning as scan_mod
-import src.scanning.layer as scan_layer_mod
+import src.subsumption.layers.layer1_scan as scan_layer_mod
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
 from src.scanning.tuning import (
     FORWARD_SPEED, TURN_SPEED,
