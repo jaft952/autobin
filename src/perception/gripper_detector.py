@@ -1,9 +1,4 @@
-"""
-src/perception/gripper_detector.py
-
-Detects the 4 colored markers on the robotic arm gripper to determine
-its position, orientation, and open/close state.
-"""
+"""Detects the 4 colored gripper markers to find position, orientation, open/close state."""
 
 import cv2
 import yaml
@@ -31,7 +26,7 @@ class GripperDetector:
             
         self.config_path = Path(config_path)
         self.colors = {}
-        self.history = deque(maxlen=5)  # temporal smoothing
+        self.history = deque(maxlen=5)  # smooth center over frames
         self.load_config()
 
     def load_config(self):
@@ -57,16 +52,16 @@ class GripperDetector:
     def detect(self, frame: np.ndarray) -> Optional[GripperState]:
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Step 3, 4, 5: Find centers for each colored marker
+        # find center of each colored marker
         points = {}
         for color_name, bounds in self.colors.items():
             center = self._find_color_center(hsv_frame, bounds["lower"], bounds["upper"])
             if center is not None:
                 points[color_name] = center
 
-        # Step 6: Geometric Constraint Validation
+        # need all 4 markers visible
         if len(points) < 4:
-            return None  # Constraint 1: All 4 must be visible
+            return None
 
         out_l = points["outer_left"]
         out_r = points["outer_right"]
@@ -76,25 +71,23 @@ class GripperDetector:
         dist_outer = self._distance(out_l, out_r)
         dist_inner = self._distance(in_l, in_r)
 
-        # Constraint 2: Outer points must be wider than inner points
+        # outer points must be wider than inner points
         if dist_outer <= dist_inner:
             return None
 
-        # Calculate geometric center of the gripper
+        # geometric center of the gripper
         cx = int((out_l[0] + out_r[0] + in_l[0] + in_r[0]) / 4)
         cy = int((out_l[1] + out_r[1] + in_l[1] + in_r[1]) / 4)
 
-        # Step 8: Temporal smoothing
         self.history.append((cx, cy))
         smooth_cx = int(sum(p[0] for p in self.history) / len(self.history))
         smooth_cy = int(sum(p[1] for p in self.history) / len(self.history))
 
-        # Determine if gripper is open based on inner distance threshold
-        # You may need to tune this threshold (e.g., 50 pixels) based on your camera view
-        is_open_threshold = 50.0  
+        # open if inner markers are farther apart than this threshold
+        is_open_threshold = 50.0
         is_open = dist_inner > is_open_threshold
 
-        # Orientation: angle of the line connecting outer left and outer right
+        # angle of line connecting outer left and outer right
         dx = out_r[0] - out_l[0]
         dy = out_r[1] - out_l[1]
         angle = math.degrees(math.atan2(dy, dx))

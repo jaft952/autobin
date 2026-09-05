@@ -1,11 +1,4 @@
-"""One background thread pings all ultrasonics in turn so control-loop reads never block.
-
-The priority sensor (the front one) takes every other slot: [F, B, F, L, F, R].
-Plain round-robin refreshed the front reading only every ~0.26 s, and with
-the 3-sample median a new obstacle took ~0.8 s to register. Interleaving
-doubles the front rate WITHOUT shortening the gap between any two pings, so
-the acoustic spacing the HC-SR04 needs is untouched.
-"""
+"""Background thread pings all ultrasonics in turn; front sensor gets every other slot for faster updates."""
 from __future__ import annotations
 
 import threading
@@ -14,7 +7,7 @@ from typing import List, Optional
 
 from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor
 
-PING_INTERVAL_S = 0.06   # matches the HC-SR04 ~60ms between-measurement minimum
+PING_INTERVAL_S = 0.06   # HC-SR04 minimum between pings
 
 
 def build_schedule(sensors: List[UltrasonicSensor],

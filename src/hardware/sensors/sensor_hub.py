@@ -92,9 +92,7 @@ class SensorHub(SensorInterface):
         return self._camera.get_litter_pose()
 
     def snapshot(self):
-        """One frame's locked-tin facts (CameraSensor.snapshot()), or None
-        without a camera. Prefer this over the getters above when one
-        decision needs several of them."""
+        """One frame's locked-tin facts, or None without a camera."""
         if self._camera is None:
             return None
         return self._camera.snapshot()
@@ -122,8 +120,7 @@ class SensorHub(SensorInterface):
     # ── Camera worker control ─────────────────────────────────────────────
 
     def pause_camera(self):
-        """Stop YOLO inference (it competes with the arm's move pacing for
-        CPU — see CameraSensor's PAUSING note). No-op without a camera."""
+        """Stop YOLO inference (frees CPU for the arm). No-op without a camera."""
         if self._camera is not None and hasattr(self._camera, "pause"):
             self._camera.pause()
 

@@ -6,7 +6,7 @@ from . import geometry
 
 
 class Phase(enum.Enum):
-    SETTLE = enum.auto()   # brief halt between phases (direction flips)
+    SETTLE = enum.auto()   # brief halt between phases 
     DRIVE  = enum.auto()
     TURN1  = enum.auto()
     SHIFT  = enum.auto()
@@ -30,7 +30,7 @@ def turn1(layer, now, front, wall_ahead, sensors):
 
 
 def shift(layer, now, front, wall_ahead, sensors):
-    # Wall ahead during the shift -> skip straight to the second pivot.
+    # wall ahead: skip to second pivot
     if wall_ahead or layer._elapsed(now) >= layer.shift_s:
         layer._settle(Phase.TURN2, now)
 

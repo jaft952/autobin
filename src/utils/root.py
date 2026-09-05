@@ -1,6 +1,4 @@
-"""
-Utilities for locating the repository root reliably across environments.
-"""
+"""Utilities for locating the repository root across environments."""
 
 import os
 from pathlib import Path
@@ -37,24 +35,7 @@ def find_repo_root(
 	env_var: str = "AUTOBIN_ROOT",
 	markers: Sequence[str] = ("README.md", "src/"),
 ) -> Path:
-	"""
-	Find the project repository root by walking up from a starting path.
-
-	Resolution order:
-	1) Environment override via ``env_var`` (default: AUTOBIN_ROOT)
-	2) Upward search from ``start_path`` (or current working directory)
-
-	Args:
-		start_path: File or directory path to start from.
-		env_var: Environment variable for explicit root override.
-		markers: Required files/directories that identify repo root.
-
-	Returns:
-		Path to the detected repository root.
-
-	Raises:
-		FileNotFoundError: If no matching root directory is found.
-	"""
+	"""Find the repo root: env var override, else walk up from start_path looking for markers."""
 	env_root = os.getenv(env_var)
 	if env_root:
 		env_path = Path(env_root).expanduser().resolve()

@@ -19,14 +19,10 @@ except ImportError:
 SPEED_OF_SOUND_CM_PER_S = 34300.0
 MIN_VALID_DISTANCE_CM = 2.0
 
-# Longest echo worth waiting for. 0.010 s of pulse is ~170 cm of range --
-# well past anything this robot acts on, and a third of the 0.03 s this used
-# to burn on every missing echo.
+# Longest echo to wait for; ~170cm range, avoids long waits on missed echo.
 ECHO_TIMEOUT_S = 0.010
 
-# Median of the last N pings. A single dropped echo (common on HC-SR04) used
-# to swing the reported distance by tens of cm, which downstream thresholds
-# read as the obstacle appearing and vanishing every tick.
+# Median of last N pings smooths out dropped echoes.
 MEDIAN_WINDOW = 3
 
 
@@ -37,9 +33,7 @@ class UltrasonicPins:
 
 
 class _PigpioPing:
-    """Echo timing inside pigpiod. Edges are timestamped by the daemon, so a
-    measurement cannot be corrupted by YOLO holding the GIL mid-pulse -- the
-    failure the RPi.GPIO busy-wait below cannot defend against."""
+    """Echo timing done by pigpiod, immune to GIL stalls unlike the busy-wait fallback."""
 
     _WAIT_SLACK_S = 0.005   # daemon round-trip on top of the echo itself
 
@@ -83,8 +77,7 @@ class _PigpioPing:
 
 
 class _GpioPing:
-    """RPi.GPIO fallback: the echo is timed by a Python loop, so a GIL stall
-    lands straight in the measurement. Used only without pigpiod."""
+    """RPi.GPIO fallback: echo timed in Python, so GIL stalls affect it. Used only without pigpiod."""
 
     def __init__(self, pins: UltrasonicPins) -> None:
         self._pins = pins
@@ -114,11 +107,7 @@ class _GpioPing:
         return time.monotonic() - pulse_start
 
     def close(self) -> None:
-        # Some host environments provide a GPIO module but never had
-        # `setmode()` called (or it was cleaned up elsewhere). Calling
-        # `GPIO.cleanup()` in that state raises a RuntimeError:
-        # "Please set pin numbering mode using GPIO.setmode(...)".
-        # Guard by checking the current mode first where available.
+        # Guard cleanup: calling it without setmode() first raises RuntimeError.
         try:
             mode = GPIO.getmode()
         except Exception:
@@ -146,15 +135,11 @@ class UltrasonicSensor:
         self._distance_cm: Optional[float] = None
         self._updated_at: Optional[float] = None
         self._history: deque = deque(maxlen=MEDIAN_WINDOW)
-        self._lock = threading.Lock()   # update() runs on UltrasonicArray's thread, get_distance_cm() on the control loop
+        self._lock = threading.Lock()   # protects reads across threads
         self._backend = _make_backend(pins)
 
     def update(self) -> None:
-        """
-        Perform one ultrasonic measurement.
-
-        Stores the latest measured distance internally.
-        """
+        """Take one measurement and store the result."""
 
         if self._backend is None:
             self._record(None)
@@ -173,7 +158,7 @@ class UltrasonicSensor:
         with self._lock:
             self._history.append(reading)
             valid = sorted(r for r in self._history if r is not None)
-            # Lower of the two middles on an even count: report the nearer obstacle.
+            # Even count: pick the lower middle (nearer obstacle).
             self._distance_cm = (valid[(len(valid) - 1) // 2]
                                   if len(valid) * 2 > len(self._history) else None)
             self._updated_at = time.monotonic()
@@ -183,9 +168,7 @@ class UltrasonicSensor:
             return self._distance_cm
 
     def get_distance_age_s(self) -> Optional[float]:
-        """Seconds since the reported distance was last recomputed, or None
-        before the first ping. Callers gating on a threshold need this: the
-        round-robin schedule means a reading can be several ticks old."""
+        """Seconds since the last reading, or None if never pinged."""
         with self._lock:
             if self._updated_at is None:
                 return None

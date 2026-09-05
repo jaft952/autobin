@@ -4,9 +4,7 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class LitterSnapshot:
-    """One frame's worth of locked-tin facts. klass is None when the mask
-    gave no pose -- that means "unknown", which a caller must not read as
-    "upright"."""
+    """One frame's locked-tin facts. klass=None means unknown, not upright."""
     center: Optional[tuple]
     ground_contact: Optional[tuple]
     klass: Optional[str]
@@ -18,15 +16,13 @@ class SensorInterface:
     def update(self):
         """Poll the hardware to update current state. Called every tick by main loop."""
         pass
-        
+
     def has_obstacle(self) -> bool:
         """Returns True if there is an imminent collision"""
         return False
 
     def get_obstacle_distance_cm(self):
-        """Returns distance (cm) to the nearest forward obstacle, or None if
-        unknown/out of range. None must be treated as 'no information',
-        never as an obstacle at 0 cm."""
+        """Distance (cm) to the nearest forward obstacle, or None if unknown."""
         return None
 
     def get_obstacle_distance_back_cm(self):
@@ -46,48 +42,33 @@ class SensorInterface:
         return None
 
     def get_litter_locked(self) -> bool:
-        """True while a tin is held by TargetLock, including its occlusion grace window (unlike get_litter_position())."""
+        """True while a tin is held by TargetLock, even during occlusion grace."""
         return False
 
     def get_litter_ground_contact(self) -> tuple:
-        """Returns normalized (x, y) of the litter's ground-contact point
-        (where it touches the floor), or None. Grasp solvers are calibrated
-        against this point, not the bounding-box center."""
+        """Normalized (x, y) ground-contact point of the litter, or None. Grasp solvers use this, not the bbox center."""
         return None
 
     def snapshot(self):
-        """A LitterSnapshot built from ONE inference result, or None when
-        there is no camera. A decision needing several litter facts must use
-        this: reading them through separate getters can straddle two frames."""
+        """A LitterSnapshot from ONE frame; use this when several litter facts are needed together."""
         return None
 
     def get_litter_distance_cm(self):
-        """Monocular distance estimate to the locked litter (bbox-size
-        based), or None if no target / not estimable."""
+        """Monocular bbox-based distance estimate, or None."""
         return None
 
     def get_litter_too_close(self) -> bool:
-        """True when the locked litter's bbox is close enough that the
-        base should back off regardless of the distance estimate."""
+        """True when the locked litter's bbox is close enough to back off regardless of distance estimate."""
         return False
 
     def get_litter_target_error(self):
-        """Returns the TargetError (src/visual_servoing/distance_error.py)
-        for the locked litter target, from calling compute_target_error()
-        on the sensor's own DetectionResult -- the same function and the
-        same data tests/test_ibvs_centering.py's validated loop uses, not a
-        value re-derived from the other getters above. None if unavailable
-        (no camera): callers must treat that the same as 'not found'."""
+        """TargetError for the locked target, via compute_target_error(); None if unavailable."""
         return None
 
     def get_litter_pose(self) -> dict:
-        """Returns the litter's pose from segmentation, or None if unknown:
-        {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180}.
-        angle is the image-plane long-axis angle (90 = vertical in image);
-        it is only meaningful for 'lying'. None must be treated as
-        'upright' (the historical assumption)."""
+        """Litter pose from segmentation, or None (treat as upright): {'klass', 'angle' (image-plane, lying only)}."""
         return None
-        
+
     def get_aerial_trash_position(self) -> tuple:
         """Returns (x, y, z) coordinates of airborne trash, or None"""
         return None

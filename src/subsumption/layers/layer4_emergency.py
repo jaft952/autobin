@@ -8,30 +8,30 @@ from src.hardware.sensors.sensor_hub import SensorHub
 from src.hardware.sensors.clearance import read_distance_cm
 from src.safety.obstacle_avoidance import compare_room
 
-EMERGENCY_TURN_SPEED = 0.2   # keep in step with src.scanning.tuning.TURN_SPEED, this layer outvotes it
-CLEAR_MARGIN = 1.6           # release the turn only once past this multiple of the trigger range
-DIAG_CLEAR_MARGIN = 1.2      # diagonals only need to leave the trigger range, not the full front margin
-MIN_TURN_S = 0.6             # hold a turn direction at least this long, re-deciding every tick oscillated
-MAX_TURN_S = 6.0             # still blocked after this long -> edging away isn't working, escape instead
+EMERGENCY_TURN_SPEED = 0.2   # matches scanning.tuning.TURN_SPEED
+CLEAR_MARGIN = 1.6           # release turn past this multiple of trigger range
+DIAG_CLEAR_MARGIN = 1.2      # diagonals only need to clear trigger range
+MIN_TURN_S = 0.6             # min turn hold time, avoids oscillation
+MAX_TURN_S = 6.0             # after this long, escape instead
 
-# Wedge escape: reverse, spin about-face, drive out, retrying wider each time. No give-up state.
+# wedge escape: reverse, spin, drive out, retry wider each time
 TURN_180_S     = 2.0
 SPIN_STEP_S    = 0.5
 MAX_SPIN_S     = 4.0
 ESCAPE_BACK_S  = 1.0
 ESCAPE_DRIVE_S = 1.0
 
-BACKOFF_S = 0.4              # reverse first for turning room, a rectangular base sweeps its corners wide
+BACKOFF_S = 0.4              # reverse first for turning room
 BACKOFF_CLEARANCE_CM = 30.0
-SETTLE_S = 0.15              # halt between opposing wheel directions, instant flips brown out the rail
-TIE_MARGIN_CM = 5.0          # diagonals within this much of each other carry no steering information
-ROOMY_CM = 40.0              # past this range a diagonal counts as open regardless of exact distance
+SETTLE_S = 0.15              # halt before wheel direction flips
+TIE_MARGIN_CM = 5.0          # diagonals this close carry no steering info
+ROOMY_CM = 40.0              # past this range a diagonal counts as open
 
 _FAR = 1e6
 
 
 def _dist(sensors: Any, getter: str) -> float:
-    """None (no echo / missing getter) means nothing in range, never 0."""
+    """None means nothing in range, never 0."""
     value = read_distance_cm(sensors, getter)
     return _FAR if value is None else value
 
@@ -54,14 +54,14 @@ class _Readings(NamedTuple):
 
 
 class EmergencyStopLayer(BaseLayer):
-    """Priority 5. Suppresses everything below EMERGENCY_STOP_CM: backs off, pivots to the roomier side, or wedge-escapes."""
+    """Priority 5: near an obstacle, backs off, pivots, or wedge-escapes."""
 
     def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED,
                  grab_zone_check: Optional[Callable[[Any], bool]] = None):
         super().__init__(layer_id=5)
         self.turn_speed = EMERGENCY_TURN_SPEED
         self.set_turn_speed(turn_speed)
-        self.grab_zone_check = grab_zone_check   # e.g. CollectLitterLayer.is_grabbable; exempts the tin being grabbed
+        self.grab_zone_check = grab_zone_check   # exempts a tin being grabbed
         self._phase: Optional[_Phase] = None
         self._phase_started: float = 0.0
         self._turn_dir: float = -1.0
@@ -152,7 +152,7 @@ class EmergencyStopLayer(BaseLayer):
         return self._phase_command(r.front, r.back, r.left, r.right, r.trigger_cm)
 
     def _decide_new_manoeuvre(self, sensors: Any, r: _Readings) -> ActionCommand:
-        """The rear only gates reversing here, never triggers a manoeuvre on its own."""
+        """Rear only gates reversing, never triggers a manoeuvre alone."""
         if min(r.front, r.left, r.right) >= r.trigger_cm:
             self._reset()
             return ActionCommand(layer_id=self.layer_id, active=False)
@@ -183,7 +183,7 @@ class EmergencyStopLayer(BaseLayer):
         return self._settle(_Phase.SPIN, now)
 
     def _stand_down_for_grab(self, sensors: Any) -> bool:
-        """A broken predicate must never disarm the e-stop -- fail safe."""
+        """Fail safe: a broken predicate never disarms the e-stop."""
         if self.grab_zone_check is None:
             return False
         try:

@@ -1,45 +1,5 @@
-"""
-web/server.py
-
-AutoBin robot server — runs ON THE PI (the hardware is there), exposing the
-control/telemetry API around RobotRuntime. The React dashboard is hosted
-separately on Windows (web/dashboard.py) and connects here directly.
-
-Run on the Pi (needs: pip install flask):
-
-    python web/server.py                     # full robot, port 8000
-    python web/server.py --no-camera         # bench without YOLO/webcam
-
-Then on Windows:   python web/dashboard.py --pi <pi-ip>:8000
-(or open http://<pi-ip>:8000 directly — the Pi still serves the UI too,
-both deployment modes work).
-
-LOW LATENCY: the dashboard does NOT poll. /api/events is a Server-Sent
-Events stream — status is pushed at ~5 Hz and log lines the moment they
-appear (SSE = plain HTTP, native in browsers, zero extra pip deps, and CORS
-below lets the Windows-hosted UI subscribe cross-origin). Control buttons
-are single POSTs (~1-3 ms RTT on LAN). The camera is a continuous MJPEG
-stream, unchanged.
-
-API summary (all JSON unless noted):
-    GET  /api/status                  state + power + performance snapshot
-    POST /api/system/start            full autonomy (AUTO)
-    POST /api/system/scan             manual scanning (zigzag only)
-    POST /api/system/estop            EMERGENCY STOP
-    POST /api/system/shutdown         stop the server and power off the Pi
-    POST /api/system/restart          re-exec the server (picks up edited source)
-    GET  /api/camera/stream           MJPEG stream (multipart)
-    POST /api/camera/off              release the camera hardware (battery save)
-    POST /api/camera/on               reopen the camera hardware
-    GET  /api/arm/pose                commanded arm pose
-    POST /api/arm/pose {name}         home | bin
-    POST /api/arm/gripper {action}    open | close
-    POST /api/arm/jog {channel,delta} nudge one channel (0-5), degrees
-    GET  /api/settings                quick-settings list
-    POST /api/settings {key,value}    live-patch one setting (session only)
-    GET  /api/logs?after=N            log entries with seq > N
-    POST /api/logs/clear
-"""
+"""web/server.py: robot control/telemetry API around RobotRuntime, runs on the Pi.
+Dashboard UI is hosted separately (web/dashboard.py); /api/events pushes status+logs via SSE instead of polling."""
 import argparse
 import json
 import os
@@ -64,9 +24,7 @@ buffer = LogBuffer(capacity=1000)
 runtime: RobotRuntime = None          # type: ignore # created in main()
 
 
-# ── Public-tunnel gate: requests arriving through Cloudflare Tunnel carry a
-#    CF-Connecting-IP header; those must present one of the Pi's own IPs as a
-#    key before any /api/ route works. Direct LAN requests are untouched. ──
+# Public-tunnel gate
 
 def _local_ips():
     try:
@@ -78,8 +36,6 @@ def _local_ips():
 
 LOCAL_IPS = _local_ips()
 ENV_KEY = os.environ.get("AUTOBIN_KEY", "")
-
-# Brute-force lockout: visitor IP -> (fail_count, locked_until_monotonic).
 _KEY_FAILS: dict = {}
 _KEY_FAILS_LOCK = threading.Lock()
 MAX_KEY_FAILS = 10
@@ -127,9 +83,7 @@ def gate_tunnel_requests():
     return jsonify({"ok": False, "error": "unauthorized"}), 403
 
 
-# ── CORS: the dashboard is served from Windows (different origin), so every
-#    response — including Flask's automatic OPTIONS preflights — must carry
-#    these headers. LAN-only tool, hence the permissive '*'. ───────────────
+# ── CORS: dashboard runs on a different origin; '*' is fine, LAN-only tool. ──
 
 @app.after_request
 def add_cors_headers(resp):
@@ -137,8 +91,6 @@ def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Pi-Key"
     if request.path == "/" or request.path.startswith("/static/"):
-        # A stale cached app.js/index.html silently hides new UI features
-        # behind a hard-refresh -- always serve the current file.
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -171,10 +123,6 @@ EVENT_POLL_S = 0.05                   # log latency ceiling: ~50 ms
 
 @app.get("/api/events")
 def api_events():
-    # A reconnect (page refresh, network hiccup, EventSource auto-retry)
-    # otherwise always started from 0 and replayed the ENTIRE buffered
-    # history again — the client passes back the highest seq it already
-    # has so a reconnect only streams what it actually missed.
     start_seq = request.args.get("after", 0, type=int)
 
     def gen():
@@ -197,7 +145,6 @@ def api_events():
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
                              "X-Accel-Buffering": "no"})
-
 
 # ── System control ────────────────────────────────────────────────────────
 
@@ -237,9 +184,7 @@ def api_shutdown():
 
 @app.post("/api/system/restart")
 def api_restart():
-    """Re-exec this process so edited source files (layer speeds, thresholds,
-    etc.) are picked up on next import — a plain reconnect can't do that,
-    the old module stays loaded in memory until the process itself restarts."""
+    """Re-exec the process so edited source is reloaded; reconnect alone keeps old modules."""
     def _later():
         time.sleep(0.5)                     # let the HTTP response flush
         runtime.close()

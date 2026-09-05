@@ -1,33 +1,5 @@
-"""
-web/runtime.py
-
-RobotRuntime — the robot's main loop as a controllable background thread,
-driven by the web dashboard (web/server.py).
-
-It owns exactly what tests/test_subsumption_live.py wires up by hand:
-
-    SensorHub(camera + ultrasonic) -> layers -> Arbitrator
-        -> MotionExecutor (wheels) + ArmExecutor (arm)
-
-but adds an operating-state machine on top:
-
-    STOPPED   sensors tick (camera preview, distance, vitals stay live),
-              wheels held stopped, layers not evaluated. Manual arm allowed.
-    AUTO      full stack: zigzag patrol -> approach -> collect.
-    SCAN      "manual scanning": zigzag patrol only (layers 0/1/5), the
-              camera layers are left out even if a camera is present.
-    ESTOP     wheels forced stopped every tick until the operator restarts.
-
-E-STOP nuance: estop() also cuts motor PWM immediately from the caller's
-thread — it does not wait for the loop tick, because a blocking grab can
-hold the loop for seconds. A grab in progress cannot be interrupted
-(stepped servo moves are open-loop); the wheels are already halted during
-grabs by design.
-
-Settings changed via the dashboard patch module/class attributes live
-(layers read them every tick). They are session-only — edit the source for
-permanent values.
-"""
+"""RobotRuntime: robot main loop as a background thread with a state machine
+(STOPPED/AUTO/SCAN/ESTOP), driven by web/server.py. estop() cuts PWM right away since a grab can hold the tick loop for seconds."""
 from __future__ import annotations
 
 import threading
@@ -65,8 +37,7 @@ class RobotRuntime:
         self._state_lock = threading.Lock()
         self._arm_lock = threading.Lock()
 
-        # ── Sensors (camera is best-effort: missing torch/model/webcam just
-        #    downgrades the dashboard, it must never kill the server) ──────
+        # Camera is best-effort: missing torch/model/webcam must not kill the server.
         camera = None
         if with_camera:
             try:
@@ -133,7 +104,7 @@ class RobotRuntime:
         self.log.info("runtime loop started (state STOPPED)")
 
     def close(self):
-        """Full teardown: stop loop thread, motors, GPIO, camera."""
+        """Stop loop thread, motors, GPIO, camera."""
         self._alive = False
         self._thread.join(timeout=2.0)
         try:
@@ -210,9 +181,7 @@ class RobotRuntime:
 
             if winning.message != self.win_message:
                 duty = getattr(self.motion.actuator, "last_duty", None)
-                # DEBUG: which layer is driving right now, per tick -- not a
-                # one-off event, so it belongs with the print() chatter, not
-                # the INFO/SUCCESS/WARNING/FAIL/ERROR event log.
+                # DEBUG: per-tick chatter, not a one-off event.
                 self.log.debug(f"[L{winning.layer_id}] {winning.message} "
                                f"(vec={winning.motion_vector} duty={duty})")
                 if winning.layer_id == 0:
@@ -222,21 +191,14 @@ class RobotRuntime:
             # STOPPED / ESTOP: enforce halted wheels every tick.
             self.motion.stop()
 
-        # Annotating + JPEG-encoding a frame costs real CPU on the Pi — only
-        # pay it while someone is actually watching the camera stream.
+        # Only encode a frame while someone is watching (costs real CPU).
         if (self.camera_available and self._stream_clients > 0
                 and tick_n % FRAME_ENCODE_EVERY == 0):
             self._encode_frame()
 
     def _run_arm(self, winning):
-        """Dispatch the arm, with YOLO paused for the duration of a grab.
-
-        A grab blocks this thread for seconds while stepped_move streams
-        setpoints at 50 Hz against the wall clock. The camera worker running
-        YOLO through that steals the GIL in long bursts, tick pacing slips,
-        and the arm jerks instead of descending smoothly. Inference is useless
-        during a grab anyway — the arm is in front of the lens.
-        """
+        """Dispatch the arm; pause YOLO during a grab so GIL contention
+        doesn't jerk the stepped servo moves."""
         if winning.arm_action != 'grab_arc':
             assert self.arm is not None
             self.arm.execute(winning)
@@ -344,12 +306,8 @@ class RobotRuntime:
     # ── Quick settings ────────────────────────────────────────────────────
 
     def settings_registry(self):
-        """Whitelisted live-tunable parameters:
-        (key, group, [(obj, attr), ...], lo, hi, step, label). `group` is the
-        owning layer, purely for the dashboard to section the list under --
-        it plays no role in applying the setting. Targets are the LIVE layer
-        objects -- the layers copy the module defaults in __init__, so
-        patching the module afterwards changed nothing."""
+        """Whitelisted live-tunable params: (key, group, [(obj, attr)...], lo, hi, step, label).
+        Targets are the live layer objects, not the module defaults."""
         scan, emerg = self.scan_layer, self.emergency_layer
         L1, L2, L4, SYS = "Layer 1 - Scan", "Layer 2 - Approach", "Layer 4 - Emergency", "System"
         return [
@@ -363,12 +321,7 @@ class RobotRuntime:
             # Read from the module every tick, so patching the global works.
             ("scan.turn_at_cm",    L1, [(scan_tuning, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
 
-            # Layer 2 (approach) now calls reactive_controller.compute_reactive_
-            # command() directly -- the same validated function
-            # tests/test_ibvs_centering.py uses -- so these are the constants
-            # that actually drive it, read fresh from the module each call.
-            # Layer 3's overshoot retreat also reads BACKUP_SPEED live, so
-            # approach.backup_speed tunes both from one slider.
+            # These constants drive Layer 2's reactive controller directly; approach.backup_speed also tunes Layer 3's retreat.
             ("approach.far_distance_cm", L2, [(reactive_mod, "FAR_DISTANCE_CM")],
              30.0, 200.0, 5.0, "Approach: far tier starts beyond (cm)"),
             ("approach.low_distance_cm", L2, [(reactive_mod, "LOW_DISTANCE_CM")],
@@ -432,8 +385,7 @@ class RobotRuntime:
             "temp_c": self._cpu_temp(),
         }
 
-    # Pi vitals via /proc and /sys — None on platforms without them (the UI
-    # shows a dash). No psutil dependency.
+    # Pi vitals via /proc and /sys; None where unavailable (UI shows a dash).
 
     def _cpu_percent(self):
         try:

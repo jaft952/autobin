@@ -13,31 +13,24 @@ class WheelCommand:
 
 
 def _ratio_from_angle(angle_deg: float) -> float:
-    """Convert arc angle (degrees) to inner wheel ratio.
-
-    angle_deg: 0 = straight (ratio 1.0), 90 = sharp turn (ratio ~0.33),
-               180 = reverse turn (ratio 0.0 or negative)
-    """
+    """Convert arc angle in degrees to inner wheel ratio."""
     if angle_deg == 0:
         return 1.0
     if angle_deg == 90:
-        return 0.33  # roughly 90-degree arc
+        return 0.33  # ~90-degree arc
     if angle_deg == 180:
         return 0.0   # spin in place
-    # Linear interpolation for intermediate values
+    # linear interpolation between the known points
     if 0 < angle_deg < 90:
         return 1.0 - (angle_deg / 90.0) * 0.67
     elif 90 < angle_deg < 180:
         return 0.33 - ((angle_deg - 90.0) / 90.0) * 0.33
     else:
-        return 1.0  # default for out-of-range
+        return 1.0  # out-of-range fallback
 
 
 class DifferentialKinematics:
-    """Developer-facing interface for movement logic.
-
-    This module is intentionally hardware-agnostic: it outputs wheel commands only.
-    """
+    """Hardware-agnostic movement interface; outputs wheel commands only."""
 
     def __init__(self, calibration: MotionCalibration | None = None) -> None:
         self.cal = calibration or MotionCalibration()
@@ -59,31 +52,25 @@ class DifferentialKinematics:
         return WheelCommand(s, -s, True, "turn")
 
     def arc_forward_left(self, angle_deg: float | None = None, speed: float | None = None) -> WheelCommand:
-        """Forward-left arc. angle_deg: 0=straight, 90=sharp left turn, 180=spin left.
-        speed: overrides the calibrated arc_speed baseline for this call, e.g. a
-        dynamically computed speed from a proportional visual-servoing controller."""
+        """Forward-left arc; angle_deg 0=straight, 90=sharp turn, 180=spin. speed overrides baseline."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
         return WheelCommand(base * ratio, base, True, "forward")
 
     def arc_forward_right(self, angle_deg: float | None = None, speed: float | None = None) -> WheelCommand:
-        """Forward-right arc. angle_deg: 0=straight, 90=sharp right turn, 180=spin right.
-        speed: overrides the calibrated arc_speed baseline for this call, e.g. a
-        dynamically computed speed from a proportional visual-servoing controller."""
+        """Forward-right arc; angle_deg 0=straight, 90=sharp turn, 180=spin. speed overrides baseline."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
         return WheelCommand(base, base * ratio, True, "forward")
 
     def arc_backward_left(self, angle_deg: float | None = None, speed: float | None = None) -> WheelCommand:
-        """Backward-left arc. angle_deg: 0=straight, 90=sharp left turn, 180=spin left.
-        speed: overrides the calibrated arc_speed baseline for this call."""
+        """Backward-left arc; angle_deg 0=straight, 90=sharp turn, 180=spin. speed overrides baseline."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
         return WheelCommand(-base * ratio, -base, True, "backward")
 
     def arc_backward_right(self, angle_deg: float | None = None, speed: float | None = None) -> WheelCommand:
-        """Backward-right arc. angle_deg: 0=straight, 90=sharp right turn, 180=spin right.
-        speed: overrides the calibrated arc_speed baseline for this call."""
+        """Backward-right arc; angle_deg 0=straight, 90=sharp turn, 180=spin. speed overrides baseline."""
         ratio = _ratio_from_angle(angle_deg) if angle_deg is not None else self.cal.arc_inner_wheel_ratio
         base = speed if speed is not None else self.cal.arc_speed
         return WheelCommand(-base, -base * ratio, True, "backward")

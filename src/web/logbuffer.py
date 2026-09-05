@@ -1,21 +1,5 @@
-"""
-web/logbuffer.py
-
-Log system backing the dashboard: one in-memory ring buffer that everything
-funnels into, so the web UI can poll increments with a cursor.
-
-Three inflows:
-    1. Python logging      — BufferLogHandler attached to the root logger
-    2. print() output      — TeeStream wraps sys.stdout/stderr; the existing
-                             modules narrate via print ([GraspPlanner] ...,
-                             [Actuator] ...), and those lines ARE the useful
-                             robot log, so they're captured too
-    3. direct .append()    — the runtime/server log their own events
-
-Every entry gets a monotonically increasing `seq`, so the frontend asks
-"give me everything after seq N" and never misses or duplicates lines.
-A plain FileHandler keeps a persistent copy on disk.
-"""
+"""web/logbuffer.py: ring buffer feeding the dashboard log panel, fed by
+Python logging, print() (via TeeStream), and direct .append() calls. Each entry gets a seq number so the frontend can poll by cursor."""
 from __future__ import annotations
 
 import logging
@@ -74,8 +58,7 @@ class BufferLogHandler(logging.Handler):
 
 
 class TeeStream:
-    """Wraps a real stream: passes writes through AND collects whole lines
-    into the LogBuffer. Replaces sys.stdout/sys.stderr."""
+    """Passes writes through and collects whole lines into the LogBuffer."""
 
     def __init__(self, real, buffer: LogBuffer, level: str, source: str):
         self._real = real
@@ -101,13 +84,9 @@ class TeeStream:
 
 def setup_logging(buffer: LogBuffer, log_file: str = "logs/autobin.log",
                   capture_prints: bool = True) -> logging.Logger:
-    """Wire everything: root logger -> buffer + file, print() -> buffer.
-    Returns a logger for the web package's own messages."""
+    """Wire root logger -> buffer + file, print() -> buffer. Returns the web logger."""
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)   # DEBUG carries the per-tick "which layer
-    # is running" chatter (runtime.py logs it via self.log.debug); INFO
-    # stays for one-off milestone/record events (startup, mode switches,
-    # manual actions, settings changes).
+    root.setLevel(logging.DEBUG)   # DEBUG carries per-tick chatter; INFO is for milestones.
 
     buf_handler = BufferLogHandler(buffer)
     buf_handler.setFormatter(logging.Formatter("%(message)s"))
@@ -126,18 +105,14 @@ def setup_logging(buffer: LogBuffer, log_file: str = "logs/autobin.log",
     root.addHandler(console)
 
     if capture_prints:
-        # DEBUG: routine print() narration ("[arm] resuming...", model/
-        # camera startup lines) — same bucket as the per-tick layer chatter,
-        # tuckable away from the INFO/SUCCESS/WARNING/FAIL/ERROR event log.
+        # DEBUG: routine print() narration, same bucket as per-tick chatter.
         sys.stdout = TeeStream(sys.stdout, buffer, "DEBUG", "print")
         sys.stderr = TeeStream(sys.stderr, buffer, "ERROR", "stderr")
 
-    # ultralytics/opencv logging at DEBUG would otherwise flood the buffer
-    # now that root is DEBUG-level.
+    # ultralytics/opencv at DEBUG would flood the buffer now root is DEBUG.
     logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
-    # The dashboard polls every second — werkzeug's per-request access lines
-    # would flood the very log panel that's polling.
+    # werkzeug's per-request lines would flood the log panel that's polling.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     return logging.getLogger("web")

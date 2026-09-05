@@ -16,7 +16,7 @@ def fmt(value) -> str:
 
 
 def side_room_cm(sensors: Any, getter: str) -> float:
-    """Free space on one side, capped at PIVOT_ROOM_CM. None (no echo) means open."""
+    """Free space on one side, capped at PIVOT_ROOM_CM. None means open."""
     fn = getattr(sensors, getter, None)
     value = fn() if fn is not None else None
     return tuning.PIVOT_ROOM_CM if value is None else min(value, tuning.PIVOT_ROOM_CM)
@@ -44,9 +44,7 @@ def lane_bias(left, right, turn_speed: float) -> float:
 
 
 def pivot_side(sensors: Any, turn_left: bool):
-    """Lane-change pivot direction: keep alternating unless the intended
-    side is clearly too tight and the other side is clearly roomier.
-    Returns (new_turn_left, debug_note)."""
+    """Pick pivot side. Keep alternating unless that side is tight. Returns (turn_left, note)."""
     left = side_room_cm(sensors, "get_obstacle_distance_front_left_cm")
     right = side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
     note = f"L{left:.0f} R{right:.0f}"

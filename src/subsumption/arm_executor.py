@@ -1,34 +1,4 @@
-"""
-src/subsumption/arm_executor.py
-
-ArmExecutor — turns the Arbitrator's winning ActionCommand.arm_action into
-real arm motion, the arm-side twin of MotionExecutor.
-
-Layers only emit semantic strings + payload (Rule 1/2); after arbitration the
-main loop hands the winning command here:
-
-    arm_action            arm_params                what happens
-    ----------            ----------                ------------
-    'stow'/'retract'/     -                         ensure the arm is at the
-    'deploy'/'hold'                                 home/travel pose (no-op if
-                                                    already there)
-    'grab_arc'            {'pose': [CH1..CH5],      planner.collect() at the
-                           'tin_pose': 'upright'|   solved pose (grab + dump
-                           'lying'|'axial'}         into the bin), then home
-    'stop' / None         -                         nothing (arm moves are
-                                                    blocking; can't interrupt)
-
-BLOCKING: a grab is a multi-second servo sequence and runs inline, so the
-subsumption tick pauses during it. That is acceptable because every grab
-command also carries motion_vector (0,0,0) — the base is already halted —
-and sensor readings would be of a scene the arm is occluding anyway.
-
-A cooldown after each grab keeps a still-visible tin (mid-lift, or a failed
-grab) from re-triggering the sequence on the very next tick.
-
-GraspPlanner is imported lazily so wheels-only setups never touch the arm
-stack at all. Pass a fake planner for logic tests.
-"""
+"""ArmExecutor: runs the winning arm_action (stow/deploy/hold/grab_arc) as real arm motion. Grabs block the tick and have a cooldown so a still-visible tin doesn't re-trigger."""
 from __future__ import annotations
 
 import logging
@@ -41,7 +11,7 @@ from src.subsumption.arbitrator import ActionCommand
 
 log = logging.getLogger("arm_executor")
 
-GRAB_COOLDOWN_S = 3.0   # matches tests/test_ibvs_centering.py's _GRAB_COOLDOWN_S
+GRAB_COOLDOWN_S = 3.0   # match tests/test_ibvs_centering.py
 
 
 class ArmExecutor:
@@ -50,7 +20,7 @@ class ArmExecutor:
     def __init__(self, planner: Optional[ArmPlannerInterface] = None,
                  sensors=None, grab_zone_check=None, resume_camera=None) -> None:
         if planner is None:
-            # Deferred so wheels-only setups never touch the arm import chain.
+            # Lazy import: wheels-only setups skip the arm stack.
             from src.arm.grasp_planner import GraspPlanner
             planner = GraspPlanner()
         self.planner: ArmPlannerInterface = planner
@@ -58,10 +28,7 @@ class ArmExecutor:
         self._grab_zone_check = grab_zone_check
         self._resume_camera = resume_camera
         self._at_home = False
-        self._force_next_home = True  # first home since boot must be FORCED:
-        #   the arm's true pose is unknown (no feedback) and nothing may move
-        #   at server boot — the user starts the system from the dashboard,
-        #   and only THEN (first arm command after START) do we assert home.
+        self._force_next_home = True  # boot pose unknown, force home on first command
         self._cooldown_until = 0.0
 
     # ── Dispatch ──────────────────────────────────────────────────────────
@@ -71,8 +38,7 @@ class ArmExecutor:
         if action in (None, 'stop'):
             return
         if action in ('stow', 'retract', 'deploy', 'hold'):
-            # 'deploy' also maps to home: home IS the travel/ready pose on
-            # this arm; there is no separate deployed idle posture.
+            # 'deploy' maps to home too: home is this arm's only travel pose.
             self._ensure_home()
             return
         if action == 'grab_arc':
@@ -87,15 +53,13 @@ class ArmExecutor:
 
     def _ensure_home(self) -> None:
         if self._force_next_home:
-            # First home since boot: nothing can be held yet, so open the
-            # gripper into a known state. home() asserts every channel.
+            # First home since boot: open gripper into a known state.
             self._home()
             self._force_next_home = False
             self._at_home = True
             return
         if not self._at_home:
-            # release=False: a stow/retract/deploy must never drop whatever
-            # the gripper may still be holding mid-carry.
+            # release=False: never drop whatever the gripper may be carrying.
             self._home(release=False)
             self._at_home = True
 
@@ -110,8 +74,7 @@ class ArmExecutor:
         if now < self._cooldown_until:
             return
         if self._force_next_home:
-            # Never start a grab from an unknown boot pose — assert home
-            # first (covers "tin already grabbable on the very first tick").
+            # Never grab from an unknown boot pose; home first.
             self._ensure_home()
         self._at_home = False
         try:
@@ -119,14 +82,7 @@ class ArmExecutor:
             self._home()
             self._at_home = True
             if self._resume_camera is not None:
-                # Resume BEFORE checking the grab zone, not after execute()
-                # returns (the caller's own resume runs later still): the
-                # camera was paused for the whole grab, so its last result is
-                # already older than STALE_AFTER_S by now, and checking
-                # against a stale/no-detection result always reads as
-                # "gone" — a false success regardless of what really
-                # happened. Block on actual NEW inference results (not a
-                # guessed sleep) before asking it.
+                # Resume camera and wait for a fresh frame before checking the grab zone.
                 self._resume_camera()
                 if self._sensors is not None:
                     self._sensors.wait_for_fresh_frames(n=2, timeout=2.0)
@@ -142,6 +98,5 @@ class ArmExecutor:
             else:
                 log.success("grab sequence completed (unconfirmed)")
         finally:
-            # Cooldown even on failure so an unreachable/missed tin doesn't
-            # re-trigger the whole sequence every tick.
+            # Cooldown even on failure to avoid re-triggering every tick.
             self._cooldown_until = time.monotonic() + GRAB_COOLDOWN_S

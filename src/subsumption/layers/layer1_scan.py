@@ -14,7 +14,7 @@ from src.scanning.phases import Phase, HANDLERS
 
 
 def _target_locked(sensors: Any) -> bool:
-    """Survives the occlusion grace window, unlike a bare get_litter_position() truthiness check."""
+    """True if a target is locked, surviving brief occlusion."""
     getter = getattr(sensors, "get_litter_locked", None)
     if getter is not None:
         return bool(getter())
@@ -22,8 +22,7 @@ def _target_locked(sensors: Any) -> bool:
 
 
 class ScanAroundLayer(BaseLayer):
-    """Priority 1 (very low). Zigzag patrol searching for targets; active
-    only while no target is detected."""
+    """Priority 1: zigzag patrol, active while no target is detected."""
 
     def __init__(self, forward_speed: float = tuning.FORWARD_SPEED,
                  turn_speed: float = tuning.TURN_SPEED,
@@ -33,17 +32,16 @@ class ScanAroundLayer(BaseLayer):
         super().__init__(layer_id=1)
         self.set_speeds(forward_speed, turn_speed)
         self.set_timing(turn_90_s, shift_s, max_lane_s)
-        self._phase: Optional[Phase] = None    # None = pattern not started
+        self._phase: Optional[Phase] = None    # None = not started
         self._phase_started: float = 0.0
         self._lane_started: float = 0.0
         self._lane_limit_s: float = self.max_lane_s
         self._turn_s: float = self.turn_90_s
-        self._turn_left: bool = True           # pivot side; alternates per wall
-        self._next_phase: Phase = Phase.DRIVE  # what the settle is settling for
+        self._turn_left: bool = True           # alternates per wall
+        self._next_phase: Phase = Phase.DRIVE  # phase after settle
         self._pivot_note: str = "L-- R--"
         self._suppressed_since: Optional[float] = None
-        # SCAN-only mode has no Layer 2, so yielding would park the robot
-        # on Layer 0 IDLE for as long as the camera could see a can.
+        # yielding needs Layer 2, else robot idles whenever camera sees a can
         self.yield_to_targets: bool = True
 
     # ── Calibration knobs (dashboard-tunable) ───────────────────────────────
@@ -87,8 +85,6 @@ class ScanAroundLayer(BaseLayer):
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         now = time.monotonic()
-        # Timers are open-loop; time spent suppressed by a higher layer
-        # must not count against them.
         if self._suppressed_since is not None:
             paused = now - self._suppressed_since
             self._phase_started += paused
@@ -120,7 +116,7 @@ class ScanAroundLayer(BaseLayer):
         )
 
     def _motion_for_phase(self, left=None, right=None):
-        """(v_x, v_y, v_theta) for the current phase. v_theta > 0 = CCW/left."""
+        """Motion vector for the current phase; v_theta > 0 = left."""
         turn = self.turn_speed if self._turn_left else -self.turn_speed
         if self._phase == Phase.SETTLE:
             return (0, 0, 0), f"settling before {self._next_phase.name.lower()}"
@@ -140,7 +136,7 @@ class ScanAroundLayer(BaseLayer):
         return (0, 0, 0), "idle"
 
     def _settle(self, nxt: Phase, now: float) -> None:
-        """Halt briefly before the wheels flip direction, then run `nxt`."""
+        """Halt briefly, then run `nxt`."""
         self._next_phase = nxt
         self._phase = Phase.SETTLE
         self._phase_started = now
@@ -151,7 +147,7 @@ class ScanAroundLayer(BaseLayer):
         if phase == Phase.TURN1:
             self._turn_s = geometry.jitter(self.turn_90_s)
         elif phase == Phase.TURN2:
-            # Bounce: 90..180 deg, never less than 90 so the change completes.
+            # bounce 90..180 deg, never less than 90
             self._turn_s = self.turn_90_s * (1.0 + random.uniform(0.0, tuning.BOUNCE_EXTRA))
 
     def _start_lane(self, now: float) -> None:

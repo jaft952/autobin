@@ -1,7 +1,4 @@
-"""
-Aluminium Can Detector — YOLO11n-seg with Logitech Brio 4K.
-Lazy imports keep pure-Python data classes importable without torch/cv2.
-"""
+"""Aluminium can detector using YOLO11n-seg with Logitech Brio 4K."""
 
 from __future__ import annotations
 import math
@@ -15,9 +12,7 @@ from ultralytics import YOLO
 
 from src.perception.orientation import Orientation, estimate_orientation
 
-# THE production model — single source of truth. CameraSensor (runtime),
-# the calibration tools and the NCNN export all read this constant, so
-# switching to a newly trained checkpoint is a ONE-LINE change here.
+# Single source of truth for the model path; used by CameraSensor, calibration, and NCNN export.
 RUNTIME_MODEL_PATH = "src/models/yolov11n-seg.pt"
 
 
@@ -91,10 +86,7 @@ class DetectionResult:
         )
 
     def normalized_base_center(self) -> Optional[tuple]:
-        """Ground-contact point (bbox bottom-center), normalized. This is
-        what the arc-grasp calibration and pixel_to_arm homography are
-        anchored to — the tin touches the floor here, not at the bbox
-        center."""
+        """Ground-contact point (bbox bottom-center), normalized. Used by arc-grasp and pixel_to_arm."""
         if not self.best or self.frame_width == 0:
             return None
         u, v = self.best.base_center
@@ -216,15 +208,7 @@ class AluminiumCanDetector:
 
     def infer(self, frame, imgsz: Optional[int] = None,
               fast: bool = False) -> DetectionResult:
-        """Run YOLO11n-seg and return DetectionResult with segmentation masks.
-
-        imgsz: per-call inference size override (e.g. 320 for a faster, less
-            accurate pass). NCNN exports may reject a size other than the one
-            they were exported at — on failure this falls back to the default
-            size permanently (logged once).
-        fast: skip per-detection orientation estimation (upright/lying) —
-            saves time when the caller only tracks position (cruise approach).
-        """
+        """Run YOLO11n-seg and return DetectionResult. fast=True skips orientation estimation."""
         result = DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
         size = imgsz or self._imgsz
         if imgsz and getattr(self, "_imgsz_override_broken", False):
@@ -239,9 +223,8 @@ class AluminiumCanDetector:
             )
         except Exception as exc:
             if size == self._imgsz:
-                raise           # the normal size failed — a real error
-            # The override size was rejected (NCNN exports are fixed-shape):
-            # remember and permanently fall back to the export size.
+                raise           # default size failed — real error
+            # override size rejected by NCNN; fall back to export size for good
             self._imgsz_override_broken = True
             print(f"[detector] imgsz={size} rejected by this model backend "
                   f"({exc}); staying at {self._imgsz}.")
@@ -262,17 +245,14 @@ class AluminiumCanDetector:
         return result
 
     def detect(self, fast: bool = False) -> DetectionResult:
-        """Capture and infer in one call. fast=True skips orientation
-        estimation (see infer) — only safe while the caller just needs
-        position, since every detection then reads as 'upright'."""
+        """Capture and infer in one call. fast=True skips orientation estimation."""
         frame = self.read_frame()
         if frame is None:
             return DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
         return self.infer(frame, fast=fast)
 
     def get_annotated_frame(self, result: DetectionResult, target=None):
-        """Render detections with segmentation masks, bbox, base_center, and
-        orientation. target (the locked tin, if any) is boxed in cyan."""
+        """Render detections with masks, bbox, base_center, orientation. Target box is cyan."""
         import cv2
         import numpy as np
         if self._last_frame is None:
@@ -350,12 +330,10 @@ class AluminiumCanDetector:
         if not self._model_path.exists():
             raise FileNotFoundError(f"Model not found: {self._model_path}")
         path = self._pick_model_path()
-        # task="segment": the NCNN export has no embedded task metadata and
-        # defaults to "detect", which misparses this model's seg output.
+        # task="segment" avoids NCNN misparsing seg output as "detect"
         self._model = YOLO(str(path), task="segment")
         print(f"✓ Model loaded: {path}")
-        # Warmup: the first predict pays one-off graph/init cost (hundreds of
-        # ms); do it here on a dummy frame so the first real tick is fast.
+        # warm up so the first real tick is fast
         self._model.predict(
             source=np.zeros((self._imgsz, self._imgsz, 3), dtype=np.uint8),
             device=self._resolve_device(), imgsz=self._imgsz, verbose=False,

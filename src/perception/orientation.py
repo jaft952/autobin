@@ -1,8 +1,4 @@
-"""
-Orientation estimation for detected cans.
-Prefers YOLO11n-seg mask_poly for robustness; falls back to classical CV segmentation.
-Lazy imports keep Orientation dataclass importable without cv2/numpy.
-"""
+"""Estimates can orientation from mask_poly, falling back to classical CV segmentation."""
 from __future__ import annotations
 from dataclasses import dataclass
 
@@ -10,8 +6,8 @@ from dataclasses import dataclass
 @dataclass
 class Orientation:
     angle: float    # deg, 0..180; ~90 = vertical
-    aspect: float   # long/short side ratio (>= 1.0)
-    klass: str      # "upright" | "lying" | "axial"
+    aspect: float   # long/short ratio
+    klass: str      # upright | lying | axial
 
 
 def _segment_bbox_crop(frame_bgr, box):

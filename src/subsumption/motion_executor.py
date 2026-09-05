@@ -1,34 +1,4 @@
-"""
-src/subsumption/motion_executor.py
-
-MotionExecutor — turns the Arbitrator's winning ActionCommand into wheel
-motion on the differential base.
-
-Layers emit abstract motion_vector tuples and are PROHIBITED from touching
-actuators (Rule 1); hardware access must go through src/hardware/actuators
-(Rule 2). This module is the one place where, AFTER arbitration, the winning
-vector becomes a WheelCommand for the PWMActuator:
-
-    ActionCommand.motion_vector --mix--> WheelCommand --PWMActuator--> motors
-
-motion_vector convention (v_x, v_y, v_theta):
-    v_x      forward fraction  -1..1  (negative = reverse)
-    v_y      ignored — the base is non-holonomic, it cannot strafe
-    v_theta  turn fraction     -1..1, POSITIVE = CCW (left), matching
-             DifferentialKinematics.turn_left() = (-speed, +speed)
-
-Standard differential mix, renormalized so a hard turn while driving never
-clips one wheel at 100% and silently straightens the arc:
-
-    left  = v_x - v_theta
-    right = v_x + v_theta
-
-HALT vs BRAKE: a zero motion_vector normally COASTS the wheels (power cut,
-free to spin). But when the halt accompanies a GRAB, the arm's motion shakes
-the chassis and coasting lets the robot drift off its aligned spot. So for a
-grab command the wheels are actively BRAKED (windings shorted) — they resist
-being pushed and hold position through the whole grab sequence.
-"""
+"""MotionExecutor: turns the winning ActionCommand's motion_vector into wheel motion (mix, renormalize, brake vs coast on zero)."""
 from __future__ import annotations
 
 from typing import Optional
@@ -38,11 +8,7 @@ from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 from src.subsumption.arbitrator import ActionCommand
 
-# arm_actions during which a ZERO vector must HOLD position, not coast.
-# 'hold' is Layer 3 settling before it fires the grab; 'deploy' with a zero
-# vector is Layer 2 parked on REACHED. Both mean "stay on this spot", and
-# alternating brake with coast between them jerks the chassis. A nonzero
-# vector never reaches this set, so Layer 2 driving on 'deploy' is unaffected.
+# arm_actions where a zero vector must brake (hold), not coast.
 _GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold", "deploy"})
 
 
@@ -62,11 +28,7 @@ class MotionExecutor:
         self.actuator: ActuatorInterface = actuator
 
     def execute(self, command: ActionCommand) -> None:
-        """Apply the winning command's motion_vector to the base.
-
-        Inactive commands and missing/zero vectors stop the wheels, so an
-        idle arbitration result always leaves the robot halted.
-        """
+        """Apply motion_vector to the base; inactive/missing/zero vectors stop the wheels."""
         if not command.active or command.motion_vector is None:
             self.stop()
             return
@@ -83,13 +45,12 @@ class MotionExecutor:
         left = v_x - v_theta
         right = v_x + v_theta
 
-        # Renormalize instead of clamping so the left/right RATIO (the curve)
-        # survives even when v_x + |v_theta| > 1.
+        # Renormalize (not clamp) so the left/right ratio survives overrange.
         peak = max(1.0, abs(left), abs(right))
         left /= peak
         right /= peak
 
-        # Pick the trim set the calibration was measured for.
+        # Pick the calibration trim set for this direction.
         if v_x == 0:
             trim_set = "turn"
         elif v_x < 0:
@@ -110,9 +71,7 @@ class MotionExecutor:
         self.actuator.stop()
 
     def brake(self) -> None:
-        """Actively hold position — resist being pushed. Used while the arm
-        grabs so the shaking chassis doesn't drift. brake() is optional on
-        ActuatorInterface; falls back to stop() when an actuator omits it."""
+        """Actively hold position during a grab; falls back to stop() if unsupported."""
         brake_fn = getattr(self.actuator, "brake", None)
         if callable(brake_fn):
             brake_fn()

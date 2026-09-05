@@ -1,9 +1,4 @@
-"""Actuator contracts (mirrors src/hardware/sensors/interfaces.py).
-
-Real drivers, print stubs and test fakes all implement these structurally
-(typing.Protocol — no inheritance required), so callers can substitute any
-of them without checking type.
-"""
+"""Actuator contracts (mirrors src/hardware/sensors/interfaces.py); structural typing via Protocol, no inheritance needed."""
 from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
@@ -18,8 +13,7 @@ class ActuatorInterface(Protocol):
     def close(self) -> None: ...
 
     def brake(self) -> None:
-        """Optional: actively hold position. Callers must degrade to
-        stop() when an implementation omits this (see MotionExecutor.brake)."""
+        """Optional: hold position. Callers fall back to stop() if unimplemented."""
         ...
 
 

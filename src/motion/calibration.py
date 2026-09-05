@@ -3,13 +3,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class MotorPins:
-    # ZK-BM1 dual H-bridge: 4 input pins only, no ENA/ENB enable pins.
-    # Speed is set by PWM-ing the direction inputs directly (see PWMActuator).
-    #   Left  motor (OUT1/OUT2): in1 / in2
-    #   Right motor (OUT3/OUT4): in3 / in4
-    # AS WIRED 2026-07-13 (user). Bonus: BCM 12/13/18/19 are exactly the
-    # Pi's four hardware-PWM-capable pins — a later switch to jitter-free
-    # hardware PWM (pigpio etc.) would need no rewiring.
+    # ZK-BM1 dual H-bridge: 4 input pins, PWM'd directly, no ENA/ENB.
     in1: int = 12   # physical pin 32 -> ZK-BM1 IN1
     in2: int = 13   # physical pin 33 -> ZK-BM1 IN2
     in3: int = 18   # physical pin 12 -> ZK-BM1 IN3
@@ -32,18 +26,11 @@ class MotionCalibration:
     motor_b_turn_trim: float = 1.0
 
 
-    # Direction flags — derived from the tests/test_wheels.py session on
-    # 2026-07-13 with the ZK-BM1 wiring (IN1/2=left, IN3/4=right):
-    #   observed IN1=left-forward (left motor polarity already correct) and
-    #   IN4=right-forward (right motor mirrored, as differential drives are).
-    # The old True/True/True values were for the L298N-era wiring — obsolete.
+    # Direction flags calibrated for the ZK-BM1 wiring.
     invert_left: bool = False
     invert_right: bool = True
 
-    # tests/test_turn_direction.py --manual: commanding a LEFT pivot turned
-    # the chassis right (and vice versa) while forward drive stayed correct --
-    # the signature of the two motors being in each other's channels, since a
-    # swap is invisible when both wheels run the same way.
+    # Left/right channels are swapped in wiring; pivot direction was reversed without this.
     swap_left_right: bool = True
 
     arc_inner_wheel_ratio: float = 0.3

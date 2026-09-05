@@ -13,12 +13,9 @@ class ActionCommand:
                                            # {'pose': [CH1..CH5]} for 'grab_arc'
 
 class Arbitrator:
-    """
-    Subsumption Architecture Arbitrator.
-    Higher priority layers (higher layer_id) suppress lower priority layers.
-    """
+    """Subsumption arbitrator: higher layer_id suppresses lower."""
     def __init__(self):
-        # Dictionary to store the latest command from each layer
+        # Latest command per layer.
         self._current_votes: Dict[int, ActionCommand] = {}
 
     def submit_command(self, command: ActionCommand):
@@ -26,19 +23,16 @@ class Arbitrator:
         self._current_votes[command.layer_id] = command
 
     def get_winning_action(self) -> ActionCommand:
-        """
-        Evaluate all current layer votes and return the winning command.
-        The highest layer_id that is active wins.
-        """
+        """Return the highest-priority active layer's command."""
         winning_cmd = ActionCommand(layer_id=-1, active=False, message="Idle")
-        
-        # Sort layers by priority (highest first)
+
+        # Highest priority first.
         for layer_id in sorted(self._current_votes.keys(), reverse=True):
             cmd = self._current_votes[layer_id]
             if cmd.active:
                 winning_cmd = cmd
-                break  # Winner found, suppress all lower layers
-                
+                break
+
         return winning_cmd
 
     def clear(self):

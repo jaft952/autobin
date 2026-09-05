@@ -2,11 +2,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-# Own config file — no key-sharing with other subsystems anymore. The legacy
-# location (inside centering_config.yaml under `arc_grasp:`) is only read once
-# for migration. Spelled out as a literal path instead of importing it from
-# ibvs_centering: that import drags in the whole perception chain (YOLO/torch)
-# just for a frozen filename, and this module must stay importable anywhere.
+# Own config file now; legacy path is only read once for migration.
 LEGACY_CONFIG_PATH = (Path(__file__).resolve().parents[1]
                       / "visual_servoing" / "config" / "centering_config.yaml")
 
@@ -21,18 +17,14 @@ NY_TOL_DEFAULT = 0.02
 
 POSES = ("upright", "lying")
 
-# Why solve() returned None. "not grabbable" alone can't tell a caller
-# whether to keep closing in or back off -- BAND_TOO_CLOSE means the tin has
-# gone PAST the nearest calibrated arc, where driving further only makes it
-# worse.
+# Why solve() returned None: too far, too close, off to the side, or no grid.
 BAND_IN = "in_band"
-BAND_TOO_FAR = "too_far"              # above the farthest arc: keep approaching
-BAND_TOO_CLOSE = "too_close"          # below the nearest arc: overshot, back off
-BAND_NX_OUTSIDE = "nx_outside"        # ny is fine, but nx is off the sampled span
+BAND_TOO_FAR = "too_far"              # keep approaching
+BAND_TOO_CLOSE = "too_close"          # overshot, back off
+BAND_NX_OUTSIDE = "nx_outside"        # nx off the sampled span
 BAND_NOT_CALIBRATED = "not_calibrated"
 
-# User-measured CH5 anchors (2026-07-08): image-axis angle -> wrist roll.
-# 90 deg (tin pointing at robot) -> 90; 0/180 (lying across) -> 180.
+# Measured CH5 anchors: image-axis angle -> wrist roll.
 DEFAULT_CH5_ANCHORS = [[0.0, 180.0], [90.0, 90.0], [180.0, 180.0]]
 
 DEFAULT_CONFIG = {
@@ -60,16 +52,13 @@ def _normalize_v3(cfg: dict) -> dict:
 
 
 def _wrap_v2(v2_cfg: dict) -> dict:
-    """v2 (flat `rows:`) -> v3: the old grid was calibrated on STANDING tins."""
+    """v2 flat rows -> v3 upright grid."""
     return _normalize_v3({"version": 3, "upright": {"rows": v2_cfg.get("rows", [])}})
 
 
 def load_config(path: Path = CONFIG_PATH,
                 legacy_path: Path = LEGACY_CONFIG_PATH) -> dict:
-    """Return the v3 config. Migration chain: own v3 file -> own v2 file
-    (rows moved under `upright:`, saved back) -> v2 section at the legacy
-    location (copied) -> fresh default. Pre-v2 layouts are never migrated —
-    recalibrate; they stay untouched in the legacy yaml as their own backup."""
+    """Load v3 config, migrating from v2 or the legacy file if needed."""
     cfg = _read_full_yaml(path)
     if cfg and ("upright" in cfg or "lying" in cfg):
         return _normalize_v3(cfg)
@@ -90,7 +79,7 @@ def load_config(path: Path = CONFIG_PATH,
 
 
 def save_config(cfg: dict, path: Path = CONFIG_PATH):
-    """The file is wholly owned by arc_grasp now — plain overwrite."""
+    """Overwrite the config file."""
     import yaml
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(yaml.safe_dump(cfg, default_flow_style=None, sort_keys=False))
@@ -101,17 +90,7 @@ def _lerp_arm(a, b, t: float):
 
 
 def row_ny_at(row, nx: float) -> float:
-    """The row's arc HEIGHT (image ny) at azimuth nx.
-
-    A constant-radius sweep of CH1 is an ARC on the floor, and its camera
-    projection is NOT a horizontal line: the same radius sits LOWER in the
-    image at the edges than at the center (side points are closer along the
-    camera's depth axis). So each row is a piecewise-linear CURVE through
-    its samples' own (nx, ny) points.
-
-    Samples without their own 'ny' (legacy calibrations, where the tool only
-    stored nx) inherit the row's ny — those rows stay flat, exactly the old
-    behaviour. nx outside the sampled span clamps to the end samples."""
+    """Row's arc height (image ny) at azimuth nx; piecewise-linear curve, clamped at ends."""
     default = float(row["ny"])
     pts = sorted((float(s["nx"]), float(s.get("ny", default)))
                  for s in row["samples"])
@@ -125,11 +104,7 @@ def row_ny_at(row, nx: float) -> float:
 
 
 def ch5_from_angle(angle_deg: float, anchors=None) -> float:
-    """Wrist roll (CH5) for a LYING tin from its image long-axis angle.
-
-    angle_deg is taken mod 180 (an axis has no direction). Piecewise-linear
-    interpolation through the (angle -> ch5) anchor table, clamped to the
-    servo's 0..180 range."""
+    """Wrist roll (CH5) for a lying tin from its image angle, mod 180, clamped 0..180."""
     pts = sorted((float(a), float(c)) for a, c in (anchors or DEFAULT_CH5_ANCHORS))
     a = float(angle_deg) % 180.0
     if a <= pts[0][0]:
@@ -142,8 +117,7 @@ def ch5_from_angle(angle_deg: float, anchors=None) -> float:
 
 
 def pose_and_angle(box):
-    """(pose, angle_deg_or_None) for solve(), from a detection's
-    segmentation-based orientation. No usable mask -> assume upright."""
+    """(pose, angle_deg_or_None) for solve(); no usable mask -> assume upright."""
     o = getattr(box, "orientation", None)
     if o is None or o.klass == "upright":
         return "upright", None
@@ -153,8 +127,7 @@ def pose_and_angle(box):
 
 
 class ArcGraspSolver:
-    """solve(nx, ny, pose, angle_deg) -> [CH1..CH5] servo commands, or None
-    (not grabbable there / that pose's grid not calibrated)."""
+    """solve(nx, ny, pose, angle_deg) -> [CH1..CH5] servo commands, or None."""
 
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = Path(path)
@@ -172,7 +145,7 @@ class ArcGraspSolver:
                 )
                 if r.get("ny") is not None and samples:
                     rows.append({**r, "samples": samples})
-            # sorted by ny: image top (far) first, image bottom (near) last
+            # sorted far to near
             self._domains[pose] = sorted(rows, key=lambda r: float(r["ny"]))
         self._anchors = self.cfg.get("lying", {}).get("ch5_anchors") or DEFAULT_CH5_ANCHORS
 
@@ -180,7 +153,7 @@ class ArcGraspSolver:
 
     @property
     def rows(self):
-        """Backward compat: the UPRIGHT grid (v2 callers)."""
+        """Upright grid, for v2 callers."""
         return self._domains["upright"]
 
     def rows_for(self, pose: str):
@@ -188,7 +161,7 @@ class ArcGraspSolver:
 
     @property
     def ready(self) -> bool:
-        """Backward compat: is the UPRIGHT grid calibrated?"""
+        """Is the upright grid calibrated?"""
         return len(self._domains["upright"]) > 0
 
     def ready_for(self, pose: str) -> bool:
@@ -214,24 +187,12 @@ class ArcGraspSolver:
 
     def solve(self, nx: float, ny: float, pose: str = "upright",
               angle_deg: float | None = None):
-        """[CH1..CH5] for a tin at normalized image point (nx, ny), or None.
-
-        pose: "upright" | "lying" | "axial" ("axial" = seen end-on, uses the
-              lying grid with the straight-at-robot roll).
-        angle_deg: LYING only — the tin's image long-axis angle from
-              perception (Orientation.angle). None -> 90 (straight).
-        """
+        """[CH1..CH5] for a tin at image point (nx, ny), or None."""
         return self.solve_with_band(nx, ny, pose, angle_deg)[0]
 
     def solve_with_band(self, nx: float, ny: float, pose: str = "upright",
                         angle_deg: float | None = None):
-        """(arm_or_None, band) — solve(), plus WHY when the answer is None.
-
-        band is one of the BAND_* constants. A caller driving toward the tin
-        needs the difference: BAND_TOO_FAR means keep approaching,
-        BAND_TOO_CLOSE means it has already overshot the nearest arc and
-        should back off instead.
-        """
+        """(arm_or_None, band): solve() plus a BAND_* reason when None."""
         lying = pose in ("lying", "axial")
         rows = self.rows_for(pose)
         if not rows:
@@ -240,24 +201,19 @@ class ArcGraspSolver:
         if arm is None:
             return None, band
         if lying:
-            # The grid's CH5 samples are the baseline pose; the actual roll
-            # tracks how the tin lies on the floor ("axial" -> straight).
+            # roll tracks how the tin lies on the floor
             arm[4] = ch5_from_angle(90.0 if angle_deg is None else angle_deg,
                                     self._anchors)
         return [round(max(0.0, min(180.0, float(v))), 1) for v in arm], band
 
     def _solve_grid(self, rs, nx: float, ny: float):
-        """(arm_or_None, band). Rows are CURVES in the image (see row_ny_at):
-        evaluate every row's height at THIS nx, then bracket the query ny
-        between adjacent curves. A flat-line model overestimated reach at the
-        image edges — the same radius really sits lower there."""
+        """(arm_or_None, band): bracket ny between row curves at this nx."""
         curves = sorted(((row_ny_at(r, nx), r) for r in rs), key=lambda p: p[0])
         lo_ny, lo_row = curves[0]
         hi_ny, hi_row = curves[-1]
         if ny < lo_ny - float(lo_row.get("ny_tol", NY_TOL_DEFAULT)):
             return None, BAND_TOO_FAR      # above the farthest arc
-        # Below the nearest arc the tolerance is ASYMMETRIC and tiny: a tin
-        # closer than the calibrated line gets overshot by the grab pose.
+        # near tolerance is small: closer than calibrated gets overshot
         if ny > hi_ny + float(hi_row.get("ny_tol_near", NY_TOL_NEAR_DEFAULT)):
             return None, BAND_TOO_CLOSE    # below the nearest arc
         ny = min(max(ny, lo_ny), hi_ny)    # clamp into the strip
@@ -281,13 +237,12 @@ class ArcGraspSolver:
 
     @staticmethod
     def _banded(arm):
-        """One row's answer -> (arm, band): None from _solve_row means nx fell
-        off that row's sampled span, not that the tin left the ny band."""
+        """Wrap a row's answer as (arm, band); None means nx off span."""
         return (arm, BAND_IN) if arm is not None else (None, BAND_NX_OUTSIDE)
 
     @staticmethod
     def _solve_row(row, nx: float):
-        """Piecewise-linear interpolation of ALL 5 channels along one arc."""
+        """Interpolate all 5 channels along one arc row."""
         ss = row["samples"]
         tol = float(row.get("nx_tol", NX_TOL_DEFAULT))
         lo, hi = float(ss[0]["nx"]), float(ss[-1]["nx"])

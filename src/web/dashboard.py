@@ -1,20 +1,5 @@
-"""
-web/dashboard.py
-
-Windows-side dashboard host: serves the React UI locally and points it at
-the robot server running on the Pi. Standard library only — nothing to
-install on the Windows machine.
-
-    python web/dashboard.py --pi 192.168.137.50:8000
-    python web/dashboard.py --pi raspberrypi.local:8000 --port 8080
-
-Opens http://localhost:8080/?pi=<addr> in your browser; the UI remembers
-the Pi address (localStorage), so later runs can omit --pi.
-
-The browser talks to the Pi DIRECTLY (fetch/SSE/MJPEG straight to
-http://<pi>:8000, CORS-enabled there) — this host only serves the static
-files, it is not a proxy, so it adds zero latency to the control path.
-"""
+"""web/dashboard.py: Windows-side host serving the UI, stdlib only.
+The browser talks to the Pi directly (CORS); this host only serves static files, no proxying."""
 import argparse
 import os
 import webbrowser
@@ -33,12 +18,10 @@ class QuietHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
-        # Serve the SPA for "/" (query string like ?pi=... is handled
-        # client-side by app.js).
+        # Serve the SPA for "/"; ?pi=... is handled client-side by app.js.
         if self.path.split("?", 1)[0] == "/":
             self.path = "/index.html"
-        # The UI references /static/... so it also works when served by the
-        # Pi's Flask server; here the files ARE the root, so strip the prefix.
+        # /static/... also works when served by the Pi; here files ARE the root, so strip the prefix.
         if self.path.startswith("/static/"):
             self.path = self.path[len("/static"):]
         return super().do_GET()
