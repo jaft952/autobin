@@ -251,6 +251,9 @@ class PWMActuator:
         brake exists; this is the strongest hold the hardware allows.
         Stationary, it draws ~no current; current only flows while something
         is actively trying to move it."""
+        # Without this the log kept reporting the last DRIVE duty right
+        # through every hold, which reads as "the wheels are still driving".
+        self.last_duty = (0.0, 0.0)
         for pwm, pin in self._channels():
             self._write(pwm, pin, 100)
 
