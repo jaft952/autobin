@@ -40,7 +40,8 @@ from src.arm.arc_grasp import ArcGraspSolver, BAND_TOO_CLOSE
 from src.arm.grasp_reach import solve_reach
 from src.motion.calibration import MotionCalibration
 from src.motion.differential_kinematics import DifferentialKinematics, WheelCommand
-from src.visual_servoing.reactive_controller import compute_reactive_command, BACKUP_SPEED
+import src.visual_servoing.reactive_controller as reactive_mod
+from src.visual_servoing.reactive_controller import compute_reactive_command
 
 _CAL = MotionCalibration()
 _KIN = DifferentialKinematics(_CAL)
@@ -174,7 +175,11 @@ class ApproachLitterLayer(BaseLayer):
                                          else RETREAT_GAP_S)
 
         if self._retreating:
-            v_x = -BACKUP_SPEED / _CAL.forward_speed
+            # Read off the MODULE, not a name bound at import: the dashboard
+            # live-patches reactive_controller.BACKUP_SPEED (see
+            # RobotRuntime's settings table), and a `from ... import` copy
+            # would keep serving the value this file was loaded with.
+            v_x = -reactive_mod.BACKUP_SPEED / _CAL.forward_speed
             return ActionCommand(
                 layer_id=self.layer_id, active=True,
                 motion_vector=(v_x, 0, 0), arm_action='deploy',

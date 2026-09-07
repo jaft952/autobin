@@ -406,8 +406,9 @@ class RobotRuntime:
             # command() directly -- the same validated function
             # tests/test_ibvs_centering.py uses -- so these are the constants
             # that actually drive it, read fresh from the module each call.
-            # Layer 3's overshoot retreat also reads BACKUP_SPEED live, so
-            # approach.backup_speed tunes both from one slider.
+            # Layer 2's overshoot retreat also reads BACKUP_SPEED live, so
+            # approach.backup_speed tunes both the too-close backoff and the
+            # retreat pulse from one slider.
             ("approach.far_distance_cm", L2, [(reactive_mod, "FAR_DISTANCE_CM")],
              30.0, 200.0, 5.0, "Approach: far tier starts beyond (cm)"),
             ("approach.low_distance_cm", L2, [(reactive_mod, "LOW_DISTANCE_CM")],
@@ -419,7 +420,7 @@ class RobotRuntime:
             ("approach.forward_low_speed", L2, [(reactive_mod, "FORWARD_LOW_SPEED")],
              10.0, 60.0, 1.0, "Approach: speed within low tier (duty)"),
             ("approach.backup_speed", L2, [(reactive_mod, "BACKUP_SPEED")],
-             5.0, 40.0, 1.0, "Approach: backup speed when too close (duty, also Layer 3 retreat)"),
+             5.0, 40.0, 1.0, "Approach: backup speed when too close (duty, also the retreat pulse)"),
             ("approach.max_steer_deg", L2, [(reactive_mod, "MAX_STEER_ANGLE_DEG")],
              10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
 
