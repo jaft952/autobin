@@ -301,7 +301,7 @@ def test_executor_mixing():
     print("PASS executor mixing + sign convention + stop")
 
 
-def test_every_halt_coasts():
+def test_every_stop_coasts():
     """There is no brake any more. Holding all four inputs HIGH made the base
     creep and yaw on this board (twelve straight all-HIGH ticks in the log
     with the chassis still moving), so a halt is always all-LOW."""
@@ -985,7 +985,7 @@ ALL_TESTS = [
     test_yields_to_target_and_restarts,
     test_none_distance_is_not_an_obstacle,
     test_executor_mixing,
-    test_every_halt_coasts,
+    test_every_stop_coasts,
     test_motion_ramps_up_but_stops_at_once,
     test_arbitration_with_real_hub,
     test_avoid_backs_off_before_pivoting_when_the_rear_is_clear,

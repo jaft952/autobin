@@ -53,7 +53,7 @@ class CollectLitterLayer(BaseLayer):
                 # No point at all -- a blink, not a departure. Hold the base
                 # rather than handing the tin back to Layer 2 to be
                 # re-approached from scratch.
-                return self._hold("GRAB HOLD (detection blinked)")
+                return self._stop("GRAB HOLD (detection blinked)")
             # A band means the tin WAS located, just not reachable from here
             # (too close, too far, off the sampled span). Stand down at once:
             # Layer 2 has to move the base, and every tick spent latched here
@@ -70,13 +70,13 @@ class CollectLitterLayer(BaseLayer):
             # already solved for, right before the grab fires on the next
             # good reading.
             self._ready_since = None
-            return self._hold("GRAB HOLD (ultrasonic not yet confirming range)")
+            return self._stop("GRAB HOLD (ultrasonic not yet confirming range)")
 
         if self._ready_since is None:
             self._ready_since = now
         stable_s = now - self._ready_since
         if stable_s < GRAB_STABLE_S:
-            return self._hold(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
+            return self._stop(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
                               f"/{GRAB_STABLE_S:.0f}s)")
 
         nx, ny = point # type: ignore
@@ -121,9 +121,9 @@ class CollectLitterLayer(BaseLayer):
 
     # ── Internals ─────────────────────────────────────────────────────────
 
-    def _hold(self, message: str) -> ActionCommand:
-        """Base halted, arm parked at the travel pose. The wheels coast --
-        there is no brake, see MotionExecutor's HALTING note -- so this
+    def _stop(self, message: str) -> ActionCommand:
+        """Base stopped, arm parked at the travel pose. The wheels coast --
+        coast is the only halt, see MotionExecutor's STOPPING note -- so this
         relies on the gearboxes to keep the base on the spot."""
         return ActionCommand(
             layer_id=self.layer_id,

@@ -106,7 +106,7 @@ class ApproachLitterLayer(BaseLayer):
                 # Mid-retreat blink. Stop the pulse -- reversing blind is not
                 # worth it -- but keep the manoeuvre alive so the next good
                 # frame resumes it instead of restarting from the gap.
-                return self._halt("OVERSHOT - waiting for the detection")
+                return self._stop("OVERSHOT - waiting for the detection")
             self._was_too_close = False
             return ActionCommand(layer_id=self.layer_id, active=False)
         self._lost_until = now + LOST_GRACE_S
@@ -121,7 +121,7 @@ class ApproachLitterLayer(BaseLayer):
             # Arrived. Brake and stay put: Layer 3 wins from here, and it
             # should inherit a base that has already stopped.
             nx, ny = reach.point # type: ignore
-            return self._halt(f"IN REACH, holding ({reach.klass} "
+            return self._stop(f"IN REACH, holding ({reach.klass} "
                               f"nx={nx:.2f} ny={ny:.2f})")
 
         wheels = compute_reactive_command(error, _KIN)
@@ -129,7 +129,7 @@ class ApproachLitterLayer(BaseLayer):
             # Vision says centered and close, but the grid cannot solve this
             # spot (uncalibrated, or the tin sits off the sampled span).
             # Hold rather than keep driving on a criterion the arm ignores.
-            return self._halt(f"REACHED but not in reach "
+            return self._stop(f"REACHED but not in reach "
                               f"(dist={error.distance_cm}, band={reach.band})")
 
         label = "TOO CLOSE, backing off" if error.too_close else \
@@ -185,11 +185,11 @@ class ApproachLitterLayer(BaseLayer):
                 motion_vector=(v_x, 0, 0), arm_action='deploy',
                 message="OVERSHOT past nearest arc - retreat pulse",
             )
-        return self._halt("OVERSHOT past nearest arc - pulse gap")
+        return self._stop("OVERSHOT past nearest arc - pulse gap")
 
-    def _halt(self, message: str) -> ActionCommand:
+    def _stop(self, message: str) -> ActionCommand:
         """Cut power and let the base roll to rest, arm at the travel pose.
-        There is no brake -- see MotionExecutor's HALTING note."""
+        Coast is the only halt -- see MotionExecutor's STOPPING note."""
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,

@@ -23,7 +23,7 @@ clips one wheel at 100% and silently straightens the arc:
     left  = v_x - v_theta
     right = v_x + v_theta
 
-HALTING: a zero motion_vector COASTS the wheels -- all four inputs LOW, so
+STOPPING: a zero motion_vector COASTS the wheels -- all four inputs LOW, so
 each motor is open-circuit and free to spin. There is no brake.
 
 There used to be one: both inputs of each motor driven HIGH shorts the
@@ -151,14 +151,14 @@ class MotionExecutor:
                      _slew(cur_theta, v_theta, SLEW_VTHETA_PER_S * dt))
         return self._vec
 
-    def _halted(self) -> None:
+    def _ramp_reset(self) -> None:
         """The wheels are not turning, so the ramp restarts from rest."""
         self._vec = (0.0, 0.0)
         self._vec_at = time.monotonic()
 
     def stop(self) -> None:
         """Coast: cut motor power, wheels free to spin (does not release GPIO)."""
-        self._halted()
+        self._ramp_reset()
         self.actuator.stop()
 
     def close(self) -> None:
