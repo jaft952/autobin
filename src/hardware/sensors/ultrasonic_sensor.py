@@ -17,6 +17,12 @@ except ImportError:
 SPEED_OF_SOUND_CM_PER_S = 34300.0
 MIN_VALID_DISTANCE_CM = 2.0
 
+# Longest echo worth waiting for. Range is timeout * SPEED_OF_SOUND / 2, so
+# 0.010 s covers ~170 cm -- well past anything this robot acts on, and a
+# third of the 0.03 s a missing echo used to burn before giving up. Only the
+# no-echo case changes; a ping that answers is unaffected.
+ECHO_TIMEOUT_S = 0.010
+
 # Median of the last N pings. A single dropped echo (common on HC-SR04) used
 # to swing the reported distance by tens of cm, which downstream thresholds
 # read as the obstacle appearing and vanishing every tick.
@@ -65,7 +71,7 @@ class UltrasonicSensor:
         time.sleep(0.00001)
         GPIO.output(self._pins.trig, False)
 
-        timeout = time.monotonic() + 0.03
+        timeout = time.monotonic() + ECHO_TIMEOUT_S
 
         while GPIO.input(self._pins.echo) == 0:
             if time.monotonic() > timeout:
