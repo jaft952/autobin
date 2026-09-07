@@ -5,27 +5,23 @@ from typing import Any, Optional
 
 from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
-from src.arm.arc_grasp import ArcGraspSolver, BAND_TOO_CLOSE
-from src.motion.calibration import MotionCalibration
-import src.visual_servoing.reactive_controller as reactive_mod
+from src.arm.arc_grasp import ArcGraspSolver
+from src.arm.grasp_reach import solve_reach
 
 GRAB_CONFIRM_CM = 35.0
 GRAB_STABLE_S = 2.0
 GRABBABLE_LATCH_S = 2.0
 
 
-RETREAT_GAP_S = 0.05
-RETREAT_PULSE_S = 0.3
-_CAL_FORWARD_SPEED = MotionCalibration().forward_speed  # duty -> fraction scale
-
-
 class CollectLitterLayer(BaseLayer):
     """
     Layer 3: Collect Litter
     Priority: 3 (Medium)
-    Behavior: When the detected tin sits inside the calibrated arc grid and
-              the reading has settled, halts the base and commands an arc
-              grab. Overshot past the nearest arc, it backs off instead.
+    Behavior: Arm only. Once the tin is inside the calibrated arc grid and
+              the reading has settled, commands the arc grab. Every command
+              it emits is a zero motion vector -- getting the base to a spot
+              the arm can reach, and backing out of an overshoot, is Layer
+              2's job (src/subsumption/layers/layer2_approach.py).
     """
 
     def __init__(self, arc_solver: Optional[ArcGraspSolver] = None):
@@ -33,17 +29,11 @@ class CollectLitterLayer(BaseLayer):
         self.solver = arc_solver or ArcGraspSolver()
         self._ready_since: Optional[float] = None
         self._latched_until: float = 0.0
-        self._retreating: bool = False   # True = mid-pulse, False = mid-gap
-        self._retreat_until: float = 0.0
-        self._was_too_close: bool = False
         self._suppressed_since: Optional[float] = None
 
     def reset(self) -> None:
         self._ready_since = None
         self._latched_until = 0.0
-        self._retreating = False
-        self._retreat_until = 0.0
-        self._was_too_close = False
         self._suppressed_since = None
 
     # ── Arbitration ───────────────────────────────────────────────────────
@@ -55,13 +45,7 @@ class CollectLitterLayer(BaseLayer):
     def evaluate(self, sensors: Any) -> ActionCommand:
         now = time.monotonic()
         self._absorb_suppressed_time(now)
-        solved, klass, point, band = self._solve(sensors)
-
-        if band == BAND_TOO_CLOSE:
-            self._ready_since = None
-            self._latched_until = 0.0
-            return self._retreat_pulse(now)
-        self._was_too_close = False
+        solved, klass, point, _band = self._solve(sensors)
 
         if solved is None:
             self._ready_since = None
@@ -116,8 +100,6 @@ class CollectLitterLayer(BaseLayer):
             self._ready_since += paused
         if self._latched_until:
             self._latched_until += paused
-        if self._retreat_until:
-            self._retreat_until += paused
         self._suppressed_since = None
 
     def is_grabbable(self, sensors: Any) -> bool:
@@ -134,36 +116,6 @@ class CollectLitterLayer(BaseLayer):
 
     # ── Internals ─────────────────────────────────────────────────────────
 
-    def _retreat_pulse(self, now: float) -> ActionCommand:
-        """Bounded backward pulse with a brief stopped gap before it, same
-        shape as test_ibvs_centering.py's _retreat_pulse() (stop -> backward
-        at BACKUP_SPEED for RETREAT_PULSE_S -> stop), just re-expressed as a
-        timed phase instead of blocking sleeps."""
-        if not self._was_too_close:
-            # Freshly entered BAND_TOO_CLOSE: always start with the stopped
-            # gap, never straight into reverse (hardware_safety_patterns.md
-            # rule 7 -- a direction flip needs a stop in between).
-            self._was_too_close = True
-            self._retreating = False
-            self._retreat_until = now + RETREAT_GAP_S
-        elif now >= self._retreat_until:
-            self._retreating = not self._retreating
-            self._retreat_until = now + (RETREAT_PULSE_S if self._retreating
-                                         else RETREAT_GAP_S)
-
-        if self._retreating:
-            v_x = -reactive_mod.BACKUP_SPEED / _CAL_FORWARD_SPEED
-            return ActionCommand(
-                layer_id=self.layer_id, active=True,
-                motion_vector=(v_x, 0, 0), arm_action='deploy',
-                message="OVERSHOT past nearest arc - retreat pulse",
-            )
-        return ActionCommand(
-            layer_id=self.layer_id, active=True,
-            motion_vector=(0, 0, 0), arm_action='deploy',
-            message="OVERSHOT past nearest arc - pulse gap",
-        )
-
     def _hold(self, message: str) -> ActionCommand:
         """Base held still, arm parked at the travel pose. 'hold' brakes the
         wheels (see MotionExecutor._GRAB_ACTIONS) so the tin does not drift
@@ -177,30 +129,10 @@ class CollectLitterLayer(BaseLayer):
         )
 
     def _solve(self, sensors: Any):
-        """(solved_or_None, klass, (nx, ny) or None, band)."""
-        klass, angle = self._litter_pose(sensors)
-        # Reference point differs per pose, and must match what the
-        # calibration tool told the user to click:
-        #   upright -> ground contact (bbox bottom-center): the tin meets the
-        #              floor there, a stable anchor for distance.
-        #   lying   -> bbox CENTER: the bottom edge drifts with orientation
-        #              while the silhouette center tracks the graspable
-        #              middle at every angle.
-        if klass in ("lying", "axial"):
-            pos = sensors.get_litter_position()
-        else:
-            pos = self._litter_point(sensors)
-        if pos is None:
-            return None, klass, None, None
-
-        nx, ny = pos
-        if klass in ("lying", "axial"):
-            solved, band = self.solver.solve_with_band(
-                nx, ny, pose="lying",
-                angle_deg=None if klass == "axial" else angle)
-        else:
-            solved, band = self.solver.solve_with_band(nx, ny, pose="upright")
-        return solved, klass, (nx, ny), band
+        """(solved_or_None, klass, (nx, ny) or None, band). Same solve Layer
+        2 arrives on -- one criterion, so the two layers cannot disagree
+        about whether the base is in position."""
+        return solve_reach(self.solver, sensors)
 
     @staticmethod
     def _ultrasonic_confirms(sensors: Any) -> bool:
@@ -211,23 +143,3 @@ class CollectLitterLayer(BaseLayer):
         getter = getattr(sensors, "get_obstacle_distance_cm", None)
         distance = getter() if getter is not None else None
         return distance is None or distance <= GRAB_CONFIRM_CM
-
-    @staticmethod
-    def _litter_point(sensors: Any) -> Optional[tuple]:
-        """Ground-contact point if the sensor provides it, else bbox center."""
-        getter = getattr(sensors, "get_litter_ground_contact", None)
-        if getter is not None:
-            pos = getter()
-            if pos is not None:
-                return pos
-        return sensors.get_litter_position()
-
-    @staticmethod
-    def _litter_pose(sensors: Any) -> tuple:
-        """(klass, angle_deg) from the segmentation mask, defaulting to
-        ("upright", None) when the sensor has no pose information."""
-        getter = getattr(sensors, "get_litter_pose", None)
-        info = getter() if getter is not None else None
-        if not info:
-            return "upright", None
-        return info.get("klass", "upright"), info.get("angle")

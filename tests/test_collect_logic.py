@@ -39,11 +39,13 @@ from src.subsumption.arm_executor import ArmExecutor, GRAB_COOLDOWN_S
 from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
-from src.subsumption.layers.layer2_approach import ApproachLitterLayer
+import src.subsumption.layers.layer2_approach as approach_mod
+from src.subsumption.layers.layer2_approach import (
+    ApproachLitterLayer, RETREAT_GAP_S, RETREAT_PULSE_S,
+)
 import src.subsumption.layers.layer3_collect as collect_mod
 from src.subsumption.layers.layer3_collect import (
     CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S, GRAB_CONFIRM_CM,
-    RETREAT_GAP_S, RETREAT_PULSE_S,
 )
 from src.motion.calibration import MotionCalibration
 import src.visual_servoing.reactive_controller as reactive_mod
@@ -205,6 +207,17 @@ def settle(layer, sensors, clock):
 
 
 @contextmanager
+def fake_approach_clock():
+    clock = FakeClock()
+    real = approach_mod.time.monotonic
+    approach_mod.time.monotonic = clock
+    try:
+        yield clock
+    finally:
+        approach_mod.time.monotonic = real
+
+
+@contextmanager
 def fake_emergency_clock():
     clock = FakeClock()
     real = emergency_mod.time.monotonic
@@ -276,22 +289,22 @@ def test_latch_rides_out_a_blink():
 
 
 def test_too_close_backs_off():
-    """Overshooting the nearest calibrated arc used to return inactive, so
-    Layer 2 kept closing in and made it worse until Layer 5 tripped. The
-    retreat now pulses the same shape as test_ibvs_centering.py's
-    _retreat_pulse(): a brief stop, then a bounded backward pulse at
-    BACKUP_SPEED, not an indefinite backoff."""
-    with fake_collect_clock() as clock:
-        layer = CollectLitterLayer(arc_solver=make_solver())
+    """Backing out of an overshoot is BASE movement, so it belongs to Layer 2
+    with the rest of the driving. The pulse keeps the shape
+    tests/test_ibvs_centering.py validated: a brief stop, then a bounded
+    backward pulse at BACKUP_SPEED, not an indefinite backoff."""
+    with fake_approach_clock() as clock:
+        layer = ApproachLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.95) # type: ignore
+        sensors.litter_dist_cm = 20.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
 
         # Freshly overshot -> stopped gap first (a direction flip never goes
-        # straight into reverse), never a grab.
+        # straight into reverse). The stop must BRAKE, not coast.
         cmd = layer.evaluate(sensors)
         assert cmd.active, cmd.message
         assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
-        assert cmd.arm_action != 'grab_arc', cmd.arm_action
+        assert cmd.arm_action == 'hold', cmd.arm_action
 
         # Gap elapses -> the backward pulse, at the same BACKUP_SPEED
         # tests/test_ibvs_centering.py uses (converted to a motion fraction).
@@ -299,17 +312,44 @@ def test_too_close_backs_off():
         cmd = layer.evaluate(sensors)
         expected_vx = -reactive_mod.BACKUP_SPEED / MotionCalibration().forward_speed
         assert cmd.motion_vector == (expected_vx, 0, 0), cmd.motion_vector
-        assert cmd.motion_vector[0] < 0, "should be reversing" # type: ignore
 
         # Pulse elapses -> back to the stopped gap, then pulses again.
         clock.tick(RETREAT_PULSE_S + 0.01)
         cmd = layer.evaluate(sensors)
         assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
 
-        # Backing off into the band grabs normally again.
-        sensors.ground = (0.5, 0.6) # type: ignore
-        assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-    print("PASS overshoot retreats in bounded pulses instead of standing down")
+        # Backed off into the band -> Layer 2 parks instead of retreating.
+        sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert "IN REACH" in cmd.message, cmd.message
+    print("PASS overshoot retreats in bounded pulses, from Layer 2")
+
+
+def test_layer2_parks_on_the_arc_grid_not_on_distance():
+    """The two layers used to judge arrival on different measurements: Layer
+    2 on the monocular distance, Layer 3 on the arc grid. They disagreed, so
+    the base drove past the band and Layer 3 backed it out again. Layer 2 now
+    stops on the same grid Layer 3 grabs from -- and BRAKES, so the grab does
+    not start on a base that is still rolling."""
+    with fake_approach_clock():
+        layer = ApproachLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+
+        # Far outside the grid but nowhere near the old STOP_DISTANCE_CM:
+        # still driving.
+        sensors.litter_dist_cm = 60.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.1) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] > 0, cmd.message # type: ignore
+
+        # Inside the grid -> park, brake, hand over. Note the distance
+        # estimate is unchanged: the grid decided, not distance_cm.
+        sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
+        assert cmd.arm_action == 'hold', "a parked base must brake, not coast"
+        assert "IN REACH" in cmd.message, cmd.message
+    print("PASS Layer 2 parks on the arc grid, braked")
 
 
 def test_ultrasonic_vetoes_a_far_grab():
@@ -479,7 +519,9 @@ def test_approach_steering():
     it needs a real distance estimate to move at all -- unlike the old
     implementation there is no y-position fallback when distance is
     unknown, which is the whole point of sharing the one validated path."""
-    layer = ApproachLitterLayer()
+    # Empty upright grid: nothing is ever "in reach", so every tick takes
+    # the steering path this test is about.
+    layer = ApproachLitterLayer(arc_solver=make_solver(upright=False))
     sensors = FakeSensors()
     sensors.litter_dist_cm = 60.0 # type: ignore
 
@@ -797,7 +839,8 @@ def test_smooth_move_semantics():
 def test_arbitration_stack():
     with fake_emergency_clock() as clock, fake_collect_clock() as collect_clock:
         collect = CollectLitterLayer(arc_solver=make_solver())
-        layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
+        layers = [SystemIdleLayer(), ScanAroundLayer(),
+                  ApproachLitterLayer(arc_solver=make_solver()),
                   collect, EmergencyStopLayer()]
         arb = Arbitrator()
         sensors = FakeSensors()
@@ -848,6 +891,7 @@ ALL_TESTS = [
     test_grab_waits_for_stability,
     test_latch_rides_out_a_blink,
     test_too_close_backs_off,
+    test_layer2_parks_on_the_arc_grid_not_on_distance,
     test_ultrasonic_vetoes_a_far_grab,
     test_inactive_when_outside_the_grid,
     test_prefers_ground_contact_over_center,
