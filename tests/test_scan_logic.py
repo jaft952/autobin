@@ -301,40 +301,29 @@ def test_executor_mixing():
     print("PASS executor mixing + sign convention + stop")
 
 
-def test_hold_coasts_by_default_and_brakes_when_asked():
-    """A hold used to always brake, to stop the arm's shaking from drifting
-    the base. On this board holding all four inputs HIGH makes the base creep
-    and yaw instead -- a whole run of BRAKE (all HIGH) ticks in the log with
-    the chassis still moving -- so a hold coasts unless HOLD_WITH_BRAKE is
-    turned back on."""
+def test_every_halt_coasts():
+    """There is no brake any more. Holding all four inputs HIGH made the base
+    creep and yaw on this board (twelve straight all-HIGH ticks in the log
+    with the chassis still moving), so a halt is always all-LOW."""
     act = CaptureActuator()
     ex = MotionExecutor(actuator=act) # type: ignore
 
-    assert motion_mod.HOLD_WITH_BRAKE is False, "coast is the default"
+    for command in (
+        ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [100] * 5}),
+        ActionCommand(3, True, (0, 0, 0), "hold", ""),
+        ActionCommand(2, True, (0, 0, 0), "deploy", ""),
+        ActionCommand(0, True, (0, 0, 0), "stow", ""),
+        ActionCommand(-1, False, None, None, "Idle"),
+    ):
+        ex.execute(command)
+        assert act.stopped and not act.braked, command.arm_action
 
-    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "",
-                             {"pose": [100, 145, 75, 165, 90]}))
-    assert act.stopped and not act.braked, "a grab halt must coast"
+    assert not hasattr(ex, "brake"), "MotionExecutor.brake is gone"
 
-    ex.execute(ActionCommand(3, True, (0, 0, 0), "hold", ""))
-    assert act.stopped and not act.braked
-
-    # A plain scan/idle halt coasts too (it always did).
-    ex.execute(ActionCommand(0, True, (0, 0, 0), "stow", ""))
-    assert act.stopped and not act.braked
-
-    # The dashboard switch still reaches the brake, for comparing on the robot.
-    motion_mod.HOLD_WITH_BRAKE = True
-    try:
-        ex.execute(ActionCommand(3, True, (0, 0, 0), "hold", ""))
-        assert act.braked and not act.stopped
-    finally:
-        motion_mod.HOLD_WITH_BRAKE = False
-
-    # Driving again releases either one (apply overwrites it).
+    # Driving again releases the stop.
     ex.execute(ActionCommand(1, True, (0.6, 0, 0), None, ""))
-    assert not act.braked and not act.stopped
-    print("PASS hold coasts by default, brakes when asked")
+    assert not act.stopped
+    print("PASS every halt coasts")
 
 
 def test_motion_ramps_up_but_stops_at_once():
@@ -384,25 +373,6 @@ def test_motion_ramps_up_but_stops_at_once():
         ex.execute(ActionCommand(2, True, (-0.22, 0, 0), "deploy", ""))
         assert act.stopped, "flipped direction without passing through zero"
     print("PASS motion ramps up, stops and reverses at once")
-
-
-def test_executor_brake_falls_back_to_stop():
-    """An actuator with no brake() (e.g. a print stub) must degrade to a
-    plain stop instead of crashing."""
-    class NoBrakeActuator:
-        def __init__(self): self.stopped = False
-        def apply(self, cmd): self.stopped = False
-        def stop(self): self.stopped = True
-
-    act = NoBrakeActuator()
-    ex = MotionExecutor(actuator=act) # type: ignore
-    motion_mod.HOLD_WITH_BRAKE = True
-    try:
-        ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [0] * 5}))
-    finally:
-        motion_mod.HOLD_WITH_BRAKE = False
-    assert act.stopped, "brake must fall back to stop when unsupported"
-    print("PASS executor brake falls back to stop when unsupported")
 
 
 # ── Arbitration: scanning combined with the other layers ─────────────────
@@ -1015,9 +985,8 @@ ALL_TESTS = [
     test_yields_to_target_and_restarts,
     test_none_distance_is_not_an_obstacle,
     test_executor_mixing,
-    test_hold_coasts_by_default_and_brakes_when_asked,
+    test_every_halt_coasts,
     test_motion_ramps_up_but_stops_at_once,
-    test_executor_brake_falls_back_to_stop,
     test_arbitration_with_real_hub,
     test_avoid_backs_off_before_pivoting_when_the_rear_is_clear,
     test_avoid_skips_the_backoff_when_the_rear_is_tight,

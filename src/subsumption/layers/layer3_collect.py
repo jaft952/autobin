@@ -122,9 +122,9 @@ class CollectLitterLayer(BaseLayer):
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _hold(self, message: str) -> ActionCommand:
-        """Base held still, arm parked at the travel pose. 'hold' brakes the
-        wheels (see MotionExecutor._GRAB_ACTIONS) so the tin does not drift
-        out of the band while the reading settles."""
+        """Base halted, arm parked at the travel pose. The wheels coast --
+        there is no brake, see MotionExecutor's HALTING note -- so this
+        relies on the gearboxes to keep the base on the spot."""
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,

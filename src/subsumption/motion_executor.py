@@ -23,21 +23,19 @@ clips one wheel at 100% and silently straightens the arc:
     left  = v_x - v_theta
     right = v_x + v_theta
 
-HALT vs BRAKE: a zero motion_vector COASTS the wheels (power cut, free to
-spin). A halt that accompanies a GRAB was meant to BRAKE instead (both
-inputs of each motor driven HIGH, shorting the windings) so the arm's
-shaking could not drift the base off its aligned spot.
+HALTING: a zero motion_vector COASTS the wheels -- all four inputs LOW, so
+each motor is open-circuit and free to spin. There is no brake.
 
-On this hardware it does the opposite. Held in that state the base creeps
-and yaws, for a whole run of BRAKE (all HIGH) ticks in the log, while a
-coasting base sits still. Four independently soft-timed PWM channels held at
-"100%" are not a guaranteed solid HIGH on all four at once, and any moment
-where one input of a motor is high and its partner is not is a DRIVE pulse,
-not a brake. So HOLD_WITH_BRAKE defaults to False and a hold coasts.
-
-Flip it back (dashboard: motion.hold_with_brake) to compare on the robot.
-Coasting relies on the gearboxes holding the base still on their own, which
-is true on a flat floor and may not be on a slope.
+There used to be one: both inputs of each motor driven HIGH shorts the
+windings, which resists being pushed, and a grab used it so the arm's
+shaking could not drift the base off its aligned spot. On this hardware it
+did the opposite. Held that way the base crept and yawed for a whole run of
+all-HIGH ticks, while a coasting base sat still. Four independently
+soft-timed PWM channels held at "100%" are not a guaranteed solid HIGH on
+all four at once, and any moment where one input of a motor is high while
+its partner is not is a DRIVE pulse -- per channel, so it steers as well as
+creeps. Removed rather than left as a trap; see
+docs/hardware_safety_patterns.md section 8.
 """
 from __future__ import annotations
 
@@ -50,11 +48,6 @@ from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 from src.subsumption.arbitrator import ActionCommand
 
-# arm_actions during which the base must HOLD position, not coast. 'hold' is
-# Layer 3 waiting for the detection to settle before it fires the grab — the
-# tin must not drift out of the arc band while it waits.
-_GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold"})
-
 # SLEW LIMIT: how fast the driven vector may CHANGE, in vector units per
 # SECOND. Per second, not per tick: the loop rate is not constant, so a
 # per-tick cap would mean a different thing at every rate.
@@ -66,14 +59,12 @@ _GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold"})
 # the same inside Layer 2, where the steer angle is 180x the lateral error.
 #
 # Ramping applies to speeding up ONLY. Slowing, stopping and reversing all
-# take effect at once -- a brake that arrives late is a safety bug, and a
+# take effect at once -- a stop that arrives late is a safety bug, and a
 # direction flip is forced THROUGH zero rather than eased through it
 # (hardware_safety_patterns.md rule 7).
 SLEW_VX_PER_S = 0.6
 SLEW_VTHETA_PER_S = 0.3
 
-# False -> a hold coasts (all inputs LOW). See the HALT vs BRAKE note above.
-HOLD_WITH_BRAKE = False
 _SLEW_MAX_DT_S = 0.5      # a long stall must not authorise an unlimited step
 
 
@@ -121,11 +112,7 @@ class MotionExecutor:
         v_x, _v_y, v_theta = command.motion_vector
         v_x, v_theta = self._ramp(v_x, v_theta)
         if v_x == 0 and v_theta == 0:
-            # Hold position (brake) while the arm grabs; coast otherwise.
-            if command.arm_action in _GRAB_ACTIONS:
-                self.brake()
-            else:
-                self.stop()
+            self.stop()
             return
 
         left = v_x - v_theta
@@ -173,17 +160,6 @@ class MotionExecutor:
         """Coast: cut motor power, wheels free to spin (does not release GPIO)."""
         self._halted()
         self.actuator.stop()
-
-    def brake(self) -> None:
-        """Actively hold position — resist being pushed. Used while the arm
-        grabs so the shaking chassis doesn't drift. brake() is optional on
-        ActuatorInterface; falls back to stop() when an actuator omits it."""
-        self._halted()
-        brake_fn = getattr(self.actuator, "brake", None)
-        if HOLD_WITH_BRAKE and callable(brake_fn):
-            brake_fn()
-        else:
-            self.actuator.stop()
 
     def close(self) -> None:
         """Stop and release GPIO. Call once on shutdown."""

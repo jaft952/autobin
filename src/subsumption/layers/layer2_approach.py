@@ -18,8 +18,8 @@ back and forth against each other. One criterion, owned here, ends that --
 and the overshoot back-off lives here too, because backing up is base
 movement and Layer 3 has no business steering.
 
-By the time Layer 3 wins arbitration the base is already stopped and braked,
-so the grab does not start on a chassis that is still rolling.
+By the time Layer 3 wins arbitration the base is already stopped, so the
+grab does not start on a chassis that is still rolling.
 
 compute_reactive_command() returns a WheelCommand already in duty units (the
 ~20-32 scale PWMActuator expects directly), not the -1..1 motion fraction
@@ -106,7 +106,7 @@ class ApproachLitterLayer(BaseLayer):
                 # Mid-retreat blink. Stop the pulse -- reversing blind is not
                 # worth it -- but keep the manoeuvre alive so the next good
                 # frame resumes it instead of restarting from the gap.
-                return self._coast("OVERSHOT - waiting for the detection")
+                return self._halt("OVERSHOT - waiting for the detection")
             self._was_too_close = False
             return ActionCommand(layer_id=self.layer_id, active=False)
         self._lost_until = now + LOST_GRACE_S
@@ -121,7 +121,7 @@ class ApproachLitterLayer(BaseLayer):
             # Arrived. Brake and stay put: Layer 3 wins from here, and it
             # should inherit a base that has already stopped.
             nx, ny = reach.point # type: ignore
-            return self._hold(f"IN REACH, holding ({reach.klass} "
+            return self._halt(f"IN REACH, holding ({reach.klass} "
                               f"nx={nx:.2f} ny={ny:.2f})")
 
         wheels = compute_reactive_command(error, _KIN)
@@ -129,7 +129,7 @@ class ApproachLitterLayer(BaseLayer):
             # Vision says centered and close, but the grid cannot solve this
             # spot (uncalibrated, or the tin sits off the sampled span).
             # Hold rather than keep driving on a criterion the arm ignores.
-            return self._hold(f"REACHED but not in reach "
+            return self._halt(f"REACHED but not in reach "
                               f"(dist={error.distance_cm}, band={reach.band})")
 
         label = "TOO CLOSE, backing off" if error.too_close else \
@@ -185,31 +185,15 @@ class ApproachLitterLayer(BaseLayer):
                 motion_vector=(v_x, 0, 0), arm_action='deploy',
                 message="OVERSHOT past nearest arc - retreat pulse",
             )
-        # COAST, not brake. This gap exists so a direction flip never goes
-        # straight from forward to reverse; braking here would drive both
-        # inputs of each motor HIGH, which is the very pulse the gap is meant
-        # to avoid, once every RETREAT_PULSE_S.
-        return self._coast("OVERSHOT past nearest arc - pulse gap")
+        return self._halt("OVERSHOT past nearest arc - pulse gap")
 
-    def _coast(self, message: str) -> ActionCommand:
-        """Cut power and let the base roll to rest. 'deploy' is not in
-        MotionExecutor._GRAB_ACTIONS, so a zero vector under it coasts."""
+    def _halt(self, message: str) -> ActionCommand:
+        """Cut power and let the base roll to rest, arm at the travel pose.
+        There is no brake -- see MotionExecutor's HALTING note."""
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
             motion_vector=(0, 0, 0),
             arm_action='deploy',
-            message=message,
-        )
-
-    def _hold(self, message: str) -> ActionCommand:
-        """Stay on this spot. 'hold' brakes the wheels (see
-        MotionExecutor._GRAB_ACTIONS); 'deploy' would coast, and a coasting
-        base rolls off the spot the grid just solved for."""
-        return ActionCommand(
-            layer_id=self.layer_id,
-            active=True,
-            motion_vector=(0, 0, 0),
-            arm_action='hold',
             message=message,
         )

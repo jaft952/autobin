@@ -17,11 +17,6 @@ class ActuatorInterface(Protocol):
     def stop(self) -> None: ...
     def close(self) -> None: ...
 
-    def brake(self) -> None:
-        """Optional: actively hold position. Callers must degrade to
-        stop() when an implementation omits this (see MotionExecutor.brake)."""
-        ...
-
 
 @runtime_checkable
 class ArmPlannerInterface(Protocol):

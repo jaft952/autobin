@@ -299,14 +299,12 @@ def test_too_close_backs_off():
         sensors.litter_dist_cm = 20.0 # type: ignore
         sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
 
-        # Freshly overshot -> stopped gap first (a direction flip never goes
-        # straight into reverse). The gap must COAST: braking drives both
-        # inputs of each motor HIGH, which is the very pulse the gap exists
-        # to avoid.
+        # Freshly overshot -> stopped gap first (a direction flip never
+        # goes straight into reverse).
         cmd = layer.evaluate(sensors)
         assert cmd.active, cmd.message
         assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
-        assert cmd.arm_action == 'deploy', "the gap must coast, not brake"
+        assert cmd.arm_action == 'deploy', cmd.arm_action
 
         # Gap elapses -> the backward pulse, at the same BACKUP_SPEED
         # tests/test_ibvs_centering.py uses (converted to a motion fraction).
@@ -331,8 +329,8 @@ def test_layer2_parks_on_the_arc_grid_not_on_distance():
     """The two layers used to judge arrival on different measurements: Layer
     2 on the monocular distance, Layer 3 on the arc grid. They disagreed, so
     the base drove past the band and Layer 3 backed it out again. Layer 2 now
-    stops on the same grid Layer 3 grabs from -- and BRAKES, so the grab does
-    not start on a base that is still rolling."""
+    stops on the same grid Layer 3 grabs from, so the grab does not start on
+    a base that is still rolling."""
     with fake_approach_clock():
         layer = ApproachLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
@@ -344,14 +342,13 @@ def test_layer2_parks_on_the_arc_grid_not_on_distance():
         cmd = layer.evaluate(sensors)
         assert cmd.motion_vector[0] > 0, cmd.message # type: ignore
 
-        # Inside the grid -> park, brake, hand over. Note the distance
-        # estimate is unchanged: the grid decided, not distance_cm.
+        # Inside the grid -> park and hand over. Note the distance estimate
+        # is unchanged: the grid decided, not distance_cm.
         sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
         cmd = layer.evaluate(sensors)
         assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
-        assert cmd.arm_action == 'hold', "a parked base must brake, not coast"
         assert "IN REACH" in cmd.message, cmd.message
-    print("PASS Layer 2 parks on the arc grid, braked")
+    print("PASS Layer 2 parks on the arc grid")
 
 
 def test_ultrasonic_vetoes_a_far_grab():
@@ -917,7 +914,7 @@ def test_retreat_survives_a_one_frame_blink():
 
 def test_layer3_stands_down_at_once_when_unreachable():
     """Too close is not a blink: the tin was located, it just cannot be
-    reached from here. Latching for GRABBABLE_LATCH_S braked the base for two
+    reached from here. Latching for GRABBABLE_LATCH_S held the base for two
     seconds before Layer 2 was allowed to back it off."""
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
