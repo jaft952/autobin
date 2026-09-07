@@ -300,11 +300,13 @@ def test_too_close_backs_off():
         sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
 
         # Freshly overshot -> stopped gap first (a direction flip never goes
-        # straight into reverse). The stop must BRAKE, not coast.
+        # straight into reverse). The gap must COAST: braking drives both
+        # inputs of each motor HIGH, which is the very pulse the gap exists
+        # to avoid.
         cmd = layer.evaluate(sensors)
         assert cmd.active, cmd.message
         assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
-        assert cmd.arm_action == 'hold', cmd.arm_action
+        assert cmd.arm_action == 'deploy', "the gap must coast, not brake"
 
         # Gap elapses -> the backward pulse, at the same BACKUP_SPEED
         # tests/test_ibvs_centering.py uses (converted to a motion fraction).
@@ -884,6 +886,56 @@ def test_arbitration_stack():
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 
+def test_retreat_survives_a_one_frame_blink():
+    """A blink mid-retreat used to drop Layer 2 to inactive, so Layer 0 won
+    and the base COASTED away from the spot half-way through the manoeuvre."""
+    with fake_approach_clock() as clock:
+        layer = ApproachLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+        sensors.litter_dist_cm = 20.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
+        layer.evaluate(sensors)                       # enter the retreat
+
+        sensors.center = sensors.ground = None        # one blank frame
+        clock.tick(0.05)
+        cmd = layer.evaluate(sensors)
+        assert cmd.active, "a blink dropped the retreat to Layer 0"
+        assert cmd.motion_vector == (0, 0, 0), "must not reverse blind"
+
+        # The manoeuvre resumes rather than restarting from a fresh gap.
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
+        clock.tick(RETREAT_GAP_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] < 0, cmd.message # type: ignore
+
+        # Gone for good -> stand down so scan can take over.
+        sensors.center = sensors.ground = None
+        clock.tick(approach_mod.LOST_GRACE_S + 0.1)
+        assert not layer.evaluate(sensors).active
+    print("PASS retreat survives a one-frame blink")
+
+
+def test_layer3_stands_down_at_once_when_unreachable():
+    """Too close is not a blink: the tin was located, it just cannot be
+    reached from here. Latching for GRABBABLE_LATCH_S braked the base for two
+    seconds before Layer 2 was allowed to back it off."""
+    with fake_collect_clock() as clock:
+        layer = CollectLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+        sensors.ground = (0.5, 0.6) # type: ignore
+        settle(layer, sensors, clock)                 # arms the latch
+
+        sensors.ground = (0.5, 0.95) # type: ignore   overshot, still visible
+        assert not layer.evaluate(sensors).active,             "held the base instead of letting Layer 2 back off"
+
+        # A genuine blink still rides out the latch.
+        sensors.ground = (0.5, 0.6) # type: ignore
+        settle(layer, sensors, clock)
+        sensors.ground = None
+        assert layer.evaluate(sensors).active
+    print("PASS Layer 3 stands down at once when the tin is unreachable")
+
+
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -892,6 +944,8 @@ ALL_TESTS = [
     test_latch_rides_out_a_blink,
     test_too_close_backs_off,
     test_layer2_parks_on_the_arc_grid_not_on_distance,
+    test_retreat_survives_a_one_frame_blink,
+    test_layer3_stands_down_at_once_when_unreachable,
     test_ultrasonic_vetoes_a_far_grab,
     test_inactive_when_outside_the_grid,
     test_prefers_ground_contact_over_center,

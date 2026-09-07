@@ -47,6 +47,10 @@ _KIN = DifferentialKinematics(_CAL)
 
 RETREAT_GAP_S = 0.05
 RETREAT_PULSE_S = 0.3
+# A one-frame detection blink must not abandon a retreat half-way: Layer 2
+# would go inactive, Layer 0 would win, and the base would COAST away from
+# the spot mid-manoeuvre.
+LOST_GRACE_S = 1.0
 
 
 def _to_motion_vector(wheels: WheelCommand):
@@ -75,12 +79,14 @@ class ApproachLitterLayer(BaseLayer):
         self._retreating: bool = False   # True = mid-pulse, False = mid-gap
         self._retreat_until: float = 0.0
         self._was_too_close: bool = False
+        self._lost_until: float = 0.0    # blink grace while backing off
         self._suppressed_since: Optional[float] = None
 
     def reset(self) -> None:
         self._retreating = False
         self._retreat_until = 0.0
         self._was_too_close = False
+        self._lost_until = 0.0
         self._suppressed_since = None
 
     # ── Arbitration ───────────────────────────────────────────────────────
@@ -95,8 +101,14 @@ class ApproachLitterLayer(BaseLayer):
 
         error = sensors.get_litter_target_error()
         if error is None or not error.found:
+            if self._was_too_close and now < self._lost_until:
+                # Mid-retreat blink. Stop the pulse -- reversing blind is not
+                # worth it -- but keep the manoeuvre alive so the next good
+                # frame resumes it instead of restarting from the gap.
+                return self._coast("OVERSHOT - waiting for the detection")
             self._was_too_close = False
             return ActionCommand(layer_id=self.layer_id, active=False)
+        self._lost_until = now + LOST_GRACE_S
 
         reach = solve_reach(self.solver, sensors)
 
@@ -140,6 +152,8 @@ class ApproachLitterLayer(BaseLayer):
         paused = now - self._suppressed_since
         if self._retreat_until:
             self._retreat_until += paused
+        if self._lost_until:
+            self._lost_until += paused
         self._suppressed_since = None
 
     def _retreat_pulse(self, now: float) -> ActionCommand:
@@ -166,7 +180,22 @@ class ApproachLitterLayer(BaseLayer):
                 motion_vector=(v_x, 0, 0), arm_action='deploy',
                 message="OVERSHOT past nearest arc - retreat pulse",
             )
-        return self._hold("OVERSHOT past nearest arc - pulse gap")
+        # COAST, not brake. This gap exists so a direction flip never goes
+        # straight from forward to reverse; braking here would drive both
+        # inputs of each motor HIGH, which is the very pulse the gap is meant
+        # to avoid, once every RETREAT_PULSE_S.
+        return self._coast("OVERSHOT past nearest arc - pulse gap")
+
+    def _coast(self, message: str) -> ActionCommand:
+        """Cut power and let the base roll to rest. 'deploy' is not in
+        MotionExecutor._GRAB_ACTIONS, so a zero vector under it coasts."""
+        return ActionCommand(
+            layer_id=self.layer_id,
+            active=True,
+            motion_vector=(0, 0, 0),
+            arm_action='deploy',
+            message=message,
+        )
 
     def _hold(self, message: str) -> ActionCommand:
         """Stay on this spot. 'hold' brakes the wheels (see

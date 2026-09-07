@@ -251,9 +251,15 @@ class PWMActuator:
         brake exists; this is the strongest hold the hardware allows.
         Stationary, it draws ~no current; current only flows while something
         is actively trying to move it."""
-        # Without this the log kept reporting the last DRIVE duty right
-        # through every hold, which reads as "the wheels are still driving".
+        # ORDER MATTERS, same reason as _set_left(): raising the inputs in
+        # pin order walks past a state where one input is already HIGH and
+        # its partner still carries the old duty -- which is not a brake, it
+        # is a near-full-speed DRIVE on that one channel, and only on that
+        # one, so the chassis lurches and yaws before it stops. Drop
+        # everything to LOW first (a harmless coast) and raise from there.
         self.last_duty = (0.0, 0.0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 0)
         for pwm, pin in self._channels():
             self._write(pwm, pin, 100)
 

@@ -45,14 +45,19 @@ class CollectLitterLayer(BaseLayer):
     def evaluate(self, sensors: Any) -> ActionCommand:
         now = time.monotonic()
         self._absorb_suppressed_time(now)
-        solved, klass, point, _band = self._solve(sensors)
+        solved, klass, point, band = self._solve(sensors)
 
         if solved is None:
             self._ready_since = None
-            if now < self._latched_until:
-                # A blink, not a departure: hold the base rather than handing
-                # the tin back to Layer 2 to be re-approached from scratch.
+            if band is None and now < self._latched_until:
+                # No point at all -- a blink, not a departure. Hold the base
+                # rather than handing the tin back to Layer 2 to be
+                # re-approached from scratch.
                 return self._hold("GRAB HOLD (detection blinked)")
+            # A band means the tin WAS located, just not reachable from here
+            # (too close, too far, off the sampled span). Stand down at once:
+            # Layer 2 has to move the base, and every tick spent latched here
+            # is a tick it cannot.
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         self._latched_until = now + GRABBABLE_LATCH_S
