@@ -53,6 +53,7 @@ STATE_SCAN = "SCAN"
 STATE_ESTOP = "ESTOP"
 
 FRAME_ENCODE_EVERY = 2          # encode the camera jpeg every Nth tick
+HANDOFF_TRACE_TICKS = 12        # ticks of pin-level logging after a layer change
 PERF_WINDOW = 50                # ticks averaged for the performance card
 
 
@@ -114,6 +115,7 @@ class RobotRuntime:
         self.started_at = time.monotonic()
         self.win_message = ""
         self.win_layer = -1
+        self._trace_left = 0            # HANDOFF_TRACE_TICKS countdown
         self._tick_times = deque(maxlen=PERF_WINDOW)
         self._tick_stamps = deque(maxlen=PERF_WINDOW)
         self._frame_jpeg: Optional[bytes] = None
@@ -204,6 +206,7 @@ class RobotRuntime:
             self.arbitrator.clear()
 
             self.motion.execute(winning)
+            self._trace_handoff(winning)
             if self.arm is not None:
                 with self._arm_lock:
                     self._run_arm(winning)
@@ -227,6 +230,42 @@ class RobotRuntime:
         if (self.camera_available and self._stream_clients > 0
                 and tick_n % FRAME_ENCODE_EVERY == 0):
             self._encode_frame()
+
+    def _trace_handoff(self, winning):
+        """Pin-level trace across a layer change. last_duty is what the mixer
+        asked for; only the four input pins say whether the H-bridge is
+        coasting (all LOW), braking (all HIGH) or still driving, which is
+        what a base that creeps after being told to stop turns on."""
+        act = self.motion.actuator
+        pins = getattr(act, "last_pin_duty", None)
+        if pins is None:
+            return
+
+        if winning.layer_id != self.win_layer:
+            self._trace_left = HANDOFF_TRACE_TICKS
+            self.log.debug(f"[HANDOFF L{self.win_layer} -> L{winning.layer_id}] "
+                           f"{self._pin_state(pins)} vec={winning.motion_vector} "
+                           f"arm={winning.arm_action}")
+            return
+
+        if self._trace_left > 0:
+            self._trace_left -= 1
+            n = HANDOFF_TRACE_TICKS - self._trace_left
+            self.log.debug(f"[L{winning.layer_id} +{n}] {self._pin_state(pins)}")
+
+    @staticmethod
+    def _pin_state(pins) -> str:
+        """in1/in2 = left channel, in3/in4 = right channel (ZK-BM1 has no
+        enable line; the duty on the two inputs IS direction plus speed)."""
+        duties = " ".join(f"{pin}={duty:.0f}" for pin, duty in pins.items())
+        values = list(pins.values())
+        if all(v == 0 for v in values):
+            mode = "COAST (all LOW)"
+        elif all(v >= 100 for v in values):
+            mode = "BRAKE (all HIGH)"
+        else:
+            mode = "DRIVING"
+        return f"pins[{duties}] {mode}"
 
     def _run_arm(self, winning):
         """Dispatch the arm, with YOLO paused for the duration of a grab.

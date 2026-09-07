@@ -140,6 +140,11 @@ class PWMActuator:
         self.cal = calibration or MotionCalibration()
         self.last_duty = (0.0, 0.0)
         self._my_pins = [self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4]
+        # What was last written to each input pin. last_duty is the wheel
+        # speed the mixer asked for; this is what the H-bridge actually sees,
+        # which is the only thing that says coast (all LOW) from brake (all
+        # HIGH) from still driving.
+        self.last_pin_duty = {pin: 0.0 for pin in self._my_pins}
 
         # Prefer pigpiod (DMA-timed, duty immune to CPU load); fall back to
         # RPi.GPIO soft PWM when the daemon is not available.
@@ -224,14 +229,18 @@ class PWMActuator:
         self._set_left(left_speed)
         self._set_right(right_speed)
 
+    def _write(self, pwm, pin: int, value: float) -> None:
+        pwm.ChangeDutyCycle(value)
+        self.last_pin_duty[pin] = value
+
     def stop(self) -> None:
         """COAST ('Free Running Motor Stop'): both inputs of each motor LOW,
         motor windings open. The wheels are free to spin — an external push
         (e.g. the arm shaking the chassis) can roll the robot out of position.
         Use brake() to hold."""
         self.last_duty = (0.0, 0.0)
-        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
-            pwm.ChangeDutyCycle(0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 0)
 
     def brake(self) -> None:
         """ACTIVE BRAKE ('Fast Motor Stop'): both inputs of each motor driven
@@ -242,8 +251,8 @@ class PWMActuator:
         brake exists; this is the strongest hold the hardware allows.
         Stationary, it draws ~no current; current only flows while something
         is actively trying to move it."""
-        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
-            pwm.ChangeDutyCycle(100)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 100)
 
     def close(self) -> None:
         self.stop()
@@ -261,6 +270,10 @@ class PWMActuator:
         except Exception:
             pass
 
+    def _channels(self):
+        return ((self.pwm_in1, self.pins.in1), (self.pwm_in2, self.pins.in2),
+                (self.pwm_in3, self.pins.in3), (self.pwm_in4, self.pins.in4))
+
     def _set_left(self, speed: float) -> None:
         # ZK-BM1: PWM the forward input for +speed, the reverse input for
         # -speed; the idle input is held at 0% (LOW). Duty cycle = speed.
@@ -268,22 +281,22 @@ class PWMActuator:
         # one — otherwise a direction change passes through a moment with
         # BOTH inputs high, which the board treats as a brake pulse.
         if speed > 0:
-            self.pwm_in2.ChangeDutyCycle(0)
-            self.pwm_in1.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in2, self.pins.in2, 0)
+            self._write(self.pwm_in1, self.pins.in1, abs(speed))
         elif speed < 0:
-            self.pwm_in1.ChangeDutyCycle(0)
-            self.pwm_in2.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in1, self.pins.in1, 0)
+            self._write(self.pwm_in2, self.pins.in2, abs(speed))
         else:
-            self.pwm_in1.ChangeDutyCycle(0)
-            self.pwm_in2.ChangeDutyCycle(0)
+            self._write(self.pwm_in1, self.pins.in1, 0)
+            self._write(self.pwm_in2, self.pins.in2, 0)
 
     def _set_right(self, speed: float) -> None:
         if speed > 0:
-            self.pwm_in4.ChangeDutyCycle(0)
-            self.pwm_in3.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in4, self.pins.in4, 0)
+            self._write(self.pwm_in3, self.pins.in3, abs(speed))
         elif speed < 0:
-            self.pwm_in3.ChangeDutyCycle(0)
-            self.pwm_in4.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in3, self.pins.in3, 0)
+            self._write(self.pwm_in4, self.pins.in4, abs(speed))
         else:
-            self.pwm_in3.ChangeDutyCycle(0)
-            self.pwm_in4.ChangeDutyCycle(0)
+            self._write(self.pwm_in3, self.pins.in3, 0)
+            self._write(self.pwm_in4, self.pins.in4, 0)
