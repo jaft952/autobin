@@ -429,6 +429,10 @@ class RobotRuntime:
 
             # How fast the base may CHANGE what it is doing, whichever layer
             # won. Ramping up only -- stops and reversals are never delayed.
+            # 0 = a hold coasts (all inputs LOW), 1 = a hold brakes (all HIGH).
+            # Braking creeps and yaws on this board; see MotionExecutor.
+            ("motion.hold_with_brake", SYS, [(motion_mod, "HOLD_WITH_BRAKE")],
+             0.0, 1.0, 1.0, "Motion: hold by braking (0 = coast, 1 = brake)"),
             ("motion.slew_vx", SYS, [(motion_mod, "SLEW_VX_PER_S")],
              0.1, 5.0, 0.1, "Motion: forward ramp rate (vector/s, lower = gentler)"),
             ("motion.slew_vtheta", SYS, [(motion_mod, "SLEW_VTHETA_PER_S")],

@@ -23,11 +23,21 @@ clips one wheel at 100% and silently straightens the arc:
     left  = v_x - v_theta
     right = v_x + v_theta
 
-HALT vs BRAKE: a zero motion_vector normally COASTS the wheels (power cut,
-free to spin). But when the halt accompanies a GRAB, the arm's motion shakes
-the chassis and coasting lets the robot drift off its aligned spot. So for a
-grab command the wheels are actively BRAKED (windings shorted) — they resist
-being pushed and hold position through the whole grab sequence.
+HALT vs BRAKE: a zero motion_vector COASTS the wheels (power cut, free to
+spin). A halt that accompanies a GRAB was meant to BRAKE instead (both
+inputs of each motor driven HIGH, shorting the windings) so the arm's
+shaking could not drift the base off its aligned spot.
+
+On this hardware it does the opposite. Held in that state the base creeps
+and yaws, for a whole run of BRAKE (all HIGH) ticks in the log, while a
+coasting base sits still. Four independently soft-timed PWM channels held at
+"100%" are not a guaranteed solid HIGH on all four at once, and any moment
+where one input of a motor is high and its partner is not is a DRIVE pulse,
+not a brake. So HOLD_WITH_BRAKE defaults to False and a hold coasts.
+
+Flip it back (dashboard: motion.hold_with_brake) to compare on the robot.
+Coasting relies on the gearboxes holding the base still on their own, which
+is true on a flat floor and may not be on a slope.
 """
 from __future__ import annotations
 
@@ -61,6 +71,9 @@ _GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold"})
 # (hardware_safety_patterns.md rule 7).
 SLEW_VX_PER_S = 0.6
 SLEW_VTHETA_PER_S = 0.3
+
+# False -> a hold coasts (all inputs LOW). See the HALT vs BRAKE note above.
+HOLD_WITH_BRAKE = False
 _SLEW_MAX_DT_S = 0.5      # a long stall must not authorise an unlimited step
 
 
@@ -167,7 +180,7 @@ class MotionExecutor:
         ActuatorInterface; falls back to stop() when an actuator omits it."""
         self._halted()
         brake_fn = getattr(self.actuator, "brake", None)
-        if callable(brake_fn):
+        if HOLD_WITH_BRAKE and callable(brake_fn):
             brake_fn()
         else:
             self.actuator.stop()

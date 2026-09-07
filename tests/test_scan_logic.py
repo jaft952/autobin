@@ -301,28 +301,40 @@ def test_executor_mixing():
     print("PASS executor mixing + sign convention + stop")
 
 
-def test_executor_brakes_during_grab():
-    """A halt (0,0,0) that accompanies a grab must BRAKE (hold position so
-    the arm's shaking can't drift the base), not coast."""
+def test_hold_coasts_by_default_and_brakes_when_asked():
+    """A hold used to always brake, to stop the arm's shaking from drifting
+    the base. On this board holding all four inputs HIGH makes the base creep
+    and yaw instead -- a whole run of BRAKE (all HIGH) ticks in the log with
+    the chassis still moving -- so a hold coasts unless HOLD_WITH_BRAKE is
+    turned back on."""
     act = CaptureActuator()
     ex = MotionExecutor(actuator=act) # type: ignore
 
+    assert motion_mod.HOLD_WITH_BRAKE is False, "coast is the default"
+
     ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "",
                              {"pose": [100, 145, 75, 165, 90]}))
-    assert act.braked and not act.stopped, "grab halt must brake, not coast"
+    assert act.stopped and not act.braked, "a grab halt must coast"
 
     ex.execute(ActionCommand(3, True, (0, 0, 0), "hold", ""))
-    assert act.braked, "the wait before a grab must hold the base too"
+    assert act.stopped and not act.braked
 
-    # A plain scan/idle halt still coasts (free to be repositioned).
+    # A plain scan/idle halt coasts too (it always did).
     ex.execute(ActionCommand(0, True, (0, 0, 0), "stow", ""))
     assert act.stopped and not act.braked
 
-    # Driving again releases the brake (apply overwrites it).
+    # The dashboard switch still reaches the brake, for comparing on the robot.
+    motion_mod.HOLD_WITH_BRAKE = True
+    try:
+        ex.execute(ActionCommand(3, True, (0, 0, 0), "hold", ""))
+        assert act.braked and not act.stopped
+    finally:
+        motion_mod.HOLD_WITH_BRAKE = False
+
+    # Driving again releases either one (apply overwrites it).
     ex.execute(ActionCommand(1, True, (0.6, 0, 0), None, ""))
     assert not act.braked and not act.stopped
-    print("PASS executor brakes during grab, coasts otherwise")
-
+    print("PASS hold coasts by default, brakes when asked")
 
 
 def test_motion_ramps_up_but_stops_at_once():
@@ -384,7 +396,11 @@ def test_executor_brake_falls_back_to_stop():
 
     act = NoBrakeActuator()
     ex = MotionExecutor(actuator=act) # type: ignore
-    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [0] * 5}))
+    motion_mod.HOLD_WITH_BRAKE = True
+    try:
+        ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [0] * 5}))
+    finally:
+        motion_mod.HOLD_WITH_BRAKE = False
     assert act.stopped, "brake must fall back to stop when unsupported"
     print("PASS executor brake falls back to stop when unsupported")
 
@@ -999,7 +1015,7 @@ ALL_TESTS = [
     test_yields_to_target_and_restarts,
     test_none_distance_is_not_an_obstacle,
     test_executor_mixing,
-    test_executor_brakes_during_grab,
+    test_hold_coasts_by_default_and_brakes_when_asked,
     test_motion_ramps_up_but_stops_at_once,
     test_executor_brake_falls_back_to_stop,
     test_arbitration_with_real_hub,
