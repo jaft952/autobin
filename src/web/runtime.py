@@ -38,6 +38,7 @@ from typing import Optional
 from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicPins
 from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
+import src.subsumption.motion_executor as motion_mod
 from src.subsumption.motion_executor import MotionExecutor
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
 import src.scanning.tuning as scan_tuning
@@ -425,6 +426,13 @@ class RobotRuntime:
              10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
 
             ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
+
+            # How fast the base may CHANGE what it is doing, whichever layer
+            # won. Ramping up only -- stops and reversals are never delayed.
+            ("motion.slew_vx", SYS, [(motion_mod, "SLEW_VX_PER_S")],
+             0.1, 5.0, 0.1, "Motion: forward ramp rate (vector/s, lower = gentler)"),
+            ("motion.slew_vtheta", SYS, [(motion_mod, "SLEW_VTHETA_PER_S")],
+             0.05, 5.0, 0.05, "Motion: steering ramp rate (vector/s, lower = gentler)"),
 
             ("loop.hz", SYS, [(self, "hz")], 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
         ]
