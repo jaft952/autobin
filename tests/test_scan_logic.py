@@ -375,6 +375,47 @@ def test_motion_ramps_up_but_stops_at_once():
     print("PASS motion ramps up, stops and reverses at once")
 
 
+
+def test_backoff_speed_is_separate_from_the_pivot_speed():
+    """Reversing is the one emergency phase that moves the base into ground
+    the single rear beam sees poorly, so it gets its own slider. It used to
+    share turn_speed, which also drives Layer 1's patrol pivot."""
+    layer = EmergencyStopLayer()
+    assert layer.backoff_speed == layer.turn_speed, "same default, so nothing changes untouched"
+
+    layer.set_turn_speed(0.5)
+    layer.set_backoff_speed(0.8)
+    assert (layer.turn_speed, layer.backoff_speed) == (0.5, 0.8)
+
+    # Both stay inside 0..1 whatever they are handed.
+    layer.set_backoff_speed(9.0)
+    assert layer.backoff_speed == 1.0
+    layer.set_backoff_speed(-9.0)
+    assert layer.backoff_speed == 0.0
+
+    # The reverse phase uses the backoff speed; the pivot still uses turn.
+    with fake_emergency_clock() as clock:
+        layer = EmergencyStopLayer()
+        layer.set_turn_speed(0.3)
+        layer.set_backoff_speed(0.7)
+        sensors = FakeDirectionalSensors(front=5.0, front_left=None,
+                                         front_right=None,
+                                         back=emergency_mod.BACKOFF_CLEARANCE_CM + 10)
+        layer.evaluate(sensors)                  # decides, then settles
+        clock.tick(emergency_mod.SETTLE_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert "BACKOFF" in cmd.message, cmd.message
+        assert cmd.motion_vector == (-0.7, 0, 0), cmd.motion_vector
+
+        clock.tick(emergency_mod.BACKOFF_S + 0.01)
+        layer.evaluate(sensors)                  # backoff done -> settle
+        clock.tick(emergency_mod.SETTLE_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert "TURN" in cmd.message, cmd.message
+        assert abs(cmd.motion_vector[2]) == 0.3, cmd.motion_vector
+    print("PASS emergency backoff speed is separate from the pivot speed")
+
+
 # ── Arbitration: scanning combined with the other layers ─────────────────
 
 def _vote(arbitrator, sensors_obj):
@@ -1009,6 +1050,7 @@ ALL_TESTS = [
     test_scan_timers_pause_while_suppressed,
     test_timed_phases_jitter_within_bounds,
     test_reset_abandons_the_manoeuvre,
+    test_backoff_speed_is_separate_from_the_pivot_speed,
     test_scan_only_mode_drives_past_a_can,
 ]
 

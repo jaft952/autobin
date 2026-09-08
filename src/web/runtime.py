@@ -426,6 +426,12 @@ class RobotRuntime:
              10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
 
             ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
+            # Reversing has its own slider: scan.turn_speed drives every
+            # PIVOT (Layer 1's and Layer 4's, which must match since Layer 4
+            # outvotes Layer 1), but backing off is the phase that moves into
+            # ground the single rear beam sees poorly.
+            ("safety.backoff_speed", L4, [(emerg, "backoff_speed")],
+             0.1, 1.0, 0.01, "Emergency: reverse speed (0-1)"),
 
             # How fast the base may CHANGE what it is doing, whichever layer
             # won. Ramping up only -- stops and reversals are never delayed.
