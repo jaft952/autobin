@@ -8,7 +8,7 @@ from src.hardware.sensors.sensor_hub import SensorHub
 from src.hardware.sensors.clearance import read_distance_cm
 from src.safety.obstacle_avoidance import compare_room
 
-EMERGENCY_TURN_SPEED = 0.2   # keep in step with src.scanning.tuning.TURN_SPEED, this layer outvotes it
+EMERGENCY_TURN_SPEED = 0.2   # this layer's own pivot speed (safety.turn_speed), independent of the scan patrol's
 # Reversing is its own speed: it is the one phase that moves the base into
 # ground it cannot see well (the rear sensor is a single narrow beam), and
 # tying it to the pivot speed meant one slider changed both plus the scan

@@ -394,10 +394,12 @@ class RobotRuntime:
         L1, L2, L4, SYS = "Layer 1 - Scan", "Layer 2 - Approach", "Layer 4 - Emergency", "System"
         return [
             ("scan.forward_speed", L1, [(scan, "forward_speed")], 0.2, 1.0, 0.01, "Scan: lane speed (0-1)"),
-            # Layer 4 outvotes the scan pivot, so both must pivot at one speed.
-            ("scan.turn_speed",    L1, [(scan, "turn_speed"), (emerg, "turn_speed")],
+            ("scan.turn_speed",    L1, [(scan, "turn_speed")],
              0.2, 1.0, 0.01, "Scan: pivot speed (0-1)"),
-            ("scan.turn_90_s",     L1, [(scan, "turn_90_s")], 0.3, 3.0, 0.05, "Scan: 90° pivot time (s)"),
+            # Open-loop pivot: no odometry, so the 90 degrees is however far
+            # the base gets in this many seconds. Carpet, battery level and
+            # pivot speed all change that, hence the wide range.
+            ("scan.turn_90_s",     L1, [(scan, "turn_90_s")], 0.3, 10.0, 0.05, "Scan: 90° pivot time (s)"),
             ("scan.shift_s",       L1, [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
             ("scan.max_lane_s",    L1, [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
             # Read from the module every tick, so patching the global works.
@@ -426,10 +428,11 @@ class RobotRuntime:
              10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
 
             ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
-            # Reversing has its own slider: scan.turn_speed drives every
-            # PIVOT (Layer 1's and Layer 4's, which must match since Layer 4
-            # outvotes Layer 1), but backing off is the phase that moves into
-            # ground the single rear beam sees poorly.
+            # This layer's own speeds. They used to be tied to the scan
+            # pivot, so escaping a corner and patrolling a lane could not be
+            # tuned apart.
+            ("safety.turn_speed", L4, [(emerg, "turn_speed")],
+             0.1, 1.0, 0.01, "Emergency: pivot speed (0-1)"),
             ("safety.backoff_speed", L4, [(emerg, "backoff_speed")],
              0.1, 1.0, 0.01, "Emergency: reverse speed (0-1)"),
 
