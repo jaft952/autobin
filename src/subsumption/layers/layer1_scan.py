@@ -98,7 +98,7 @@ class ScanAroundLayer(BaseLayer):
             self._enter(Phase.DRIVE, now)
             self._start_lane(now)
 
-        HANDLERS[self._phase](self, now, front, wall_ahead, sensors)
+        HANDLERS[self._phase](self, now, front, wall_ahead, sensors) # type: ignore
 
         return self._output(front, left, right)
 
