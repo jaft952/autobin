@@ -106,6 +106,11 @@ class PWMActuator:
         self.cal = calibration or MotionCalibration()
         self.last_duty = (0.0, 0.0)
         self._my_pins = [self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4]
+        # What was last written to each input pin. last_duty is the wheel
+        # speed the mixer asked for; this is what the H-bridge actually sees,
+        # which is the only thing that says coast (all LOW) from brake (all
+        # HIGH) from still driving.
+        self.last_pin_duty = {pin: 0.0 for pin in self._my_pins}
 
         # Prefer pigpiod; fall back to RPi.GPIO soft PWM if unavailable.
         self._pi = pigpio_link.connect()
@@ -178,16 +183,36 @@ class PWMActuator:
         self._set_left(left_speed)
         self._set_right(right_speed)
 
+    def _write(self, pwm, pin: int, value: float) -> None:
+        pwm.ChangeDutyCycle(value)
+        self.last_pin_duty[pin] = value
+
     def stop(self) -> None:
         """Coast: both inputs LOW, windings open, wheels free to spin. Use brake() to hold position."""
         self.last_duty = (0.0, 0.0)
-        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
-            pwm.ChangeDutyCycle(0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 0)
 
     def brake(self) -> None:
-        """Active brake: both inputs HIGH, shorting the windings to resist being rolled."""
-        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
-            pwm.ChangeDutyCycle(100)
+        """ACTIVE BRAKE ('Fast Motor Stop'): both inputs of each motor driven
+        HIGH (PWM 100%) at the same time. This shorts the motor windings, so
+        any attempt to turn the wheel — a push forward or back — induces a
+        current that opposes the motion (dynamic braking). The robot resists
+        being rolled, holding position while the arm actuates. No mechanical
+        brake exists; this is the strongest hold the hardware allows.
+        Stationary, it draws ~no current; current only flows while something
+        is actively trying to move it."""
+        # ORDER MATTERS, same reason as _set_left(): raising the inputs in
+        # pin order walks past a state where one input is already HIGH and
+        # its partner still carries the old duty -- which is not a brake, it
+        # is a near-full-speed DRIVE on that one channel, and only on that
+        # one, so the chassis lurches and yaws before it stops. Drop
+        # everything to LOW first (a harmless coast) and raise from there.
+        self.last_duty = (0.0, 0.0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 100)
 
     def close(self) -> None:
         self.stop()
@@ -205,25 +230,29 @@ class PWMActuator:
         except Exception:
             pass
 
+    def _channels(self):
+        return ((self.pwm_in1, self.pins.in1), (self.pwm_in2, self.pins.in2),
+                (self.pwm_in3, self.pins.in3), (self.pwm_in4, self.pins.in4))
+
     def _set_left(self, speed: float) -> None:
         # Drop the idle input to 0 before raising the active one, or a direction change briefly brakes.
         if speed > 0:
-            self.pwm_in2.ChangeDutyCycle(0)
-            self.pwm_in1.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in2, self.pins.in2, 0)
+            self._write(self.pwm_in1, self.pins.in1, abs(speed))
         elif speed < 0:
-            self.pwm_in1.ChangeDutyCycle(0)
-            self.pwm_in2.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in1, self.pins.in1, 0)
+            self._write(self.pwm_in2, self.pins.in2, abs(speed))
         else:
-            self.pwm_in1.ChangeDutyCycle(0)
-            self.pwm_in2.ChangeDutyCycle(0)
+            self._write(self.pwm_in1, self.pins.in1, 0)
+            self._write(self.pwm_in2, self.pins.in2, 0)
 
     def _set_right(self, speed: float) -> None:
         if speed > 0:
-            self.pwm_in4.ChangeDutyCycle(0)
-            self.pwm_in3.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in4, self.pins.in4, 0)
+            self._write(self.pwm_in3, self.pins.in3, abs(speed))
         elif speed < 0:
-            self.pwm_in3.ChangeDutyCycle(0)
-            self.pwm_in4.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in3, self.pins.in3, 0)
+            self._write(self.pwm_in4, self.pins.in4, abs(speed))
         else:
-            self.pwm_in3.ChangeDutyCycle(0)
-            self.pwm_in4.ChangeDutyCycle(0)
+            self._write(self.pwm_in3, self.pins.in3, 0)
+            self._write(self.pwm_in4, self.pins.in4, 0)

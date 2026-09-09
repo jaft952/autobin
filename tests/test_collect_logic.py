@@ -39,11 +39,13 @@ from src.subsumption.arm_executor import ArmExecutor, GRAB_COOLDOWN_S
 from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
-from src.subsumption.layers.layer2_approach import ApproachLitterLayer
+import src.subsumption.layers.layer2_approach as approach_mod
+from src.subsumption.layers.layer2_approach import (
+    ApproachLitterLayer, RETREAT_GAP_S, RETREAT_PULSE_S,
+)
 import src.subsumption.layers.layer3_collect as collect_mod
 from src.subsumption.layers.layer3_collect import (
     CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S, GRAB_CONFIRM_CM,
-    RETREAT_GAP_S, RETREAT_PULSE_S,
 )
 from src.motion.calibration import MotionCalibration
 from src.hardware.sensors.interfaces import LitterSnapshot
@@ -206,6 +208,17 @@ def settle(layer, sensors, clock):
 
 
 @contextmanager
+def fake_approach_clock():
+    clock = FakeClock()
+    real = approach_mod.time.monotonic
+    approach_mod.time.monotonic = clock
+    try:
+        yield clock
+    finally:
+        approach_mod.time.monotonic = real
+
+
+@contextmanager
 def fake_emergency_clock():
     clock = FakeClock()
     real = emergency_mod.time.monotonic
@@ -277,22 +290,22 @@ def test_latch_rides_out_a_blink():
 
 
 def test_too_close_backs_off():
-    """Overshooting the nearest calibrated arc used to return inactive, so
-    Layer 2 kept closing in and made it worse until Layer 5 tripped. The
-    retreat now pulses the same shape as test_ibvs_centering.py's
-    _retreat_pulse(): a brief stop, then a bounded backward pulse at
-    BACKUP_SPEED, not an indefinite backoff."""
-    with fake_collect_clock() as clock:
-        layer = CollectLitterLayer(arc_solver=make_solver())
+    """Backing out of an overshoot is BASE movement, so it belongs to Layer 2
+    with the rest of the driving. The pulse keeps the shape
+    tests/test_ibvs_centering.py validated: a brief stop, then a bounded
+    backward pulse at BACKUP_SPEED, not an indefinite backoff."""
+    with fake_approach_clock() as clock:
+        layer = ApproachLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.95) # type: ignore
+        sensors.litter_dist_cm = 20.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
 
-        # Freshly overshot -> stopped gap first (a direction flip never goes
-        # straight into reverse), never a grab.
+        # Freshly overshot -> stopped gap first (a direction flip never
+        # goes straight into reverse).
         cmd = layer.evaluate(sensors)
         assert cmd.active, cmd.message
         assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
-        assert cmd.arm_action != 'grab_arc', cmd.arm_action
+        assert cmd.arm_action == 'deploy', cmd.arm_action
 
         # Gap elapses -> the backward pulse, at the same BACKUP_SPEED
         # tests/test_ibvs_centering.py uses (converted to a motion fraction).
@@ -300,17 +313,43 @@ def test_too_close_backs_off():
         cmd = layer.evaluate(sensors)
         expected_vx = -reactive_mod.BACKUP_SPEED / MotionCalibration().forward_speed
         assert cmd.motion_vector == (expected_vx, 0, 0), cmd.motion_vector
-        assert cmd.motion_vector[0] < 0, "should be reversing" # type: ignore
 
         # Pulse elapses -> back to the stopped gap, then pulses again.
         clock.tick(RETREAT_PULSE_S + 0.01)
         cmd = layer.evaluate(sensors)
         assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
 
-        # Backing off into the band grabs normally again.
-        sensors.ground = (0.5, 0.6) # type: ignore
-        assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-    print("PASS overshoot retreats in bounded pulses instead of standing down")
+        # Backed off into the band -> Layer 2 parks instead of retreating.
+        sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert "IN REACH" in cmd.message, cmd.message
+    print("PASS overshoot retreats in bounded pulses, from Layer 2")
+
+
+def test_layer2_parks_on_the_arc_grid_not_on_distance():
+    """The two layers used to judge arrival on different measurements: Layer
+    2 on the monocular distance, Layer 3 on the arc grid. They disagreed, so
+    the base drove past the band and Layer 3 backed it out again. Layer 2 now
+    stops on the same grid Layer 3 grabs from, so the grab does not start on
+    a base that is still rolling."""
+    with fake_approach_clock():
+        layer = ApproachLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+
+        # Far outside the grid but nowhere near the old STOP_DISTANCE_CM:
+        # still driving.
+        sensors.litter_dist_cm = 60.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.1) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] > 0, cmd.message # type: ignore
+
+        # Inside the grid -> park and hand over. Note the distance estimate
+        # is unchanged: the grid decided, not distance_cm.
+        sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
+        assert "IN REACH" in cmd.message, cmd.message
+    print("PASS Layer 2 parks on the arc grid")
 
 
 def test_ultrasonic_vetoes_a_far_grab():
@@ -480,7 +519,9 @@ def test_approach_steering():
     it needs a real distance estimate to move at all -- unlike the old
     implementation there is no y-position fallback when distance is
     unknown, which is the whole point of sharing the one validated path."""
-    layer = ApproachLitterLayer()
+    # Empty upright grid: nothing is ever "in reach", so every tick takes
+    # the steering path this test is about.
+    layer = ApproachLitterLayer(arc_solver=make_solver(upright=False))
     sensors = FakeSensors()
     sensors.litter_dist_cm = 60.0 # type: ignore
 
@@ -798,7 +839,8 @@ def test_smooth_move_semantics():
 def test_arbitration_stack():
     with fake_emergency_clock() as clock, fake_collect_clock() as collect_clock:
         collect = CollectLitterLayer(arc_solver=make_solver())
-        layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
+        layers = [SystemIdleLayer(), ScanAroundLayer(),
+                  ApproachLitterLayer(arc_solver=make_solver()),
                   collect, EmergencyStopLayer()]
         arb = Arbitrator()
         sensors = FakeSensors()
@@ -842,66 +884,54 @@ def test_arbitration_stack():
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 
-def test_drifting_target_blocks_the_grab():
-    """Solvable for GRAB_STABLE_S is not the same as STILL for it. The base
-    rocks when Layer 2's drive is braked, and the grab used to fire off a
-    reading that was still sliding."""
+def test_retreat_survives_a_one_frame_blink():
+    """A blink mid-retreat used to drop Layer 2 to inactive, so Layer 0 won
+    and the base COASTED away from the spot half-way through the manoeuvre."""
+    with fake_approach_clock() as clock:
+        layer = ApproachLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+        sensors.litter_dist_cm = 20.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
+        layer.evaluate(sensors)                       # enter the retreat
+
+        sensors.center = sensors.ground = None        # one blank frame
+        clock.tick(0.05)
+        cmd = layer.evaluate(sensors)
+        assert cmd.active, "a blink dropped the retreat to Layer 0"
+        assert cmd.motion_vector == (0, 0, 0), "must not reverse blind"
+
+        # The manoeuvre resumes rather than restarting from a fresh gap.
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
+        clock.tick(RETREAT_GAP_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] < 0, cmd.message # type: ignore
+
+        # Gone for good -> stand down so scan can take over.
+        sensors.center = sensors.ground = None
+        clock.tick(approach_mod.LOST_GRACE_S + 0.1)
+        assert not layer.evaluate(sensors).active
+    print("PASS retreat survives a one-frame blink")
+
+
+def test_layer3_stands_down_at_once_when_unreachable():
+    """Too close is not a blink: the tin was located, it just cannot be
+    reached from here. Latching for GRABBABLE_LATCH_S held the base for two
+    seconds before Layer 2 was allowed to back it off."""
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.55) # type: ignore
+        sensors.ground = (0.5, 0.6) # type: ignore
+        settle(layer, sensors, clock)                 # arms the latch
 
-        for i in range(40):                      # 4 s of a wobbling reading
-            clock.tick(0.1)
-            sensors.ground = (0.5, 0.65 if i % 2 else 0.55) # type: ignore
-            cmd = layer.evaluate(sensors)
-            assert cmd.active and cmd.arm_action != 'grab_arc',                 f"grabbed a moving target on tick {i}"
+        sensors.ground = (0.5, 0.95) # type: ignore   overshot, still visible
+        assert not layer.evaluate(sensors).active,             "held the base instead of letting Layer 2 back off"
 
-        for _ in range(25):                      # settled -> grab goes ahead
-            clock.tick(0.1)
-            cmd = layer.evaluate(sensors)
-        assert cmd.arm_action == 'grab_arc', cmd.message
-    print("PASS a drifting reading holds instead of grabbing")
-
-
-def test_solve_reads_one_snapshot():
-    """Pose and position must come from the SAME frame. Read through the
-    separate getters they can straddle two, solving the wrong grid for the
-    wrong point."""
-    with fake_collect_clock():
-        layer = CollectLitterLayer(arc_solver=make_solver(upright=False, lying=True))
-        sensors = FakeSensors()
-        # Getters describe an upright tin; the snapshot describes a lying one
-        # at a different point. Only the lying grid can solve, so a solved
-        # pose proves the snapshot won.
-        sensors.pose = {"klass": "upright", "angle": None} # type: ignore
-        sensors.ground = (0.5, 0.2) # type: ignore
-        sensors.center = (0.5, 0.2) # type: ignore
-        sensors.snapshot = lambda: LitterSnapshot( # type: ignore
-            center=(0.5, 0.6), ground_contact=(0.5, 0.9),
-            klass="lying", angle=90.0)
-
-        solved, klass, point, _band = layer._solve(sensors)
-        assert klass == "lying", klass
-        assert point == (0.5, 0.6), point      # lying -> bbox center
-        assert solved is not None
-    print("PASS solve reads pose and point from one snapshot")
-
-
-def test_unknown_pose_is_not_reported_as_a_mask():
-    """No mask means unknown. LitterSnapshot must say None rather than
-    inventing 'upright', so a later caller can tell the two apart."""
-    snap = LitterSnapshot(center=(0.5, 0.6), ground_contact=None,
-                          klass=None, angle=None)
-    assert snap.klass is None
-    with fake_collect_clock():
-        layer = CollectLitterLayer(arc_solver=make_solver())
-        sensors = FakeSensors()
-        sensors.snapshot = lambda: snap # type: ignore
-        # Solving still defaults to the upright grid -- the default lives in
-        # the layer, where it is visible, not hidden in the sensor.
-        assert layer._solve(sensors)[1] == "upright"
-    print("PASS an absent mask reads as unknown, not as upright")
+        # A genuine blink still rides out the latch.
+        sensors.ground = (0.5, 0.6) # type: ignore
+        settle(layer, sensors, clock)
+        sensors.ground = None
+        assert layer.evaluate(sensors).active
+    print("PASS Layer 3 stands down at once when the tin is unreachable")
 
 
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
@@ -911,6 +941,9 @@ ALL_TESTS = [
     test_grab_waits_for_stability,
     test_latch_rides_out_a_blink,
     test_too_close_backs_off,
+    test_layer2_parks_on_the_arc_grid_not_on_distance,
+    test_retreat_survives_a_one_frame_blink,
+    test_layer3_stands_down_at_once_when_unreachable,
     test_ultrasonic_vetoes_a_far_grab,
     test_drifting_target_blocks_the_grab,
     test_solve_reads_one_snapshot,

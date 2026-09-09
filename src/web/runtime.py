@@ -10,6 +10,7 @@ from typing import Optional
 from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicPins
 from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
+import src.subsumption.motion_executor as motion_mod
 from src.subsumption.motion_executor import MotionExecutor
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
 import src.scanning.tuning as scan_tuning
@@ -25,6 +26,7 @@ STATE_SCAN = "SCAN"
 STATE_ESTOP = "ESTOP"
 
 FRAME_ENCODE_EVERY = 2          # encode the camera jpeg every Nth tick
+HANDOFF_TRACE_TICKS = 12        # ticks of pin-level logging after a layer change
 PERF_WINDOW = 50                # ticks averaged for the performance card
 
 
@@ -85,6 +87,7 @@ class RobotRuntime:
         self.started_at = time.monotonic()
         self.win_message = ""
         self.win_layer = -1
+        self._trace_left = 0            # HANDOFF_TRACE_TICKS countdown
         self._tick_times = deque(maxlen=PERF_WINDOW)
         self._tick_stamps = deque(maxlen=PERF_WINDOW)
         self._frame_jpeg: Optional[bytes] = None
@@ -175,6 +178,7 @@ class RobotRuntime:
             self.arbitrator.clear()
 
             self.motion.execute(winning)
+            self._trace_handoff(winning)
             if self.arm is not None:
                 with self._arm_lock:
                     self._run_arm(winning)
@@ -195,6 +199,42 @@ class RobotRuntime:
         if (self.camera_available and self._stream_clients > 0
                 and tick_n % FRAME_ENCODE_EVERY == 0):
             self._encode_frame()
+
+    def _trace_handoff(self, winning):
+        """Pin-level trace across a layer change. last_duty is what the mixer
+        asked for; only the four input pins say whether the H-bridge is
+        coasting (all LOW), braking (all HIGH) or still driving, which is
+        what a base that creeps after being told to stop turns on."""
+        act = self.motion.actuator
+        pins = getattr(act, "last_pin_duty", None)
+        if pins is None:
+            return
+
+        if winning.layer_id != self.win_layer:
+            self._trace_left = HANDOFF_TRACE_TICKS
+            self.log.debug(f"[HANDOFF L{self.win_layer} -> L{winning.layer_id}] "
+                           f"{self._pin_state(pins)} vec={winning.motion_vector} "
+                           f"arm={winning.arm_action}")
+            return
+
+        if self._trace_left > 0:
+            self._trace_left -= 1
+            n = HANDOFF_TRACE_TICKS - self._trace_left
+            self.log.debug(f"[L{winning.layer_id} +{n}] {self._pin_state(pins)}")
+
+    @staticmethod
+    def _pin_state(pins) -> str:
+        """in1/in2 = left channel, in3/in4 = right channel (ZK-BM1 has no
+        enable line; the duty on the two inputs IS direction plus speed)."""
+        duties = " ".join(f"{pin}={duty:.0f}" for pin, duty in pins.items())
+        values = list(pins.values())
+        if all(v == 0 for v in values):
+            mode = "COAST (all LOW)"
+        elif all(v >= 100 for v in values):
+            mode = "ALL HIGH"          # nothing should produce this any more
+        else:
+            mode = "DRIVING"
+        return f"pins[{duties}] {mode}"
 
     def _run_arm(self, winning):
         """Dispatch the arm; pause YOLO during a grab so GIL contention
@@ -321,7 +361,13 @@ class RobotRuntime:
             # Read from the module every tick, so patching the global works.
             ("scan.turn_at_cm",    L1, [(scan_tuning, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
 
-            # These constants drive Layer 2's reactive controller directly; approach.backup_speed also tunes Layer 3's retreat.
+            # Layer 2 (approach) now calls reactive_controller.compute_reactive_
+            # command() directly -- the same validated function
+            # tests/test_ibvs_centering.py uses -- so these are the constants
+            # that actually drive it, read fresh from the module each call.
+            # Layer 2's overshoot retreat also reads BACKUP_SPEED live, so
+            # approach.backup_speed tunes both the too-close backoff and the
+            # retreat pulse from one slider.
             ("approach.far_distance_cm", L2, [(reactive_mod, "FAR_DISTANCE_CM")],
              30.0, 200.0, 5.0, "Approach: far tier starts beyond (cm)"),
             ("approach.low_distance_cm", L2, [(reactive_mod, "LOW_DISTANCE_CM")],
@@ -333,11 +379,18 @@ class RobotRuntime:
             ("approach.forward_low_speed", L2, [(reactive_mod, "FORWARD_LOW_SPEED")],
              10.0, 60.0, 1.0, "Approach: speed within low tier (duty)"),
             ("approach.backup_speed", L2, [(reactive_mod, "BACKUP_SPEED")],
-             5.0, 40.0, 1.0, "Approach: backup speed when too close (duty, also Layer 3 retreat)"),
+             5.0, 40.0, 1.0, "Approach: backup speed when too close (duty, also the retreat pulse)"),
             ("approach.max_steer_deg", L2, [(reactive_mod, "MAX_STEER_ANGLE_DEG")],
              10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
 
             ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
+
+            # How fast the base may CHANGE what it is doing, whichever layer
+            # won. Ramping up only -- stops and reversals are never delayed.
+            ("motion.slew_vx", SYS, [(motion_mod, "SLEW_VX_PER_S")],
+             0.1, 5.0, 0.1, "Motion: forward ramp rate (vector/s, lower = gentler)"),
+            ("motion.slew_vtheta", SYS, [(motion_mod, "SLEW_VTHETA_PER_S")],
+             0.05, 5.0, 0.05, "Motion: steering ramp rate (vector/s, lower = gentler)"),
 
             ("loop.hz", SYS, [(self, "hz")], 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
         ]

@@ -12,10 +12,6 @@ class ActuatorInterface(Protocol):
     def stop(self) -> None: ...
     def close(self) -> None: ...
 
-    def brake(self) -> None:
-        """Optional: hold position. Callers fall back to stop() if unimplemented."""
-        ...
-
 
 @runtime_checkable
 class ArmPlannerInterface(Protocol):

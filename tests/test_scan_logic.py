@@ -43,6 +43,7 @@ from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
 import src.subsumption.layers.layer4_emergency as emergency_mod
 from src.subsumption.layers.layer4_emergency import EmergencyStopLayer, EMERGENCY_TURN_SPEED
+import src.subsumption.motion_executor as motion_mod
 from src.subsumption.motion_executor import MotionExecutor
 from src.hardware.sensors.sensor_hub import SensorHub
 
@@ -255,6 +256,18 @@ def test_none_distance_is_not_an_obstacle():
 
 # ── MotionExecutor: motion_vector -> wheels ───────────────────────────────
 
+def settled(ex, act, clock, command):
+    """Run `command` until the slew limiter has finished ramping into it, so
+    a test about MIXING is not also a test about the ramp."""
+    # A fixed run, not "stop when it looks steady": the reported duty is
+    # rounded, and a saturating arc pins one wheel long before the vector
+    # itself has arrived.
+    for _ in range(150):
+        clock.tick(0.05)
+        ex.execute(command)
+    return act.last
+
+
 def test_executor_mixing():
     act = CaptureActuator()
     ex = MotionExecutor(actuator=act) # type: ignore
@@ -262,67 +275,104 @@ def test_executor_mixing():
     # Derived from the calibration so re-tuning the base can't stale the test.
     duty = ex.cal.forward_speed
 
-    # Straight lane: both wheels equal, forward trim.
-    ex.execute(ActionCommand(1, True, (0.6, 0, 0), None, ""))
-    assert act.last == (round(0.6 * duty, 1), round(0.6 * duty, 1), "forward"), act.last
+    with fake_motion_clock() as clock:
+        # Straight lane: both wheels equal, forward trim.
+        last = settled(ex, act, clock, ActionCommand(1, True, (0.6, 0, 0), None, ""))
+        assert last == (round(0.6 * duty, 1), round(0.6 * duty, 1), "forward"), last
 
-    # Positive v_theta = CCW/left = left wheel back, right wheel forward —
-    # must match DifferentialKinematics.turn_left() = (-speed, +speed).
-    ex.execute(ActionCommand(1, True, (0, 0, TURN_SPEED), None, ""))
-    assert act.last == (round(-TURN_SPEED * duty, 1), round(TURN_SPEED * duty, 1), "turn"), act.last
+        # Positive v_theta = CCW/left = left wheel back, right wheel forward —
+        # must match DifferentialKinematics.turn_left() = (-speed, +speed).
+        last = settled(ex, act, clock, ActionCommand(1, True, (0, 0, TURN_SPEED), None, ""))
+        assert last == (round(-TURN_SPEED * duty, 1), round(TURN_SPEED * duty, 1), "turn"), last
 
-    # Backoff: both wheels reverse with backward trim.
-    ex.execute(ActionCommand(1, True, (-0.5, 0, 0), None, ""))
-    assert act.last == (round(-0.5 * duty, 1), round(-0.5 * duty, 1), "backward"), act.last
+        # Backoff: both wheels reverse with backward trim.
+        last = settled(ex, act, clock, ActionCommand(1, True, (-0.5, 0, 0), None, ""))
+        assert last == (round(-0.5 * duty, 1), round(-0.5 * duty, 1), "backward"), last
 
-    # Saturating arc renormalizes (keeps the curve RATIO) instead of clipping.
-    ex.execute(ActionCommand(1, True, (1.0, 0, 0.5), None, ""))
-    assert act.last == (round(duty / 3, 1), round(duty, 1), "forward"), act.last
+        # Saturating arc renormalizes (keeps the curve RATIO) instead of clipping.
+        last = settled(ex, act, clock, ActionCommand(1, True, (1.0, 0, 0.5), None, ""))
+        assert last == (round(duty / 3, 1), round(duty, 1), "forward"), last
 
-    # Zero vector and inactive/idle commands must stop (coast) the base.
-    ex.execute(ActionCommand(1, True, (0, 0, 0), None, ""))
-    assert act.stopped and not act.braked
-    ex.execute(ActionCommand(-1, False, None, None, "Idle"))
-    assert act.stopped and not act.braked
+        # Zero vector and inactive/idle commands must stop (coast) the base.
+        ex.execute(ActionCommand(1, True, (0, 0, 0), None, ""))
+        assert act.stopped and not act.braked
+        ex.execute(ActionCommand(-1, False, None, None, "Idle"))
+        assert act.stopped and not act.braked
     print("PASS executor mixing + sign convention + stop")
 
 
-def test_executor_brakes_during_grab():
-    """A halt (0,0,0) that accompanies a grab must BRAKE (hold position so
-    the arm's shaking can't drift the base), not coast."""
+def test_every_stop_coasts():
+    """There is no brake any more. Holding all four inputs HIGH made the base
+    creep and yaw on this board (twelve straight all-HIGH ticks in the log
+    with the chassis still moving), so a halt is always all-LOW."""
     act = CaptureActuator()
     ex = MotionExecutor(actuator=act) # type: ignore
 
-    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "",
-                             {"pose": [100, 145, 75, 165, 90]}))
-    assert act.braked and not act.stopped, "grab halt must brake, not coast"
+    for command in (
+        ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [100] * 5}),
+        ActionCommand(3, True, (0, 0, 0), "hold", ""),
+        ActionCommand(2, True, (0, 0, 0), "deploy", ""),
+        ActionCommand(0, True, (0, 0, 0), "stow", ""),
+        ActionCommand(-1, False, None, None, "Idle"),
+    ):
+        ex.execute(command)
+        assert act.stopped and not act.braked, command.arm_action
 
-    ex.execute(ActionCommand(3, True, (0, 0, 0), "hold", ""))
-    assert act.braked, "the wait before a grab must hold the base too"
+    assert not hasattr(ex, "brake"), "MotionExecutor.brake is gone"
 
-    # A plain scan/idle halt still coasts (free to be repositioned).
-    ex.execute(ActionCommand(0, True, (0, 0, 0), "stow", ""))
-    assert act.stopped and not act.braked
-
-    # Driving again releases the brake (apply overwrites it).
+    # Driving again releases the stop.
     ex.execute(ActionCommand(1, True, (0.6, 0, 0), None, ""))
-    assert not act.braked and not act.stopped
-    print("PASS executor brakes during grab, coasts otherwise")
+    assert not act.stopped
+    print("PASS every halt coasts")
 
 
-def test_executor_brake_falls_back_to_stop():
-    """An actuator with no brake() (e.g. a print stub) must degrade to a
-    plain stop instead of crashing."""
-    class NoBrakeActuator:
-        def __init__(self): self.stopped = False
-        def apply(self, cmd): self.stopped = False
-        def stop(self): self.stopped = True
-
-    act = NoBrakeActuator()
+def test_motion_ramps_up_but_stops_at_once():
+    """A layer used to take effect whole on the next tick: Layer 1 driving
+    straight, Layer 2 taking over with a 79-degree arc, one wheel +78% and
+    the other -26% in one tick. That snap is the base veering mid-approach.
+    Ramp UP only -- a brake that arrives late is a safety bug, and a
+    direction flip must pass through zero, not be eased through it."""
+    act = CaptureActuator()
     ex = MotionExecutor(actuator=act) # type: ignore
-    ex.execute(ActionCommand(3, True, (0, 0, 0), "grab_arc", "", {"pose": [0] * 5}))
-    assert act.stopped, "brake must fall back to stop when unsupported"
-    print("PASS executor brake falls back to stop when unsupported")
+
+    with fake_motion_clock() as clock:
+        ex.execute(ActionCommand(1, True, (0.2, 0, 0), "stow", ""))
+        straight = act.last
+
+        # One tick later Layer 2 asks for a hard arc. It must NOT arrive whole.
+        clock.tick(0.05)
+        ex.execute(ActionCommand(2, True, (0.2513, 0, 0.1042), "deploy", ""))
+        assert act.last != straight, "the ramp froze the base"
+        step = abs(act.last[0] - straight[0])
+        full = abs((0.2513 - 0.1042) * 90 - 0.2 * 90)
+        assert step < full, (act.last, straight)
+
+        # Held long enough, it does get there.
+        for _ in range(40):
+            clock.tick(0.05)
+            ex.execute(ActionCommand(2, True, (0.2513, 0, 0.1042), "deploy", ""))
+        arrived = act.last
+
+        # Slowing down is free: a smaller vector applies on the same tick.
+        clock.tick(0.05)
+        ex.execute(ActionCommand(2, True, (0.1, 0, 0.05), "deploy", ""))
+        assert abs(act.last[0]) < abs(arrived[0]), (act.last, arrived)
+
+        # Stopping is never delayed.
+        clock.tick(0.05)
+        ex.execute(ActionCommand(0, True, (0, 0, 0), "stow", ""))
+        assert act.stopped, "a stop was ramped"
+
+        # A reversal passes THROUGH zero rather than easing across it.
+        clock.tick(0.05)
+        ex.execute(ActionCommand(2, True, (0.3, 0, 0), "deploy", ""))
+        for _ in range(40):
+            clock.tick(0.05)
+            ex.execute(ActionCommand(2, True, (0.3, 0, 0), "deploy", ""))
+        clock.tick(0.05)
+        ex.execute(ActionCommand(2, True, (-0.22, 0, 0), "deploy", ""))
+        assert act.stopped, "flipped direction without passing through zero"
+    print("PASS motion ramps up, stops and reverses at once")
 
 
 # ── Arbitration: scanning combined with the other layers ─────────────────
@@ -394,6 +444,17 @@ class FakeDirectionalSensors:
 
     def get_obstacle_distance_front_right_cm(self):
         return self.front_right
+
+
+@contextmanager
+def fake_motion_clock():
+    clock = FakeClock()
+    real = motion_mod.time.monotonic
+    motion_mod.time.monotonic = clock
+    try:
+        yield clock
+    finally:
+        motion_mod.time.monotonic = real
 
 
 @contextmanager
@@ -968,8 +1029,8 @@ ALL_TESTS = [
     test_yields_to_target_and_restarts,
     test_none_distance_is_not_an_obstacle,
     test_executor_mixing,
-    test_executor_brakes_during_grab,
-    test_executor_brake_falls_back_to_stop,
+    test_every_stop_coasts,
+    test_motion_ramps_up_but_stops_at_once,
     test_arbitration_with_real_hub,
     test_avoid_backs_off_before_pivoting_when_the_rear_is_clear,
     test_avoid_skips_the_backoff_when_the_rear_is_tight,
