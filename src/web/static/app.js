@@ -92,6 +92,11 @@ const dash = (v, suffix = "") => (v == null ? "--" : v + suffix);
 
 function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
   const state = connected && status ? status.state : "OFFLINE";
+  // Shutting down or re-execing tears the hardware down on a 2 s timeout,
+  // and a grab runs ~20 s. Mid-grab that drops the arm. The server refuses
+  // it too; this just says so before the click.
+  const halted = state === "STOPPED" || state === "ESTOP";
+  const haltFirst = halted ? "" : "press EMERGENCY STOP first";
   const [addr, setAddr] = useState(base.replace(/^https?:\/\//, ""));
   const [confirmOff, setConfirmOff] = useState(false);
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -117,7 +122,8 @@ function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
       setTimeout(() => setConfirmOff(false), 3000);
       return;
     }
-    await apiPost(base, "/api/system/shutdown");
+    const r = await apiPost(base, "/api/system/shutdown");
+    if (r && r.ok === false) return;          // refused (still running)
     onDead("Pi powering off...");
   };
 
@@ -128,7 +134,8 @@ function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
       return;
     }
     setConfirmRestart(false);
-    await apiPost(base, "/api/system/restart");
+    const r = await apiPost(base, "/api/system/restart");
+    if (r && r.ok === false) return;          // refused (still running)
     onRestarting();
   };
 
@@ -157,11 +164,13 @@ function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
               onClick=${() => apiPost(base, "/api/system/estop")}>■ EMERGENCY STOP</button>
 
       <button class="btn-restart ${confirmRestart ? "armed" : ""}"
-              disabled=${!connected} onClick=${restart}>
+              disabled=${!connected || !halted} title=${haltFirst}
+              onClick=${restart}>
         ${confirmRestart ? "Confirm?" : "⟲ Restart server"}
       </button>
       <button class="btn-shutdown ${confirmOff ? "armed" : ""}"
-              disabled=${!connected} onClick=${shutdown}>
+              disabled=${!connected || !halted} title=${haltFirst}
+              onClick=${shutdown}>
         ${confirmOff ? "Confirm?" : "⏻ Shutdown"}
       </button>
     </div>`;

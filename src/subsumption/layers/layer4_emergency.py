@@ -8,11 +8,16 @@ from src.hardware.sensors.sensor_hub import SensorHub
 from src.hardware.sensors.clearance import read_distance_cm
 from src.safety.obstacle_avoidance import compare_room
 
-EMERGENCY_TURN_SPEED = 0.2   # matches scanning.tuning.TURN_SPEED
-CLEAR_MARGIN = 1.6           # release turn past this multiple of trigger range
-DIAG_CLEAR_MARGIN = 1.2      # diagonals only need to clear trigger range
-MIN_TURN_S = 0.6             # min turn hold time, avoids oscillation
-MAX_TURN_S = 6.0             # after this long, escape instead
+EMERGENCY_TURN_SPEED = 0.2   # this layer's own pivot speed (safety.turn_speed), independent of the scan patrol's
+# Reversing is its own speed: it is the one phase that moves the base into
+# ground it cannot see well (the rear sensor is a single narrow beam), and
+# tying it to the pivot speed meant one slider changed both plus the scan
+# patrol. Defaults to the pivot speed, so untouched behaviour is unchanged.
+EMERGENCY_BACKOFF_SPEED = 0.2
+CLEAR_MARGIN = 1.6           # release the turn only once past this multiple of the trigger range
+DIAG_CLEAR_MARGIN = 1.2      # diagonals only need to leave the trigger range, not the full front margin
+MIN_TURN_S = 0.6             # hold a turn direction at least this long, re-deciding every tick oscillated
+MAX_TURN_S = 6.0             # still blocked after this long -> edging away isn't working, escape instead
 
 # wedge escape: reverse, spin, drive out, retry wider each time
 TURN_180_S     = 2.0
@@ -57,11 +62,14 @@ class EmergencyStopLayer(BaseLayer):
     """Priority 5: near an obstacle, backs off, pivots, or wedge-escapes."""
 
     def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED,
+                 backoff_speed: float = EMERGENCY_BACKOFF_SPEED,
                  grab_zone_check: Optional[Callable[[Any], bool]] = None):
         super().__init__(layer_id=5)
         self.turn_speed = EMERGENCY_TURN_SPEED
+        self.backoff_speed = EMERGENCY_BACKOFF_SPEED
         self.set_turn_speed(turn_speed)
-        self.grab_zone_check = grab_zone_check   # exempts a tin being grabbed
+        self.set_backoff_speed(backoff_speed)
+        self.grab_zone_check = grab_zone_check   # e.g. CollectLitterLayer.is_grabbable; exempts the tin being grabbed
         self._phase: Optional[_Phase] = None
         self._phase_started: float = 0.0
         self._turn_dir: float = -1.0
@@ -76,6 +84,10 @@ class EmergencyStopLayer(BaseLayer):
     def set_turn_speed(self, turn_speed: Optional[float] = None) -> None:
         if turn_speed is not None:
             self.turn_speed = max(0.0, min(1.0, float(turn_speed)))
+
+    def set_backoff_speed(self, backoff_speed: Optional[float] = None) -> None:
+        if backoff_speed is not None:
+            self.backoff_speed = max(0.0, min(1.0, float(backoff_speed)))
 
     def reset(self) -> None:
         self._reset()
@@ -202,7 +214,8 @@ class EmergencyStopLayer(BaseLayer):
     def _phase_command(self, front, back, left, right, trigger_cm) -> ActionCommand:
         speed = self.turn_speed
         if self._phase == _Phase.BACKOFF:
-            return self._command((-speed, 0, 0), f"EMERGENCY BACKOFF (rear {back:.0f}cm)")
+            return self._command((-self.backoff_speed, 0, 0),
+                                 f"EMERGENCY BACKOFF (rear {back:.0f}cm)")
         if self._phase == _Phase.SPIN:
             return self._command(
                 (0, 0, -abs(speed)),

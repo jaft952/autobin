@@ -1,5 +1,46 @@
-"""web/server.py: robot control/telemetry API around RobotRuntime, runs on the Pi.
-Dashboard UI is hosted separately (web/dashboard.py); /api/events pushes status+logs via SSE instead of polling."""
+"""
+web/server.py
+
+AutoBin robot server — runs ON THE PI (the hardware is there), exposing the
+control/telemetry API around RobotRuntime. The React dashboard is hosted
+separately on Windows (web/dashboard.py) and connects here directly.
+
+Run on the Pi (needs: pip install flask):
+
+    python web/server.py                     # full robot, port 8000
+    python web/server.py --no-camera         # bench without YOLO/webcam
+
+Then on Windows:   python web/dashboard.py --pi <pi-ip>:8000
+(or open http://<pi-ip>:8000 directly — the Pi still serves the UI too,
+both deployment modes work).
+
+LOW LATENCY: the dashboard does NOT poll. /api/events is a Server-Sent
+Events stream — status is pushed at ~5 Hz and log lines the moment they
+appear (SSE = plain HTTP, native in browsers, zero extra pip deps, and CORS
+below lets the Windows-hosted UI subscribe cross-origin). Control buttons
+are single POSTs (~1-3 ms RTT on LAN). The camera is a continuous MJPEG
+stream, unchanged.
+
+API summary (all JSON unless noted):
+    GET  /api/status                  state + power + performance snapshot
+    POST /api/system/start            full autonomy (AUTO)
+    POST /api/system/scan             manual scanning (zigzag only)
+    POST /api/system/estop            EMERGENCY STOP
+    POST /api/system/shutdown         stop the server and power off the Pi
+                                      (both need the robot halted first)
+    POST /api/system/restart          re-exec the server (picks up edited source)
+    GET  /api/camera/stream           MJPEG stream (multipart)
+    POST /api/camera/off              release the camera hardware (battery save)
+    POST /api/camera/on               reopen the camera hardware
+    GET  /api/arm/pose                commanded arm pose
+    POST /api/arm/pose {name}         home | bin
+    POST /api/arm/gripper {action}    open | close
+    POST /api/arm/jog {channel,delta} nudge one channel (0-5), degrees
+    GET  /api/settings                quick-settings list
+    POST /api/settings {key,value}    live-patch one setting (session only)
+    GET  /api/logs?after=N            log entries with seq > N
+    POST /api/logs/clear
+"""
 import argparse
 import json
 import os
@@ -15,7 +56,7 @@ sys.path.append(os.path.dirname(_SRC_DIR))      # for "src.xxx" imports
 from flask import Flask, Response, jsonify, request, send_from_directory # type: ignore
 
 from web.logbuffer import LogBuffer, setup_logging
-from web.runtime import RobotRuntime
+from web.runtime import RobotRuntime, STATE_ESTOP, STATE_STOPPED
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -103,6 +144,20 @@ def _fail(exc, code=409):
     return jsonify({"ok": False, "error": str(exc)}), code
 
 
+# Powering off or re-execing tears down GPIO and the camera on a 2 s timeout,
+# while a grab takes ~20 s. Do that mid-grab and the arm loses power halfway
+# through a move: it drops, and whatever it was holding drops with it. So
+# both need the robot halted first, which means the operator has pressed
+# EMERGENCY STOP (or has not started it yet).
+_HALTED_STATES = (STATE_STOPPED, STATE_ESTOP)
+
+
+def _require_halted() -> None:
+    state = runtime.state
+    if state not in _HALTED_STATES:
+        raise RuntimeError(f"press EMERGENCY STOP first (state is {state})")
+
+
 # ── Frontend ──────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -173,6 +228,11 @@ def api_estop():
 
 @app.post("/api/system/shutdown")
 def api_shutdown():
+    try:
+        _require_halted()
+    except Exception as exc:
+        return _fail(exc)
+
     def _later():
         time.sleep(0.5)                     # let the HTTP response flush
         runtime.close()
@@ -184,7 +244,14 @@ def api_shutdown():
 
 @app.post("/api/system/restart")
 def api_restart():
-    """Re-exec the process so edited source is reloaded; reconnect alone keeps old modules."""
+    """Re-exec this process so edited source files (layer speeds, thresholds,
+    etc.) are picked up on next import — a plain reconnect can't do that,
+    the old module stays loaded in memory until the process itself restarts."""
+    try:
+        _require_halted()
+    except Exception as exc:
+        return _fail(exc)
+
     def _later():
         time.sleep(0.5)                     # let the HTTP response flush
         runtime.close()
