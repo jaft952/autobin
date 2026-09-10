@@ -220,7 +220,7 @@ class PWMActuator:
             pwm.stop()
         if self._pi is not None:
             try:
-                self._pi.stop()          # disconnect from pigpiod only
+                self._pi.stop() # type: ignore ; disconnect from pigpiod only          
             except Exception:
                 pass
             return
