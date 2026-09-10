@@ -37,8 +37,6 @@ from typing import Optional
 
 from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicPins
 from src.hardware.sensors.sensor_hub import SensorHub
-from src.scanning import geometry
-from src.perception import camera_gate
 from src.subsumption.arbitrator import Arbitrator
 import src.subsumption.motion_executor as motion_mod
 from src.subsumption.motion_executor import MotionExecutor
@@ -171,10 +169,6 @@ class RobotRuntime:
 
         self.emergency_layer.grab_zone_check = ( # type: ignore
             self.collect_layer.is_holding_for_grab if new_state == STATE_AUTO else None)
-        if new_state == STATE_AUTO and self.camera_available:
-            # Ultrasonic-only until something is close enough to be worth
-            # checking; _update_camera_gate() wakes it per tick from here.
-            self.sensors.camera_off()
         for layer in self._all_layers:
             layer.reset()
         self.log.warning(f"{why}  [{old} -> {new_state}]")
@@ -199,31 +193,11 @@ class RobotRuntime:
             if sleep_left > 0:
                 time.sleep(sleep_left)
 
-    def _update_camera_gate(self) -> None:
-        """AUTO navigates on ultrasonics alone until something is within
-        camera_gate.WAKE_DISTANCE_CM ahead; only then is perception worth
-        the CPU. Waking doesn't mean it's a tin can -- Layer 2 only acts once
-        a detection actually locks, and Layer 1's yield_to_targets is what
-        hands control over when it does. If nothing locks, this puts the
-        camera back to sleep once the coast clears, same as a wall or a
-        person walking past would with the camera off entirely."""
-        if not self.camera_available:
-            return
-        front, left, right = geometry.clearances(self.sensors)
-        wake = camera_gate.should_wake_camera(front, left, right)
-        enabled = self.sensors.camera_enabled
-        if wake and not enabled:
-            self.sensors.camera_on()
-        elif not wake and enabled and not self.sensors.get_litter_locked():
-            self.sensors.camera_off()
-
     def _tick(self, tick_n: int):
         self.sensors.update()
 
         state = self._state
         if state in (STATE_AUTO, STATE_SCAN):
-            if state == STATE_AUTO:
-                self._update_camera_gate()
             layers = self._layers_auto if state == STATE_AUTO else self._layers_scan
             for layer in layers:
                 self.arbitrator.submit_command(layer.evaluate(self.sensors))
