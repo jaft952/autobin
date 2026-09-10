@@ -343,7 +343,7 @@ def test_motion_ramps_up_but_stops_at_once():
         clock.tick(0.05)
         ex.execute(ActionCommand(2, True, (0.2513, 0, 0.1042), "deploy", ""))
         assert act.last != straight, "the ramp froze the base"
-        step = abs(act.last[0] - straight[0])
+        step = abs(act.last[0] - straight[0]) # type: ignore
         full = abs((0.2513 - 0.1042) * 90 - 0.2 * 90)
         assert step < full, (act.last, straight)
 
@@ -356,7 +356,7 @@ def test_motion_ramps_up_but_stops_at_once():
         # Slowing down is free: a smaller vector applies on the same tick.
         clock.tick(0.05)
         ex.execute(ActionCommand(2, True, (0.1, 0, 0.05), "deploy", ""))
-        assert abs(act.last[0]) < abs(arrived[0]), (act.last, arrived)
+        assert abs(act.last[0]) < abs(arrived[0]), (act.last, arrived) # type: ignore
 
         # Stopping is never delayed.
         clock.tick(0.05)
@@ -412,7 +412,7 @@ def test_backoff_speed_is_separate_from_the_pivot_speed():
         clock.tick(emergency_mod.SETTLE_S + 0.01)
         cmd = layer.evaluate(sensors)
         assert "TURN" in cmd.message, cmd.message
-        assert abs(cmd.motion_vector[2]) == 0.3, cmd.motion_vector
+        assert abs(cmd.motion_vector[2]) == 0.3, cmd.motion_vector # type: ignore
     print("PASS emergency backoff speed is separate from the pivot speed")
 
 
@@ -447,11 +447,11 @@ def test_arbitration_with_real_hub():
         # does (settle/backoff/pivot) is covered by the avoid tests below.
         ultra.dist = SensorHub.EMERGENCY_STOP_CM - 2 # type: ignore
         win = _vote(arb, hub)
-        assert win.layer_id == 5, win.message
+        assert win.layer_id == 4, win.message
     print("PASS arbitration: scan > idle, emergency > scan")
 
 
-# ── Layer 5: obstacle avoidance ───────────────────────────────────────────
+# ── Layer 4: obstacle avoidance ───────────────────────────────────────────
 
 class FakeDirectionalSensors:
     """SensorHub stand-in with one reading per ultrasonic direction."""

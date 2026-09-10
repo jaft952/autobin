@@ -866,7 +866,7 @@ def test_arbitration_stack():
 
         # Obstacle inside emergency range -> emergency (5) beats even the grab.
         sensors.dist = 8.0 # type: ignore
-        assert winner().layer_id == 5
+        assert winner().layer_id == 4
 
         # No litter, no obstacle -> scan patrols, but only once layer 5 has
         # finished its escape (settle -> backoff -> settle -> pivot, and the
