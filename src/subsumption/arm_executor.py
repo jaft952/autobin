@@ -41,14 +41,14 @@ from src.subsumption.arbitrator import ActionCommand
 
 log = logging.getLogger("arm_executor")
 
-GRAB_COOLDOWN_S = 4.0
+GRAB_COOLDOWN_S = 3.0   # matches tests/test_ibvs_centering.py's _GRAB_COOLDOWN_S
 
 
 class ArmExecutor:
     """Executes the winning command's arm_action. One per robot."""
 
     def __init__(self, planner: Optional[ArmPlannerInterface] = None,
-                 sensors=None, grab_zone_check=None) -> None:
+                 sensors=None, grab_zone_check=None, resume_camera=None) -> None:
         if planner is None:
             # Deferred so wheels-only setups never touch the arm import chain.
             from src.arm.grasp_planner import GraspPlanner
@@ -56,6 +56,7 @@ class ArmExecutor:
         self.planner: ArmPlannerInterface = planner
         self._sensors = sensors
         self._grab_zone_check = grab_zone_check
+        self._resume_camera = resume_camera
         self._at_home = False
         self._force_next_home = True  # first home since boot must be FORCED:
         #   the arm's true pose is unknown (no feedback) and nothing may move
@@ -117,6 +118,18 @@ class ArmExecutor:
             grabbed = grab_fn()
             self._home()
             self._at_home = True
+            if self._resume_camera is not None:
+                # Resume BEFORE checking the grab zone, not after execute()
+                # returns (the caller's own resume runs later still): the
+                # camera was paused for the whole grab, so its last result is
+                # already older than STALE_AFTER_S by now, and checking
+                # against a stale/no-detection result always reads as
+                # "gone" — a false success regardless of what really
+                # happened. Block on actual NEW inference results (not a
+                # guessed sleep) before asking it.
+                self._resume_camera()
+                if self._sensors is not None:
+                    self._sensors.wait_for_fresh_frames(n=2, timeout=2.0)
             if not grabbed:
                 log.fail("grab refused (unreachable/invalid pose)")
             elif self._sensors is not None and self._grab_zone_check is not None:

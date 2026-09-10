@@ -1,50 +1,3 @@
-"""
-src/subsumption/layers/layer3_collect.py
-
-Layer 3: Collect Litter — decides WHEN the tin is grabbable, halts the base,
-and emits the grab as a semantic command. Execution (the actual servo
-sequence) lives in ArmExecutor, after arbitration.
-
---- GRASP STRATEGY: arc grasp only ---
-ArcGraspSolver.solve_with_band(nx, ny) interpolates a full hand-tuned
-[CH1..CH5] pose from the calibrated arc grid. Every pose in that grid
-physically worked on the real arm (sag/offsets baked in).
-    -> arm_action='grab_arc', arm_params={'pose': [CH1..CH5]}
-
-The model-IK fallback was removed on 2026-08-25 (source archived in
-docs/ik_removed_2026-08-25.zip): it never fired, because it needed a
-pixel_to_arm homography nobody had calibrated, and it aimed with a less
-accurate solver than the grid it was backing up.
-
-POSE ROUTING (v3): the segmentation mask classifies the tin as upright /
-lying / axial (get_litter_pose). Upright tins use the upright arc grid;
-lying tins use the separate LYING grid, with CH5 (wrist roll) computed from
-the tin's floor angle. "axial" (seen end-on) grabs as straight-at-robot.
-
---- WHY THE BAND MATTERS ---
-solve_with_band() also says WHY a None is None. BAND_TOO_FAR means keep
-approaching, so this layer stands down and Layer 2 drives on. BAND_TOO_CLOSE
-means the base has already overshot the nearest calibrated arc: standing
-down there let Layer 2 keep closing in, which only made it worse, until
-Layer 5 tripped and drove away from the tin. This layer now backs off
-instead — the same recovery tests/test_ibvs_centering.py's live loop does.
-
---- WHY GRABBING WAITS ---
-Camera inference mis-estimates position for a beat (motion blur, a partly
-occluded mask), so ONE good frame is not evidence the tin is really in
-position. Two gates, both mirrored from that same live loop:
-    GRAB_STABLE_S      the whole trigger must hold continuously this long
-    GRABBABLE_LATCH_S  one blank frame does not hand the tin back to Layer 2
-While stabilizing, the layer stays active with a zero motion vector so the
-base holds still and the reading can settle.
-
-The solved position uses the litter's GROUND-CONTACT point (bbox bottom
-center) for upright tins and the bbox CENTER for lying ones: that is what
-each calibration grid was anchored to.
-
-All solving here is pure math on calibration YAMLs (no hardware imports) —
-Rule 2 holds.
-"""
 from __future__ import annotations
 
 import time
@@ -52,31 +5,23 @@ from typing import Any, Optional
 
 from src.subsumption.layers.base_layer import BaseLayer
 from src.subsumption.arbitrator import ActionCommand
-from src.arm.arc_grasp import ArcGraspSolver, BAND_TOO_CLOSE
+from src.arm.arc_grasp import ArcGraspSolver
+from src.arm.grasp_reach import solve_reach
 
-# Front-ultrasonic confirmation before the arm fires. Keep in step with
-# GRAB_CONFIRM_CM in src/visual_servoing/ultrasonic_safety.py (not imported:
-# that module pulls in the GPIO driver, and a layer must stay hardware-free).
 GRAB_CONFIRM_CM = 35.0
-
-# Continuous hold required before the grab fires, and how long a solved
-# answer survives a blank frame. See "WHY GRABBING WAITS" above.
-GRAB_STABLE_S = 1.0
+GRAB_STABLE_S = 2.0
 GRABBABLE_LATCH_S = 2.0
-
-# Overshot past the nearest calibrated arc — reverse gently until the solver
-# can see the tin again. Bounded by the fact that backing off re-enters the
-# band within a few ticks; Layer 5 still owns anything behind the robot.
-BACKOFF_SPEED = -0.3
 
 
 class CollectLitterLayer(BaseLayer):
     """
     Layer 3: Collect Litter
     Priority: 3 (Medium)
-    Behavior: When the detected tin sits inside the calibrated arc grid and
-              the reading has settled, halts the base and commands an arc
-              grab. Overshot past the nearest arc, it backs off instead.
+    Behavior: Arm only. Once the tin is inside the calibrated arc grid and
+              the reading has settled, commands the arc grab. Every command
+              it emits is a zero motion vector -- getting the base to a spot
+              the arm can reach, and backing out of an overshoot, is Layer
+              2's job (src/subsumption/layers/layer2_approach.py).
     """
 
     def __init__(self, arc_solver: Optional[ArcGraspSolver] = None):
@@ -84,50 +29,60 @@ class CollectLitterLayer(BaseLayer):
         self.solver = arc_solver or ArcGraspSolver()
         self._ready_since: Optional[float] = None
         self._latched_until: float = 0.0
+        self._suppressed_since: Optional[float] = None
+        self._last_won: bool = False
 
     def reset(self) -> None:
         self._ready_since = None
         self._latched_until = 0.0
+        self._suppressed_since = None
+        self._last_won = False
 
     # ── Arbitration ───────────────────────────────────────────────────────
 
+    def notify_arbitration(self, won: bool) -> None:
+        self._last_won = won
+        if not won and self._suppressed_since is None:
+            self._suppressed_since = time.monotonic()
+
     def evaluate(self, sensors: Any) -> ActionCommand:
         now = time.monotonic()
+        self._absorb_suppressed_time(now)
         solved, klass, point, band = self._solve(sensors)
-
-        if band == BAND_TOO_CLOSE:
-            self._ready_since = None
-            self._latched_until = 0.0
-            return ActionCommand(
-                layer_id=self.layer_id,
-                active=True,
-                motion_vector=(BACKOFF_SPEED, 0, 0),
-                arm_action='deploy',
-                message="OVERSHOT past nearest arc - backing off",
-            )
 
         if solved is None:
             self._ready_since = None
-            if now < self._latched_until:
-                # A blink, not a departure: hold the base rather than handing
-                # the tin back to Layer 2 to be re-approached from scratch.
-                return self._hold("GRAB HOLD (detection blinked)")
+            if band is None and now < self._latched_until:
+                # No point at all -- a blink, not a departure. Hold the base
+                # rather than handing the tin back to Layer 2 to be
+                # re-approached from scratch.
+                return self._stop("GRAB HOLD (detection blinked)")
+            # A band means the tin WAS located, just not reachable from here
+            # (too close, too far, off the sampled span). Stand down at once:
+            # Layer 2 has to move the base, and every tick spent latched here
+            # is a tick it cannot.
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         self._latched_until = now + GRABBABLE_LATCH_S
 
         if not self._ultrasonic_confirms(sensors):
+            # Hold, don't stand down: a single noisy HC-SR04 ping reading a
+            # hair past GRAB_CONFIRM_CM must not hand the wheels back to
+            # Layer 2 for even one tick -- its own steering correction is a
+            # visible flick, and it moves the base off the spot the arc grid
+            # already solved for, right before the grab fires on the next
+            # good reading.
             self._ready_since = None
-            return ActionCommand(layer_id=self.layer_id, active=False)
+            return self._stop("GRAB HOLD (ultrasonic not yet confirming range)")
 
         if self._ready_since is None:
             self._ready_since = now
         stable_s = now - self._ready_since
         if stable_s < GRAB_STABLE_S:
-            return self._hold(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
+            return self._stop(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
                               f"/{GRAB_STABLE_S:.0f}s)")
 
-        nx, ny = point
+        nx, ny = point # type: ignore
         if klass == "upright":
             label = "upright"
         elif klass == "axial":
@@ -144,11 +99,35 @@ class CollectLitterLayer(BaseLayer):
             message=f"ARC GRAB ({label}) @ nx={nx:.2f} ny={ny:.2f}",
         )
 
+    def _absorb_suppressed_time(self, now: float) -> None:
+        """Open-loop timers must not count time spent suppressed by Layer 5."""
+        if self._suppressed_since is None:
+            return
+        paused = now - self._suppressed_since
+        if self._ready_since is not None:
+            self._ready_since += paused
+        if self._latched_until:
+            self._latched_until += paused
+        self._suppressed_since = None
+
     def is_grabbable(self, sensors: Any) -> bool:
         """Can the arc grid solve this tin from where the robot stands?
         Pure — no timers touched, so Layer 5 and ArmExecutor can ask it
         without disturbing this layer's stability clock."""
         return self._solve(sensors)[0] is not None
+
+    def is_holding_for_grab(self, sensors: Any) -> bool:
+        """Same solvability check as is_grabbable, gated on this layer having
+        actually WON arbitration last tick -- i.e. the base is genuinely
+        stopped for the grab, not still being driven by Layer 2's approach.
+
+        This is the one Layer 5 should exempt, not is_grabbable() alone: a
+        tin sitting right in front of a stopped base legitimately reads
+        "too close" on the front ultrasonic, and that must not disarm the
+        e-stop while the base is still moving -- a solvable pose can exist
+        several ticks before Layer 2 actually arrives, and a real obstacle
+        can be sitting right next to that solvable path the whole time."""
+        return self._last_won and self.is_grabbable(sensors)
 
     def can_still_in_grab_zone(self, sensors: Any) -> bool:
         """Re-run the grabbability check after a grab, once the arm is clear
@@ -158,10 +137,10 @@ class CollectLitterLayer(BaseLayer):
 
     # ── Internals ─────────────────────────────────────────────────────────
 
-    def _hold(self, message: str) -> ActionCommand:
-        """Base held still, arm parked at the travel pose. 'hold' brakes the
-        wheels (see MotionExecutor._GRAB_ACTIONS) so the tin does not drift
-        out of the band while the reading settles."""
+    def _stop(self, message: str) -> ActionCommand:
+        """Base stopped, arm parked at the travel pose. The wheels coast --
+        coast is the only halt, see MotionExecutor's STOPPING note -- so this
+        relies on the gearboxes to keep the base on the spot."""
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
@@ -171,30 +150,10 @@ class CollectLitterLayer(BaseLayer):
         )
 
     def _solve(self, sensors: Any):
-        """(solved_or_None, klass, (nx, ny) or None, band)."""
-        klass, angle = self._litter_pose(sensors)
-        # Reference point differs per pose, and must match what the
-        # calibration tool told the user to click:
-        #   upright -> ground contact (bbox bottom-center): the tin meets the
-        #              floor there, a stable anchor for distance.
-        #   lying   -> bbox CENTER: the bottom edge drifts with orientation
-        #              while the silhouette center tracks the graspable
-        #              middle at every angle.
-        if klass in ("lying", "axial"):
-            pos = sensors.get_litter_position()
-        else:
-            pos = self._litter_point(sensors)
-        if pos is None:
-            return None, klass, None, None
-
-        nx, ny = pos
-        if klass in ("lying", "axial"):
-            solved, band = self.solver.solve_with_band(
-                nx, ny, pose="lying",
-                angle_deg=None if klass == "axial" else angle)
-        else:
-            solved, band = self.solver.solve_with_band(nx, ny, pose="upright")
-        return solved, klass, (nx, ny), band
+        """(solved_or_None, klass, (nx, ny) or None, band). Same solve Layer
+        2 arrives on -- one criterion, so the two layers cannot disagree
+        about whether the base is in position."""
+        return solve_reach(self.solver, sensors)
 
     @staticmethod
     def _ultrasonic_confirms(sensors: Any) -> bool:
@@ -205,23 +164,3 @@ class CollectLitterLayer(BaseLayer):
         getter = getattr(sensors, "get_obstacle_distance_cm", None)
         distance = getter() if getter is not None else None
         return distance is None or distance <= GRAB_CONFIRM_CM
-
-    @staticmethod
-    def _litter_point(sensors: Any) -> Optional[tuple]:
-        """Ground-contact point if the sensor provides it, else bbox center."""
-        getter = getattr(sensors, "get_litter_ground_contact", None)
-        if getter is not None:
-            pos = getter()
-            if pos is not None:
-                return pos
-        return sensors.get_litter_position()
-
-    @staticmethod
-    def _litter_pose(sensors: Any) -> tuple:
-        """(klass, angle_deg) from the segmentation mask, defaulting to
-        ("upright", None) when the sensor has no pose information."""
-        getter = getattr(sensors, "get_litter_pose", None)
-        info = getter() if getter is not None else None
-        if not info:
-            return "upright", None
-        return info.get("klass", "upright"), info.get("angle")

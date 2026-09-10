@@ -92,7 +92,7 @@ class CameraSensor(SensorInterface):
         self._worker = None
         self._running = threading.Event()
         self._running.set()          # cleared only while the arm is grabbing
-        self._battery: float = 1.0   # Placeholder; replace with real battery sensor
+        self._camera_enabled = True  # dashboard battery-save toggle
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -118,7 +118,42 @@ class CameraSensor(SensorInterface):
         self._running.clear()
 
     def resume(self):
-        self._running.set()
+        if self._camera_enabled:   # don't let a grab's auto-resume override a manual camera_off()
+            self._running.set()
+
+    def camera_off(self) -> None:
+        """Release the camera hardware (dashboard battery-save toggle).
+        Pauses the worker first so it isn't mid-read when the capture closes."""
+        self._camera_enabled = False
+        self.pause()
+        self._detector.stop()
+
+    def camera_on(self) -> None:
+        """Reopen the camera hardware and resume inference."""
+        self._detector.reopen_camera()
+        self._camera_enabled = True
+        self.resume()
+
+    @property
+    def camera_enabled(self) -> bool:
+        return self._camera_enabled
+
+    def wait_for_fresh_frames(self, n: int = 2, timeout: float = 2.0) -> int:
+        """Block until the worker has published `n` NEW inference results
+        (not just elapsed time), so a caller resuming after a pause acts on
+        real post-resume frames instead of guessing how long inference
+        takes. Returns how many were actually seen (< n on timeout)."""
+        start_at = self._latest_at
+        deadline = time.monotonic() + timeout
+        seen = 0
+        last_at = start_at
+        while seen < n and time.monotonic() < deadline:
+            time.sleep(0.02)
+            at = self._latest_at
+            if at != last_at:
+                seen += 1
+                last_at = at
+        return seen
 
     def _run(self):
         """Capture + infer as fast as the model allows; publish the result."""
@@ -167,20 +202,16 @@ class CameraSensor(SensorInterface):
         self._selected_at = -1.0
 
     def get_litter_position(self): # type: ignore
-        """
-        Returns normalized (x, y) of the LOCKED aluminium can (largest bbox
-        area at lock time), where (0.5, 0.5) is the center of the frame.
-        Returns None if no can is locked (or detection has gone stale).
-
-        Used by:
-            layer1_scan.py    — to check if a target exists
-            layer2_approach.py — to calculate motion vector towards the can
-        """
+        """Normalized (x, y) of the locked can, or None if not locked / stale."""
         box, result = self._current_target()
         if box is None or result.frame_width == 0:
             return None
         return (box.center_x / result.frame_width,
                 box.center_y / result.frame_height)
+
+    def get_litter_locked(self) -> bool: # type: ignore
+        """True while TargetLock holds a tin, including mid-blink inside its grace window."""
+        return self._target_lock.locked
 
     def get_litter_ground_contact(self): # type: ignore
         """
@@ -216,6 +247,18 @@ class CameraSensor(SensorInterface):
         distance_cm = self.get_litter_distance_cm()
         return distance_cm is not None and distance_cm <= TOO_CLOSE_DISTANCE_CM
 
+    def get_litter_target_error(self): # type: ignore
+        """The exact TargetError tests/test_ibvs_centering.py's live loop
+        computes: same compute_target_error() call, against the same locked-
+        target DetectionResult (one detection, the locked box), not values
+        re-derived from the other getters above."""
+        box, result = self._current_target()
+        from src.visual_servoing.distance_error import compute_target_error
+        locked_result = DetectionResult(
+            detections=[box] if box is not None else [],
+            frame_width=result.frame_width, frame_height=result.frame_height)
+        return compute_target_error(locked_result)
+
     def get_litter_pose(self): # type: ignore
         """
         Returns the locked tin's pose estimated from its segmentation mask:
@@ -235,10 +278,6 @@ class CameraSensor(SensorInterface):
     def get_aerial_trash_position(self): # type: ignore
         """Not used for floor litter. Returns None."""
         return None
-
-    def get_battery_level(self) -> float:
-        """Placeholder. Replace with actual battery sensor reading."""
-        return self._battery
 
     def has_obstacle(self) -> bool:
         """Placeholder. Replace with actual proximity sensor reading."""

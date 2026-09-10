@@ -183,12 +183,12 @@ def test_camera_sensor_getters_follow_lock():
                                             frame_width=1280, frame_height=720)
     sensor._latest_at = time.monotonic()
     pos = sensor.get_litter_position()
-    assert abs(pos[0] - huge2.center_x / 1280) < 1e-6, "must stay on the locked tin"
+    assert abs(pos[0] - huge2.center_x / 1280) < 1e-6, "must stay on the locked tin" # type: ignore
 
     sensor.release_target()
     sensor._latest_at = time.monotonic()
     pos = sensor.get_litter_position()
-    assert abs(pos[0] - other.center_x / 1280) < 1e-6, "release -> re-pick largest"
+    assert abs(pos[0] - other.center_x / 1280) < 1e-6, "release -> re-pick largest" # type: ignore
 
 
 def test_stale_result_reports_nothing():

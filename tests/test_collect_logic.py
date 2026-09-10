@@ -39,15 +39,21 @@ from src.subsumption.arm_executor import ArmExecutor, GRAB_COOLDOWN_S
 from src.subsumption.arbitrator import Arbitrator, ActionCommand
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
-from src.subsumption.layers.layer2_approach import ApproachLitterLayer
+import src.subsumption.layers.layer2_approach as approach_mod
+from src.subsumption.layers.layer2_approach import (
+    ApproachLitterLayer, RETREAT_GAP_S, RETREAT_PULSE_S,
+)
 import src.subsumption.layers.layer3_collect as collect_mod
 from src.subsumption.layers.layer3_collect import (
     CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S, GRAB_CONFIRM_CM,
-    BACKOFF_SPEED,
 )
-import src.subsumption.layers.layer5_emergency as emergency_mod
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
+from src.motion.calibration import MotionCalibration
+import src.visual_servoing.reactive_controller as reactive_mod
+import src.subsumption.layers.layer4_emergency as emergency_mod
+from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 from src.arm.arc_grasp import ArcGraspSolver, save_config, ch5_from_angle
+from src.visual_servoing.distance_error import (
+    TargetError, STOP_DISTANCE_CM, CENTER_TOLERANCE)
 
 
 # ── Test doubles ──────────────────────────────────────────────────────────
@@ -91,6 +97,7 @@ class FakeSensors:
         self.ground = None       # get_litter_ground_contact()
         self.pose = None         # get_litter_pose(): {'klass':..., 'angle':...}
         self.dist = None
+        self.litter_dist_cm = None   # get_litter_distance_cm()
 
     def get_litter_position(self):
         return self.center
@@ -111,10 +118,26 @@ class FakeSensors:
         return self.dist is not None and self.dist < 10.0
 
     def get_litter_distance_cm(self):
-        return None
+        return self.litter_dist_cm
 
     def get_litter_too_close(self):
         return False
+
+    def get_litter_target_error(self):
+        """Layer 2 now calls this exclusively -- build the same TargetError
+        compute_target_error() would, from this fake's own fields, so the
+        fixture stays a drop-in stand-in for a locked detection."""
+        if not self.center:
+            return TargetError(found=False, lateral_error=0.0, distance_cm=None,
+                                reached=False, too_close=False)
+        lateral_error = self.center[0] - 0.5
+        distance_cm = self.litter_dist_cm
+        reached = (distance_cm is not None
+                   and distance_cm <= STOP_DISTANCE_CM
+                   and abs(lateral_error) <= CENTER_TOLERANCE)
+        return TargetError(found=True, lateral_error=lateral_error,
+                            distance_cm=distance_cm, reached=reached,
+                            too_close=self.get_litter_too_close())
 
 
 class FakePlanner:
@@ -184,6 +207,17 @@ def settle(layer, sensors, clock):
 
 
 @contextmanager
+def fake_approach_clock():
+    clock = FakeClock()
+    real = approach_mod.time.monotonic
+    approach_mod.time.monotonic = clock
+    try:
+        yield clock
+    finally:
+        approach_mod.time.monotonic = real
+
+
+@contextmanager
 def fake_emergency_clock():
     clock = FakeClock()
     real = emergency_mod.time.monotonic
@@ -200,11 +234,11 @@ def test_arc_grab_inside_grid():
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.6)             # dead center of the test grid
+        sensors.ground = (0.5, 0.6) # type: ignore
         cmd = settle(layer, sensors, clock)
         assert cmd.active and cmd.arm_action == 'grab_arc', cmd.message
         assert cmd.motion_vector == (0, 0, 0)   # base halted for the grab
-        pose = cmd.arm_params['pose']
+        pose = cmd.arm_params['pose'] # type: ignore
         # Bilinear midpoint of the grid: CH1 = 100 (azimuth mid), CH2 = 145
         # (between the 140/150 rows) — proves real interpolation ran.
         assert abs(pose[0] - 100.0) < 0.2 and abs(pose[1] - 145.0) < 0.2, pose
@@ -218,7 +252,7 @@ def test_grab_waits_for_stability():
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.6)
+        sensors.ground = (0.5, 0.6) # type: ignore
 
         cmd = layer.evaluate(sensors)
         assert cmd.active and cmd.arm_action == 'hold', cmd.message
@@ -242,7 +276,7 @@ def test_latch_rides_out_a_blink():
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.6)
+        sensors.ground = (0.5, 0.6) # type: ignore
         settle(layer, sensors, clock)
 
         sensors.ground = None                   # one blank frame
@@ -255,21 +289,66 @@ def test_latch_rides_out_a_blink():
 
 
 def test_too_close_backs_off():
-    """Overshooting the nearest calibrated arc used to return inactive, so
-    Layer 2 kept closing in and made it worse until Layer 5 tripped."""
-    with fake_collect_clock() as clock:
-        layer = CollectLitterLayer(arc_solver=make_solver())
+    """Backing out of an overshoot is BASE movement, so it belongs to Layer 2
+    with the rest of the driving. The pulse keeps the shape
+    tests/test_ibvs_centering.py validated: a brief stop, then a bounded
+    backward pulse at BACKUP_SPEED, not an indefinite backoff."""
+    with fake_approach_clock() as clock:
+        layer = ApproachLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.95)            # below the grid's lowest arc
+        sensors.litter_dist_cm = 20.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
+
+        # Freshly overshot -> stopped gap first (a direction flip never
+        # goes straight into reverse).
         cmd = layer.evaluate(sensors)
         assert cmd.active, cmd.message
-        assert cmd.motion_vector == (BACKOFF_SPEED, 0, 0), cmd.motion_vector
-        assert cmd.arm_action != 'grab_arc', cmd.arm_action
+        assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
+        assert cmd.arm_action == 'deploy', cmd.arm_action
 
-        # Backing off into the band grabs normally again.
-        sensors.ground = (0.5, 0.6)
-        assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-    print("PASS overshoot backs off instead of standing down")
+        # Gap elapses -> the backward pulse, at the same BACKUP_SPEED
+        # tests/test_ibvs_centering.py uses (converted to a motion fraction).
+        clock.tick(RETREAT_GAP_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        expected_vx = -reactive_mod.BACKUP_SPEED / MotionCalibration().forward_speed
+        assert cmd.motion_vector == (expected_vx, 0, 0), cmd.motion_vector
+
+        # Pulse elapses -> back to the stopped gap, then pulses again.
+        clock.tick(RETREAT_PULSE_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector == (0, 0, 0), cmd.motion_vector
+
+        # Backed off into the band -> Layer 2 parks instead of retreating.
+        sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert "IN REACH" in cmd.message, cmd.message
+    print("PASS overshoot retreats in bounded pulses, from Layer 2")
+
+
+def test_layer2_parks_on_the_arc_grid_not_on_distance():
+    """The two layers used to judge arrival on different measurements: Layer
+    2 on the monocular distance, Layer 3 on the arc grid. They disagreed, so
+    the base drove past the band and Layer 3 backed it out again. Layer 2 now
+    stops on the same grid Layer 3 grabs from, so the grab does not start on
+    a base that is still rolling."""
+    with fake_approach_clock():
+        layer = ApproachLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+
+        # Far outside the grid but nowhere near the old STOP_DISTANCE_CM:
+        # still driving.
+        sensors.litter_dist_cm = 60.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.1) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] > 0, cmd.message # type: ignore
+
+        # Inside the grid -> park and hand over. Note the distance estimate
+        # is unchanged: the grid decided, not distance_cm.
+        sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
+        cmd = layer.evaluate(sensors)
+        assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
+        assert "IN REACH" in cmd.message, cmd.message
+    print("PASS Layer 2 parks on the arc grid")
 
 
 def test_ultrasonic_vetoes_a_far_grab():
@@ -278,14 +357,17 @@ def test_ultrasonic_vetoes_a_far_grab():
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.6)
+        sensors.ground = (0.5, 0.6) # type: ignore
 
-        sensors.dist = GRAB_CONFIRM_CM + 10.0
+        sensors.dist = GRAB_CONFIRM_CM + 10.0 # type: ignore
         layer.evaluate(sensors)
         clock.tick(GRAB_STABLE_S + 0.01)
-        assert not layer.evaluate(sensors).active, "grabbed past the veto"
+        cmd = layer.evaluate(sensors)
+        assert cmd.active and cmd.motion_vector == (0, 0, 0), \
+            "must hold the base, not stand down, once the arc grid solves"
+        assert cmd.arm_action != 'grab_arc', "grabbed past the veto"
 
-        sensors.dist = GRAB_CONFIRM_CM - 5.0
+        sensors.dist = GRAB_CONFIRM_CM - 5.0 # type: ignore
         assert settle(layer, sensors, clock).arm_action == 'grab_arc'
 
         sensors.dist = None                     # no echo -> vision decides
@@ -297,7 +379,7 @@ def test_inactive_when_outside_the_grid():
     with fake_collect_clock():
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.1)             # far above the grid's ny band
+        sensors.ground = (0.5, 0.1) # type: ignore
         assert not layer.evaluate(sensors).active   # Layer 2 keeps approaching
         sensors.ground = None
         sensors.center = None                   # no litter at all
@@ -309,8 +391,8 @@ def test_prefers_ground_contact_over_center():
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.center = (0.5, 0.1)             # bbox center: OUTSIDE the grid
-        sensors.ground = (0.5, 0.6)             # ground contact: INSIDE
+        sensors.center = (0.5, 0.1) # type: ignore
+        sensors.ground = (0.5, 0.6) # type: ignore
         cmd = settle(layer, sensors, clock)
         assert cmd.active and cmd.arm_action == 'grab_arc', cmd.message
     print("PASS ground-contact point preferred over bbox center")
@@ -322,7 +404,7 @@ def test_is_grabbable_does_not_disturb_the_clock():
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
         sensors = FakeSensors()
-        sensors.ground = (0.5, 0.6)
+        sensors.ground = (0.5, 0.6) # type: ignore
         for _ in range(5):
             assert layer.is_grabbable(sensors)
         clock.tick(GRAB_STABLE_S + 0.01)
@@ -365,7 +447,7 @@ def test_lying_solve_overrides_ch5():
         assert pose[0] == 100.0                         # CH1 still interpolated
     # axial (end-on, no measurable angle) -> straight-at-robot default
     pose = solver.solve(0.5, 0.6, pose="axial")
-    assert pose[4] == 90.0, pose
+    assert pose[4] == 90.0, pose # type: ignore
     # the baseline CH5=77 from the calibration samples never leaks through
     print("PASS lying solve: CH5 from angle, baseline overridden")
 
@@ -377,26 +459,26 @@ def test_layer3_routes_lying_and_axial():
         # Lying tins are referenced by the bbox CENTER (tracks the graspable
         # middle at any orientation) — the ground-contact point is deliberately
         # set OUTSIDE the lying grid to prove it is NOT what gets used.
-        sensors.center = (0.5, 0.6)                         # inside lying grid
-        sensors.ground = (0.5, 0.1)                         # outside — must be ignored
+        sensors.center = (0.5, 0.6) # type: ignore
+        sensors.ground = (0.5, 0.1) # type: ignore
 
-        sensors.pose = {"klass": "lying", "angle": 0.0}     # sideways
+        sensors.pose = {"klass": "lying", "angle": 0.0} # type: ignore
         cmd = settle(layer, sensors, clock)
         assert cmd.active and cmd.arm_action == 'grab_arc', cmd.message
-        assert cmd.arm_params['pose'][4] == 180.0, cmd.arm_params
-        assert cmd.arm_params['tin_pose'] == 'lying', cmd.arm_params
+        assert cmd.arm_params['pose'][4] == 180.0, cmd.arm_params # type: ignore
+        assert cmd.arm_params['tin_pose'] == 'lying', cmd.arm_params # type: ignore
         assert "lying" in cmd.message, cmd.message
 
-        sensors.pose = {"klass": "axial", "angle": 12.3}    # angle meaningless
+        sensors.pose = {"klass": "axial", "angle": 12.3} # type: ignore
         cmd = layer.evaluate(sensors)
-        assert cmd.active and cmd.arm_params['pose'][4] == 90.0, cmd.arm_params
-        assert cmd.arm_params['tin_pose'] == 'axial', cmd.arm_params
+        assert cmd.active and cmd.arm_params['pose'][4] == 90.0, cmd.arm_params # type: ignore
+        assert cmd.arm_params['tin_pose'] == 'axial', cmd.arm_params # type: ignore
 
         # upright klass reads the GROUND point (0.5, 0.1): upright grid is
         # EMPTY anyway -> not grabbable. reset() clears the latch the lying
         # grabs left behind, which would otherwise hold the base.
         layer.reset()
-        sensors.pose = {"klass": "upright", "angle": 90.0}
+        sensors.pose = {"klass": "upright", "angle": 90.0} # type: ignore
         assert not layer.evaluate(sensors).active
         # no pose info at all -> historical default = upright -> also inactive
         sensors.pose = None
@@ -410,20 +492,20 @@ def test_emergency_stands_down_for_a_grabbable_tin():
     robot got close enough to collect."""
     with fake_collect_clock(), fake_emergency_clock():
         collect = CollectLitterLayer(arc_solver=make_solver())
-        emergency = EmergencyStopLayer(grab_zone_check=collect.is_grabbable)
+        emergency = EmergencyStopLayer(grab_zone_check=collect.is_grabbable) # type: ignore
         sensors = FakeSensors()
-        sensors.dist = 8.0                      # well inside EMERGENCY_STOP_CM
+        sensors.dist = 8.0 # type: ignore
 
         sensors.ground = None
         assert emergency.evaluate(sensors).active, "e-stop must fire for a wall"
 
         emergency.reset()
-        sensors.ground = (0.5, 0.6)             # that obstacle is the tin
+        sensors.ground = (0.5, 0.6) # type: ignore
         assert not emergency.evaluate(sensors).active
 
         # A broken predicate must never disarm the e-stop.
         emergency.reset()
-        emergency.grab_zone_check = lambda _s: (_ for _ in ()).throw(RuntimeError("boom"))
+        emergency.grab_zone_check = lambda _s: (_ for _ in ()).throw(RuntimeError("boom")) # type: ignore
         assert emergency.evaluate(sensors).active
     print("PASS emergency stands down for a grabbable tin")
 
@@ -431,21 +513,36 @@ def test_emergency_stands_down_for_a_grabbable_tin():
 # ── Layer 2: steering signs ───────────────────────────────────────────────
 
 def test_approach_steering():
-    layer = ApproachLitterLayer()
+    """Layer 2 now calls reactive_controller.compute_reactive_command()
+    directly (the same pipeline tests/test_ibvs_centering.py validates), so
+    it needs a real distance estimate to move at all -- unlike the old
+    implementation there is no y-position fallback when distance is
+    unknown, which is the whole point of sharing the one validated path."""
+    # Empty upright grid: nothing is ever "in reach", so every tick takes
+    # the steering path this test is about.
+    layer = ApproachLitterLayer(arc_solver=make_solver(upright=False))
     sensors = FakeSensors()
+    sensors.litter_dist_cm = 60.0 # type: ignore
 
-    sensors.center = (0.8, 0.5)             # tin right -> steer right (< 0)
+    sensors.center = (0.8, 0.5) # type: ignore
     v = layer.evaluate(sensors).motion_vector
-    assert v[2] < 0, v
-    sensors.center = (0.2, 0.5)             # tin left -> steer left (> 0)
+    assert v[2] < 0, v # type: ignore
+    sensors.center = (0.2, 0.5) # type: ignore
     v = layer.evaluate(sensors).motion_vector
-    assert v[2] > 0, v
+    assert v[2] > 0, v # type: ignore
 
-    sensors.center = (0.5, 0.2)             # far -> faster than close
-    far_fwd = layer.evaluate(sensors).motion_vector[0]
-    sensors.center = (0.5, 0.8)
-    near_fwd = layer.evaluate(sensors).motion_vector[0]
+    sensors.center = (0.5, 0.5) # type: ignore
+    sensors.litter_dist_cm = 150.0 # type: ignore
+    far_fwd = layer.evaluate(sensors).motion_vector[0] # type: ignore
+    sensors.litter_dist_cm = 30.0 # type: ignore
+    near_fwd = layer.evaluate(sensors).motion_vector[0] # type: ignore
     assert far_fwd > near_fwd > 0, (far_fwd, near_fwd)
+
+    # No distance estimate -> compute_reactive_command() has nothing to
+    # scale speed off, so it commands zero rather than guessing.
+    sensors.litter_dist_cm = None
+    v = layer.evaluate(sensors).motion_vector
+    assert v == (0, 0, 0), v
 
     sensors.center = None
     assert not layer.evaluate(sensors).active
@@ -457,7 +554,7 @@ def test_approach_steering():
 def test_executor_grab_dump_home_and_cooldown():
     with fake_exec_clock() as clock:
         planner = FakePlanner()
-        ex = ArmExecutor(planner=planner)
+        ex = ArmExecutor(planner=planner) # type: ignore
         # Boot must NOT move the arm — homing happens on the first command
         # after the operator starts the system (user requirement 2026-07-08).
         assert planner.calls == [], planner.calls
@@ -487,7 +584,7 @@ def test_executor_grab_dump_home_and_cooldown():
 def test_executor_stow_idempotent_and_failed_grab():
     with fake_exec_clock() as clock:
         planner = FakePlanner(arc_ok=False)
-        ex = ArmExecutor(planner=planner)
+        ex = ArmExecutor(planner=planner) # type: ignore
         assert planner.calls == []          # no movement at boot
 
         stow = ActionCommand(1, True, (0.5, 0, 0), 'stow', "")
@@ -525,7 +622,7 @@ def test_command_write_through():
     from src.arm.grasp_planner import GraspPlanner
     p = GraspPlanner()                       # DummyServo kit on dev machines
     # Simulate tracking being wrong: physical servo somewhere else entirely.
-    p.actuator.kit.servo[0].angle = 50.0
+    p.actuator.kit.servo[0].angle = 50.0 # type: ignore
     assert p.arm[0] != 50.0                 # tracked pose disagrees
     p.jog_channel(0, 0.0)                    # command == tracked value (no-op diff)
     assert p.actuator.kit.servo[0].angle == p.arm[0], \
@@ -533,13 +630,13 @@ def test_command_write_through():
 
     # Full-pose moves assert every channel too (goto with tracking already
     # at home must still command the servos).
-    p.actuator.kit.servo[2].angle = 10.0
+    p.actuator.kit.servo[2].angle = 10.0 # type: ignore
     p.goto("home")
     assert p.actuator.kit.servo[2].angle == p.arm[2], \
         "full-pose move must write channels the tracker thinks are in place"
 
     # a second home must still assert the pose.
-    p.actuator.kit.servo[3].angle = 5.0
+    p.actuator.kit.servo[3].angle = 5.0 # type: ignore
     p.goto("home")
     assert p.actuator.kit.servo[3].angle == p.arm[3], \
         "a repeated home must still write through stale tracking"
@@ -669,7 +766,7 @@ def test_grab_order_per_tin_pose():
     from src.arm.grasp_planner import GraspPlanner
     p = GraspPlanner()
     seq = []
-    p.move_channel = lambda ch, v: seq.append(ch)     # spy on the channel order
+    p.move_channel = lambda ch, v: seq.append(ch) # type: ignore
     pose = [100.0, 140.0, 70.0, 160.0, 90.0]
 
     p.collect(pose, dump=False)                    # upright (default)
@@ -741,7 +838,8 @@ def test_smooth_move_semantics():
 def test_arbitration_stack():
     with fake_emergency_clock() as clock, fake_collect_clock() as collect_clock:
         collect = CollectLitterLayer(arc_solver=make_solver())
-        layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
+        layers = [SystemIdleLayer(), ScanAroundLayer(),
+                  ApproachLitterLayer(arc_solver=make_solver()),
                   collect, EmergencyStopLayer()]
         arb = Arbitrator()
         sensors = FakeSensors()
@@ -754,12 +852,12 @@ def test_arbitration_stack():
             return win
 
         # Litter visible but NOT grabbable -> approach (2) beats scan (1).
-        sensors.center = sensors.ground = (0.5, 0.1)
+        sensors.center = sensors.ground = (0.5, 0.1) # type: ignore
         assert winner().layer_id == 2
 
         # Tin inside the arc grid -> collect (3) halts the base and wins,
         # first holding it still until the reading has been stable long enough.
-        sensors.center = sensors.ground = (0.5, 0.6)
+        sensors.center = sensors.ground = (0.5, 0.6) # type: ignore
         win = winner()
         assert win.layer_id == 3 and win.arm_action == 'hold', win.message
         collect_clock.tick(GRAB_STABLE_S + 0.01)
@@ -767,8 +865,8 @@ def test_arbitration_stack():
         assert win.layer_id == 3 and win.arm_action == 'grab_arc', win.message
 
         # Obstacle inside emergency range -> emergency (5) beats even the grab.
-        sensors.dist = 8.0
-        assert winner().layer_id == 5
+        sensors.dist = 8.0 # type: ignore
+        assert winner().layer_id == 4
 
         # No litter, no obstacle -> scan patrols, but only once layer 5 has
         # finished its escape (settle -> backoff -> settle -> pivot, and the
@@ -785,6 +883,56 @@ def test_arbitration_stack():
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 
+def test_retreat_survives_a_one_frame_blink():
+    """A blink mid-retreat used to drop Layer 2 to inactive, so Layer 0 won
+    and the base COASTED away from the spot half-way through the manoeuvre."""
+    with fake_approach_clock() as clock:
+        layer = ApproachLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+        sensors.litter_dist_cm = 20.0 # type: ignore
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
+        layer.evaluate(sensors)                       # enter the retreat
+
+        sensors.center = sensors.ground = None        # one blank frame
+        clock.tick(0.05)
+        cmd = layer.evaluate(sensors)
+        assert cmd.active, "a blink dropped the retreat to Layer 0"
+        assert cmd.motion_vector == (0, 0, 0), "must not reverse blind"
+
+        # The manoeuvre resumes rather than restarting from a fresh gap.
+        sensors.center = sensors.ground = (0.5, 0.95) # type: ignore
+        clock.tick(RETREAT_GAP_S + 0.01)
+        cmd = layer.evaluate(sensors)
+        assert cmd.motion_vector[0] < 0, cmd.message # type: ignore
+
+        # Gone for good -> stand down so scan can take over.
+        sensors.center = sensors.ground = None
+        clock.tick(approach_mod.LOST_GRACE_S + 0.1)
+        assert not layer.evaluate(sensors).active
+    print("PASS retreat survives a one-frame blink")
+
+
+def test_layer3_stands_down_at_once_when_unreachable():
+    """Too close is not a blink: the tin was located, it just cannot be
+    reached from here. Latching for GRABBABLE_LATCH_S held the base for two
+    seconds before Layer 2 was allowed to back it off."""
+    with fake_collect_clock() as clock:
+        layer = CollectLitterLayer(arc_solver=make_solver())
+        sensors = FakeSensors()
+        sensors.ground = (0.5, 0.6) # type: ignore
+        settle(layer, sensors, clock)                 # arms the latch
+
+        sensors.ground = (0.5, 0.95) # type: ignore   overshot, still visible
+        assert not layer.evaluate(sensors).active,             "held the base instead of letting Layer 2 back off"
+
+        # A genuine blink still rides out the latch.
+        sensors.ground = (0.5, 0.6) # type: ignore
+        settle(layer, sensors, clock)
+        sensors.ground = None
+        assert layer.evaluate(sensors).active
+    print("PASS Layer 3 stands down at once when the tin is unreachable")
+
+
 # ── Plain runner (no pytest needed) ───────────────────────────────────────
 
 ALL_TESTS = [
@@ -792,6 +940,9 @@ ALL_TESTS = [
     test_grab_waits_for_stability,
     test_latch_rides_out_a_blink,
     test_too_close_backs_off,
+    test_layer2_parks_on_the_arc_grid_not_on_distance,
+    test_retreat_survives_a_one_frame_blink,
+    test_layer3_stands_down_at_once_when_unreachable,
     test_ultrasonic_vetoes_a_far_grab,
     test_inactive_when_outside_the_grid,
     test_prefers_ground_contact_over_center,

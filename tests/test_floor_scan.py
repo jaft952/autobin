@@ -29,8 +29,7 @@ Expected behavior (wheels live, no camera):
 
 Calibrating the pattern: pass --turn-90 / --shift / --speed / --turn-speed to
 seed starting values (they call ScanAroundLayer.set_timing/set_speeds); once
-a set works, write it into src/subsumption/layers/layer1_scan.py as the new
-default.
+a set works, write it into src/scanning/tuning.py as the new default.
 
 Live speed adjustment: while the loop is running, type into the same
 terminal and press Enter:
@@ -58,7 +57,7 @@ from src.subsumption.arbitrator import Arbitrator
 from src.subsumption.motion_executor import MotionExecutor
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
+from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 
 
 def build_sensors(with_camera: bool) -> SensorHub:

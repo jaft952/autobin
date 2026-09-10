@@ -13,6 +13,24 @@ const html = htm.bind(React.createElement);
 
 /* ── Pi address handling ─────────────────────────────────────────────── */
 
+/* Served over https = through the public Cloudflare Tunnel. The Pi itself
+   only speaks http, so in tunnel mode all traffic stays same-origin and the
+   typed "Pi address" becomes an access key the server checks. */
+const TUNNEL = location.protocol === "https:";
+
+function addrToKey(a) {
+  return (a || "").trim()
+    .replace(/^https?:\/\//, "").replace(/:\d+$/, "").replace(/\/+$/, "");
+}
+
+function piKey() {
+  return localStorage.getItem("pi_key") || "";
+}
+
+function keyQuery() {
+  return TUNNEL ? `&key=${encodeURIComponent(piKey())}` : "";
+}
+
 function normalizeAddr(a) {
   a = (a || "").trim();
   if (!a) return "";
@@ -23,10 +41,21 @@ function normalizeAddr(a) {
 function initialApiBase() {
   const fromUrl = new URLSearchParams(location.search).get("pi");
   if (fromUrl) {
+    // Scrub ?pi= from the address bar so history/bookmarks/copied links
+    // never carry the key.
+    history.replaceState(null, "", location.pathname);
     localStorage.setItem("pi_addr", fromUrl);
+    if (TUNNEL) {
+      localStorage.setItem("pi_key", addrToKey(fromUrl));
+      return location.origin;
+    }
     return normalizeAddr(fromUrl);
   }
   const saved = localStorage.getItem("pi_addr");
+  if (TUNNEL) {
+    if (saved) localStorage.setItem("pi_key", addrToKey(saved));
+    return location.origin;
+  }
   if (saved) return normalizeAddr(saved);
   // Served by the Pi's own Flask (single-machine mode): same origin works.
   if (location.protocol.startsWith("http")) return location.origin;
@@ -35,14 +64,18 @@ function initialApiBase() {
 
 /* ── API helpers ─────────────────────────────────────────────────────── */
 
+function keyHeaders() {
+  return TUNNEL ? { "X-Pi-Key": piKey() } : {};
+}
+
 async function apiGet(base, path) {
-  const r = await fetch(base + path);
+  const r = await fetch(base + path, { headers: keyHeaders() });
   return r.json();
 }
 async function apiPost(base, path, body) {
   const r = await fetch(base + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...keyHeaders() },
     body: JSON.stringify(body || {}),
   });
   return r.json();
@@ -57,14 +90,25 @@ const dash = (v, suffix = "") => (v == null ? "--" : v + suffix);
 
 /* ── Header: connect bar + system controls ───────────────────────────── */
 
-function Header({ base, connected, onConnect, status, onDead }) {
+function Header({ base, connected, onConnect, status, onDead, onRestarting }) {
   const state = connected && status ? status.state : "OFFLINE";
+  // Shutting down or re-execing tears the hardware down on a 2 s timeout,
+  // and a grab runs ~20 s. Mid-grab that drops the arm. The server refuses
+  // it too; this just says so before the click.
+  const halted = state === "STOPPED" || state === "ESTOP";
+  const haltFirst = halted ? "" : "press EMERGENCY STOP first";
   const [addr, setAddr] = useState(base.replace(/^https?:\/\//, ""));
   const [confirmOff, setConfirmOff] = useState(false);
-  const [poweroff, setPoweroff] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
 
   const connect = (e) => {
     e.preventDefault();
+    if (TUNNEL) {
+      // Typed address is the access key; traffic stays same-origin.
+      localStorage.setItem("pi_key", addrToKey(addr));
+      if (addr.trim()) onConnect(location.origin);
+      return;
+    }
     const norm = normalizeAddr(addr);
     if (norm) {
       localStorage.setItem("pi_addr", norm.replace(/^https?:\/\//, ""));
@@ -78,8 +122,21 @@ function Header({ base, connected, onConnect, status, onDead }) {
       setTimeout(() => setConfirmOff(false), 3000);
       return;
     }
-    await apiPost(base, "/api/system/shutdown", { poweroff });
-    onDead(poweroff ? "Pi powering off..." : "Robot server stopped.");
+    const r = await apiPost(base, "/api/system/shutdown");
+    if (r && r.ok === false) return;          // refused (still running)
+    onDead("Pi powering off...");
+  };
+
+  const restart = async () => {
+    if (!confirmRestart) {
+      setConfirmRestart(true);
+      setTimeout(() => setConfirmRestart(false), 3000);
+      return;
+    }
+    setConfirmRestart(false);
+    const r = await apiPost(base, "/api/system/restart");
+    if (r && r.ok === false) return;          // refused (still running)
+    onRestarting();
   };
 
   return html`
@@ -90,6 +147,11 @@ function Header({ base, connected, onConnect, status, onDead }) {
         <input value=${addr} placeholder="pi address, e.g. 192.168.137.50:8000"
                onChange=${(e) => setAddr(e.target.value)} />
         <button type="submit">Connect</button>
+        ${TUNNEL && piKey()
+          ? html`<button type="button" title="clear the saved access key"
+                   onClick=${() => { localStorage.removeItem("pi_key");
+                                     setAddr(""); location.reload(); }}>
+                   Forget key</button>` : null}
       </form>
       <span class="badge ${state}">${state}</span>
       <div class="spacer"></div>
@@ -98,18 +160,17 @@ function Header({ base, connected, onConnect, status, onDead }) {
               onClick=${() => apiPost(base, "/api/system/start")}>▶ START</button>
       <button class="btn-scan" disabled=${!connected || state === "SCAN"}
               onClick=${() => apiPost(base, "/api/system/scan")}>⌕ SCAN ONLY</button>
-      <button disabled=${!connected || state === "STOPPED"}
-              onClick=${() => apiPost(base, "/api/system/stop")}>⏹ STOP</button>
       <button class="btn-estop" disabled=${!connected}
               onClick=${() => apiPost(base, "/api/system/estop")}>■ EMERGENCY STOP</button>
 
-      <label class="poweroff-opt">
-        <input type="checkbox" checked=${poweroff}
-               onChange=${(e) => setPoweroff(e.target.checked)} />
-        power off Pi
-      </label>
+      <button class="btn-restart ${confirmRestart ? "armed" : ""}"
+              disabled=${!connected || !halted} title=${haltFirst}
+              onClick=${restart}>
+        ${confirmRestart ? "Confirm?" : "⟲ Restart server"}
+      </button>
       <button class="btn-shutdown ${confirmOff ? "armed" : ""}"
-              disabled=${!connected} onClick=${shutdown}>
+              disabled=${!connected || !halted} title=${haltFirst}
+              onClick=${shutdown}>
         ${confirmOff ? "Confirm?" : "⏻ Shutdown"}
       </button>
     </div>`;
@@ -119,20 +180,28 @@ function Header({ base, connected, onConnect, status, onDead }) {
 
 function CameraCard({ base, status, camEpoch }) {
   const hasCam = status && status.camera;
+  const camOn = status && status.camera_on;
+  const showStream = hasCam && camOn;
   return html`
     <div class="card">
       <div class="card-title">CAMERA VIEW
-        <span class="right">${hasCam ? "live · YOLO overlay" : "offline"}</span>
+        <span class="right">${hasCam ? (camOn ? "live · YOLO overlay" : "off (battery save)") : "offline"}</span>
       </div>
       <div class="cam-wrap">
-        ${hasCam
-          ? html`<img key=${camEpoch} src="${base}/api/camera/stream?e=${camEpoch}" alt="camera" />`
-          : html`<div class="cam-off">no camera on this run<br/>
-                   <small>(--no-camera, or webcam/YOLO failed — see log)</small>
+        ${showStream
+          ? html`<img key=${camEpoch} src="${base}/api/camera/stream?e=${camEpoch}${keyQuery()}" alt="camera" />`
+          : html`<div class="cam-off">${hasCam ? "camera off — press below to resume" : "no camera on this run"}<br/>
+                   <small>${hasCam ? "" : "(--no-camera, or webcam/YOLO failed — see log)"}</small>
                  </div>`}
         ${status && status.message
           ? html`<div class="cam-overlay">[L${status.layer}] ${status.message}</div>` : null}
       </div>
+      ${hasCam
+        ? html`<button class="btn-cam"
+                  onClick=${() => apiPost(base, camOn ? "/api/camera/off" : "/api/camera/on")}>
+                  ${camOn ? "◼ Turn camera OFF" : "▶ Turn camera ON"}
+                </button>`
+        : null}
     </div>`;
 }
 
@@ -145,16 +214,10 @@ function Bar({ pct }) {
 }
 
 function PowerCard({ s }) {
-  const batteryPct = s && s.battery != null ? Math.round(s.battery * 100) : null;
   return html`
     <div class="card">
       <div class="card-title">POWER STATUS</div>
       <div class="card-body stat-grid">
-        <div class="stat">
-          <div class="k">BATTERY ${s && s.battery_placeholder ? "(placeholder)" : ""}</div>
-          <div class="v">${dash(batteryPct, "%")}</div>
-          <${Bar} pct=${batteryPct} />
-        </div>
         <div class="stat">
           <div class="k">CPU TEMP</div>
           <div class="v">${dash(s && s.temp_c, " °C")}</div>
@@ -197,7 +260,8 @@ const CH_LABELS = ["CH1 base", "CH2 shoulder", "CH3 elbow", "CH4 wrist", "CH5 ro
 function ArmCard({ base, status, connected }) {
   const [pose, setPose] = useState(null);
   const [err, setErr] = useState("");
-  const enabled = connected && status && status.arm && status.state === "STOPPED";
+  const enabled = connected && status && status.arm
+    && (status.state === "STOPPED" || status.state === "ESTOP");
 
   const refresh = useCallback(async () => {
     if (connected && status && status.arm) {
@@ -242,7 +306,7 @@ function ArmCard({ base, status, connected }) {
             <button disabled=${!enabled} onClick=${() => act("/api/arm/jog", { channel: ch, delta: +5 })}>+5</button>
           </div>`)}
         ${!enabled && connected && status && status.arm
-          ? html`<div class="arm-hint">manual control needs system STOPPED</div>` : null}
+          ? html`<div class="arm-hint">manual control needs the base halted (STOPPED or ESTOP)</div>` : null}
         ${err ? html`<div class="arm-hint">${err}</div>` : null}
       </div>
     </div>`;
@@ -270,20 +334,32 @@ function SettingsCard({ base, connected }) {
     load();
   };
 
+  // Section by owning layer, in the order the backend already returns them.
+  const groups = [];
+  for (const s of settings) {
+    let g = groups.find((x) => x.name === s.group);
+    if (!g) { g = { name: s.group, items: [] }; groups.push(g); }
+    g.items.push(s);
+  }
+
   return html`
     <div class="card">
       <div class="card-title">QUICK SETTINGS
         <span class="right"><button onClick=${load}>↻</button></span>
       </div>
       <div class="card-body">
-        ${settings.map((s) => html`
-          <div class="set-row" key=${s.key}>
-            <label title=${s.key}>${s.label}</label>
-            <input type="number" min=${s.min} max=${s.max} step=${s.step}
-                   value=${draft[s.key] !== undefined ? draft[s.key] : s.value}
-                   onChange=${(e) => setDraft({ ...draft, [s.key]: e.target.value })}
-                   onBlur=${() => commit(s)}
-                   onKeyDown=${(e) => e.key === "Enter" && e.target.blur()} />
+        ${groups.map((g) => html`
+          <div class="set-group" key=${g.name}>
+            <div class="set-group-title">${g.name}</div>
+            ${g.items.map((s) => html`
+              <div class="set-row" key=${s.key}>
+                <label title=${s.key}>${s.label}</label>
+                <input type="number" min=${s.min} max=${s.max} step=${s.step}
+                       value=${draft[s.key] !== undefined ? draft[s.key] : s.value}
+                       onChange=${(e) => setDraft({ ...draft, [s.key]: e.target.value })}
+                       onBlur=${() => commit(s)}
+                       onKeyDown=${(e) => e.key === "Enter" && e.target.blur()} />
+              </div>`)}
           </div>`)}
         <div class="set-note">applied live, session-only — edit the source constants to keep them</div>
       </div>
@@ -314,8 +390,8 @@ function LogPanel({ base, lines, onClear }) {
       <div class="card-title">LOG
         <span class="right log-controls">
           <select value=${filter} onChange=${(e) => setFilter(e.target.value)}>
-            <option>ALL</option><option>DEBUG</option><option>SUCCESS</option>
-            <option>WARNING</option><option>FAIL</option><option>ERROR</option>
+            <option>ALL</option><option>DEBUG</option><option>INFO</option>
+            <option>SUCCESS</option><option>WARNING</option><option>FAIL</option><option>ERROR</option>
           </select>
           <button onClick=${() => setFollow(!follow)}>${follow ? "⏸ pause" : "▶ follow"}</button>
           <button onClick=${clear}>clear</button>
@@ -339,34 +415,44 @@ function LogPanel({ base, lines, onClear }) {
 
 function App() {
   const [base, setBase] = useState(initialApiBase());
+  const [epoch, setEpoch] = useState(0);  // bump to force SSE reconnect (key change)
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState(null);
   const [lines, setLines] = useState([]);
   const [camEpoch, setCamEpoch] = useState(0);
   const [dead, setDead] = useState("");
+  const [restarting, setRestarting] = useState(false);
+  const lastSeqRef = useRef(0);   // highest log seq seen, so a reconnect asks for only what it missed
 
   useEffect(() => {
     if (!base) return;
-    const es = new EventSource(base + "/api/events");
+    lastSeqRef.current = 0;   // switching servers (Connect) — nothing carries over
+    const es = new EventSource(
+      `${base}/api/events?after=${lastSeqRef.current}${keyQuery()}`);
     es.onopen = () => {
       setConnected(true);
+      setRestarting(false);            // server is back — drop the banner
       setCamEpoch((n) => n + 1);       // (re)start the MJPEG <img>
     };
     es.onerror = () => setConnected(false);   // EventSource auto-retries
     es.addEventListener("status", (e) => setStatus(JSON.parse(e.data)));
     es.addEventListener("logs", (e) => {
       const entries = JSON.parse(e.data);
+      if (entries.length) lastSeqRef.current = entries[entries.length - 1].seq;
       setLines((old) => [...old, ...entries].slice(-800));
     });
     return () => es.close();
-  }, [base]);
+  }, [base, epoch]);
 
   return html`
     <${Header} base=${base} connected=${connected} status=${status}
-               onConnect=${(b) => { setLines([]); setStatus(null); setBase(b); }}
-               onDead=${setDead} />
+               onConnect=${(b) => { setLines([]); setStatus(null); setBase(b);
+                                    setEpoch((n) => n + 1); }}
+               onDead=${setDead} onRestarting=${() => setRestarting(true)} />
     ${dead ? html`<div class="dead-overlay">${dead}</div>` : null}
-    ${!dead && base && !connected
+    ${!dead && restarting
+      ? html`<div class="conn-banner">server restarting, re-reads edited source…</div>` : null}
+    ${!dead && !restarting && base && !connected
       ? html`<div class="conn-banner">connecting to ${base} … is web/server.py running on the Pi?</div>` : null}
     ${!base
       ? html`<div class="conn-banner">enter the Pi address above and press Connect</div>` : null}

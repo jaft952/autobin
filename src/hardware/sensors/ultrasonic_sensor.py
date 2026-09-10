@@ -1,21 +1,8 @@
-"""
-Low-level HC-SR04 driver.
-
-Responsibilities
-----------------
-- Configure GPIO.
-- Trigger a measurement.
-- Convert echo time into distance.
-- Expose the latest measured distance.
-
-No robot logic belongs here.
-No emergency stop.
-No grasp validation.
-No wall avoidance.
-"""
+"""Low-level HC-SR04 driver: GPIO trigger/echo -> distance. No robot logic here."""
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
@@ -29,6 +16,12 @@ except ImportError:
 
 SPEED_OF_SOUND_CM_PER_S = 34300.0
 MIN_VALID_DISTANCE_CM = 2.0
+
+# Longest echo worth waiting for. Range is timeout * SPEED_OF_SOUND / 2, so
+# 0.010 s covers ~170 cm -- well past anything this robot acts on, and a
+# third of the 0.03 s a missing echo used to burn before giving up. Only the
+# no-echo case changes; a ping that answers is unaffected.
+ECHO_TIMEOUT_S = 0.010
 
 # Median of the last N pings. A single dropped echo (common on HC-SR04) used
 # to swing the reported distance by tens of cm, which downstream thresholds
@@ -49,6 +42,7 @@ class UltrasonicSensor:
         self._pins = pins
         self._distance_cm: Optional[float] = None
         self._history: deque = deque(maxlen=MEDIAN_WINDOW)
+        self._lock = threading.Lock()   # update() runs on UltrasonicArray's thread, get_distance_cm() on the control loop
 
         if GPIO is None:
             return
@@ -77,7 +71,7 @@ class UltrasonicSensor:
         time.sleep(0.00001)
         GPIO.output(self._pins.trig, False)
 
-        timeout = time.monotonic() + 0.03
+        timeout = time.monotonic() + ECHO_TIMEOUT_S
 
         while GPIO.input(self._pins.echo) == 0:
             if time.monotonic() > timeout:
@@ -99,28 +93,24 @@ class UltrasonicSensor:
         self._record(distance_cm if distance_cm >= MIN_VALID_DISTANCE_CM else None)
 
     def _record(self, reading: Optional[float]) -> None:
-        """Median-filter the raw ping. None (no echo) is kept in the window so
-        a genuinely empty field of view still reports None once the window
-        agrees -- a dropout alone can no longer move the reported distance."""
-        self._history.append(reading)
-        valid = sorted(r for r in self._history if r is not None)
-        # Lower of the two middles on an even count: when the window is split,
-        # report the nearer obstacle rather than the roomier one.
-        self._distance_cm = valid[(len(valid) - 1) // 2] if len(valid) * 2 > len(self._history) else None
+        """Nearest-of-window filter: None (no echo) stays in the window so a
+        dropout alone can't move the reading, but the reported distance is
+        the CLOSEST valid ping in the window, not the median. This is a
+        collision sensor: under-reporting how close something is would delay
+        an emergency stop until a second consecutive close ping arrived (up
+        to ~2 ping cycles late on a fast-closing obstacle), while
+        over-reporting it from one stray echo only costs an extra defensive
+        backoff. Still requires a majority of the window to be a real echo
+        before trusting any of it."""
+        with self._lock:
+            self._history.append(reading)
+            valid = [r for r in self._history if r is not None]
+            self._distance_cm = (min(valid)
+                                  if len(valid) * 2 > len(self._history) else None)
 
     def get_distance_cm(self) -> Optional[float]:
-        """
-        Return the latest measured distance.
-
-        Returns
-        -------
-        float
-            Latest distance in centimetres.
-
-        None
-            No valid reading.
-        """
-        return self._distance_cm
+        with self._lock:
+            return self._distance_cm
 
     def close(self) -> None:
         if GPIO is None:

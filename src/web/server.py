@@ -9,8 +9,6 @@ Run on the Pi (needs: pip install flask):
 
     python web/server.py                     # full robot, port 8000
     python web/server.py --no-camera         # bench without YOLO/webcam
-    python web/server.py --allow-poweroff    # lets the Shutdown button also
-                                             # power off the Pi (sudo)
 
 Then on Windows:   python web/dashboard.py --pi <pi-ip>:8000
 (or open http://<pi-ip>:8000 directly — the Pi still serves the UI too,
@@ -27,10 +25,13 @@ API summary (all JSON unless noted):
     GET  /api/status                  state + power + performance snapshot
     POST /api/system/start            full autonomy (AUTO)
     POST /api/system/scan             manual scanning (zigzag only)
-    POST /api/system/stop             stop layers, wheels halted
     POST /api/system/estop            EMERGENCY STOP
-    POST /api/system/shutdown         graceful software shutdown (+optional poweroff)
+    POST /api/system/shutdown         stop the server and power off the Pi
+                                      (both need the robot halted first)
+    POST /api/system/restart          re-exec the server (picks up edited source)
     GET  /api/camera/stream           MJPEG stream (multipart)
+    POST /api/camera/off              release the camera hardware (battery save)
+    POST /api/camera/on               reopen the camera hardware
     GET  /api/arm/pose                commanded arm pose
     POST /api/arm/pose {name}         home | bin
     POST /api/arm/gripper {action}    open | close
@@ -43,6 +44,7 @@ API summary (all JSON unless noted):
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -54,14 +56,76 @@ sys.path.append(os.path.dirname(_SRC_DIR))      # for "src.xxx" imports
 from flask import Flask, Response, jsonify, request, send_from_directory # type: ignore
 
 from web.logbuffer import LogBuffer, setup_logging
-from web.runtime import RobotRuntime
+from web.runtime import RobotRuntime, STATE_ESTOP, STATE_STOPPED
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 app = Flask(__name__, static_folder=None)
 buffer = LogBuffer(capacity=1000)
 runtime: RobotRuntime = None          # type: ignore # created in main()
-allow_poweroff = False
+
+
+# ── Public-tunnel gate: requests arriving through Cloudflare Tunnel carry a
+#    CF-Connecting-IP header; those must present one of the Pi's own IPs as a
+#    key before any /api/ route works. Direct LAN requests are untouched. ──
+
+def _local_ips():
+    try:
+        return set(subprocess.check_output(["hostname", "-I"],
+                                           text=True).split())
+    except Exception:
+        return set()
+
+
+LOCAL_IPS = _local_ips()
+ENV_KEY = os.environ.get("AUTOBIN_KEY", "")
+
+# Brute-force lockout: visitor IP -> (fail_count, locked_until_monotonic).
+_KEY_FAILS: dict = {}
+_KEY_FAILS_LOCK = threading.Lock()
+MAX_KEY_FAILS = 10
+KEY_LOCKOUT_S = 900
+
+
+def _key_valid(key):
+    global LOCAL_IPS
+    if not key:
+        return False
+    if ENV_KEY and key == ENV_KEY:
+        return True
+    if key in LOCAL_IPS:
+        return True
+    # IPs may have changed since boot (WiFi came up after autostart).
+    LOCAL_IPS = _local_ips()
+    return key in LOCAL_IPS
+
+
+@app.before_request
+def gate_tunnel_requests():
+    visitor = request.headers.get("CF-Connecting-IP")
+    if visitor is None:
+        return None
+    if not request.path.startswith("/api/"):
+        return None
+
+    now = time.monotonic()
+    with _KEY_FAILS_LOCK:
+        fails, locked_until = _KEY_FAILS.get(visitor, (0, 0.0))
+        if now < locked_until:
+            return jsonify({"ok": False, "error": "locked out"}), 429
+
+    key = (request.headers.get("X-Pi-Key")
+           or request.args.get("key", "")).strip()
+    if _key_valid(key):
+        with _KEY_FAILS_LOCK:
+            _KEY_FAILS.pop(visitor, None)
+        return None
+
+    with _KEY_FAILS_LOCK:
+        fails += 1
+        locked = now + KEY_LOCKOUT_S if fails >= MAX_KEY_FAILS else 0.0
+        _KEY_FAILS[visitor] = (fails, locked)
+    return jsonify({"ok": False, "error": "unauthorized"}), 403
 
 
 # ── CORS: the dashboard is served from Windows (different origin), so every
@@ -72,7 +136,11 @@ allow_poweroff = False
 def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Pi-Key"
+    if request.path == "/" or request.path.startswith("/static/"):
+        # A stale cached app.js/index.html silently hides new UI features
+        # behind a hard-refresh -- always serve the current file.
+        resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
@@ -82,6 +150,20 @@ def _ok(**extra):
 
 def _fail(exc, code=409):
     return jsonify({"ok": False, "error": str(exc)}), code
+
+
+# Powering off or re-execing tears down GPIO and the camera on a 2 s timeout,
+# while a grab takes ~20 s. Do that mid-grab and the arm loses power halfway
+# through a move: it drops, and whatever it was holding drops with it. So
+# both need the robot halted first, which means the operator has pressed
+# EMERGENCY STOP (or has not started it yet).
+_HALTED_STATES = (STATE_STOPPED, STATE_ESTOP)
+
+
+def _require_halted() -> None:
+    state = runtime.state
+    if state not in _HALTED_STATES:
+        raise RuntimeError(f"press EMERGENCY STOP first (state is {state})")
 
 
 # ── Frontend ──────────────────────────────────────────────────────────────
@@ -104,8 +186,14 @@ EVENT_POLL_S = 0.05                   # log latency ceiling: ~50 ms
 
 @app.get("/api/events")
 def api_events():
+    # A reconnect (page refresh, network hiccup, EventSource auto-retry)
+    # otherwise always started from 0 and replayed the ENTIRE buffered
+    # history again — the client passes back the highest seq it already
+    # has so a reconnect only streams what it actually missed.
+    start_seq = request.args.get("after", 0, type=int)
+
     def gen():
-        last_seq = 0
+        last_seq = start_seq
         next_status = 0.0
         while True:
             now = time.monotonic()
@@ -145,12 +233,6 @@ def api_scan():
     return _ok(state=runtime.state)
 
 
-@app.post("/api/system/stop")
-def api_stop():
-    runtime.stop()
-    return _ok(state=runtime.state)
-
-
 @app.post("/api/system/estop")
 def api_estop():
     runtime.estop()
@@ -159,17 +241,37 @@ def api_estop():
 
 @app.post("/api/system/shutdown")
 def api_shutdown():
-    poweroff = bool((request.get_json(silent=True) or {}).get("poweroff")) and allow_poweroff
+    try:
+        _require_halted()
+    except Exception as exc:
+        return _fail(exc)
 
     def _later():
         time.sleep(0.5)                     # let the HTTP response flush
         runtime.close()
-        if poweroff:
-            os.system("sudo shutdown -h now")
-        os._exit(0)
+        os.system("sudo shutdown -h now")
 
     threading.Thread(target=_later, daemon=True).start()
-    return _ok(poweroff=poweroff, note="server going down")
+    return _ok(note="Pi powering off")
+
+
+@app.post("/api/system/restart")
+def api_restart():
+    """Re-exec this process so edited source files (layer speeds, thresholds,
+    etc.) are picked up on next import — a plain reconnect can't do that,
+    the old module stays loaded in memory until the process itself restarts."""
+    try:
+        _require_halted()
+    except Exception as exc:
+        return _fail(exc)
+
+    def _later():
+        time.sleep(0.5)                     # let the HTTP response flush
+        runtime.close()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=_later, daemon=True).start()
+    return _ok(note="server restarting")
 
 
 # ── Camera ────────────────────────────────────────────────────────────────
@@ -194,6 +296,24 @@ def api_camera_stream():
             runtime.stream_client_disconnected()
 
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.post("/api/camera/off")
+def api_camera_off():
+    try:
+        runtime.camera_off()
+        return _ok(camera_on=False)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@app.post("/api/camera/on")
+def api_camera_on():
+    try:
+        runtime.camera_on()
+        return _ok(camera_on=True)
+    except Exception as exc:
+        return _fail(exc)
 
 
 # ── Manual arm ────────────────────────────────────────────────────────────
@@ -273,16 +393,13 @@ def api_logs_clear():
 # ── Entrypoint ────────────────────────────────────────────────────────────
 
 def main():
-    global runtime, allow_poweroff
+    global runtime
     ap = argparse.ArgumentParser(description="AutoBin web dashboard")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--hz", type=float, default=20.0, help="control loop rate")
     ap.add_argument("--no-camera", action="store_true", help="skip YOLO/webcam")
-    ap.add_argument("--allow-poweroff", action="store_true",
-                    help="Shutdown button may also power off the Pi")
     args = ap.parse_args()
-    allow_poweroff = args.allow_poweroff
 
     log = setup_logging(buffer)
     log.info("AutoBin dashboard starting...")

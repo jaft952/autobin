@@ -4,10 +4,6 @@ class SensorInterface:
         """Poll the hardware to update current state. Called every tick by main loop."""
         pass
         
-    def get_battery_level(self) -> float:
-        """Returns battery percentage 0.0 - 1.0"""
-        return 1.0
-        
     def has_obstacle(self) -> bool:
         """Returns True if there is an imminent collision"""
         return False
@@ -34,6 +30,10 @@ class SensorInterface:
         """Returns (x, y) coordinates of ground litter relative to robot, or None"""
         return None
 
+    def get_litter_locked(self) -> bool:
+        """True while a tin is held by TargetLock, including its occlusion grace window (unlike get_litter_position())."""
+        return False
+
     def get_litter_ground_contact(self) -> tuple:
         """Returns normalized (x, y) of the litter's ground-contact point
         (where it touches the floor), or None. Grasp solvers are calibrated
@@ -49,6 +49,15 @@ class SensorInterface:
         """True when the locked litter's bbox is close enough that the
         base should back off regardless of the distance estimate."""
         return False
+
+    def get_litter_target_error(self):
+        """Returns the TargetError (src/visual_servoing/distance_error.py)
+        for the locked litter target, from calling compute_target_error()
+        on the sensor's own DetectionResult -- the same function and the
+        same data tests/test_ibvs_centering.py's validated loop uses, not a
+        value re-derived from the other getters above. None if unavailable
+        (no camera): callers must treat that the same as 'not found'."""
+        return None
 
     def get_litter_pose(self) -> dict:
         """Returns the litter's pose from segmentation, or None if unknown:

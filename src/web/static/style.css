@@ -106,9 +106,8 @@ button:disabled { opacity: .38; cursor: not-allowed; }
   letter-spacing: 1px;
 }
 .btn-estop:hover { filter: brightness(1.15); }
+.btn-restart.armed  { background: var(--amber); border-color: var(--amber); color: #14100a; }
 .btn-shutdown.armed { background: var(--amber); border-color: var(--amber); color: #14100a; }
-
-.poweroff-opt { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
 .cols {
@@ -146,6 +145,7 @@ button:disabled { opacity: .38; cursor: not-allowed; }
             display: flex; align-items: center; justify-content: center; }
 .cam-wrap img { width: 100%; display: block; }
 .cam-off { color: var(--muted); padding: 60px 0; text-align: center; }
+.btn-cam { width: 100%; border-radius: 0; border-width: 0; border-top: 1px solid var(--border); }
 .cam-overlay {
   position: absolute; left: 0; right: 0; bottom: 0;
   padding: 6px 10px;
@@ -178,6 +178,16 @@ button:disabled { opacity: .38; cursor: not-allowed; }
 .arm-hint { color: var(--amber); font-size: 12px; margin-top: 8px; }
 
 /* ── Settings ───────────────────────────────────────────────────────── */
+.set-group { margin-bottom: 10px; }
+.set-group-title {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+  margin-bottom: 6px;
+}
 .set-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
 .set-row label { flex: 1; font-size: 13px; color: var(--text); }
 .set-row input {

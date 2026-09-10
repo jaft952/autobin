@@ -38,11 +38,13 @@ from typing import Optional
 from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor, UltrasonicPins
 from src.hardware.sensors.sensor_hub import SensorHub
 from src.subsumption.arbitrator import Arbitrator
+import src.subsumption.motion_executor as motion_mod
 from src.subsumption.motion_executor import MotionExecutor
 from src.subsumption.layers.layer0_idle import SystemIdleLayer
-import src.subsumption.layers.layer1_scan as scan_mod
+import src.scanning.tuning as scan_tuning
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
 from src.subsumption.layers.layer2_approach import ApproachLitterLayer
+import src.visual_servoing.reactive_controller as reactive_mod
 from src.subsumption.layers.layer3_collect import CollectLitterLayer
 from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 
@@ -52,6 +54,7 @@ STATE_SCAN = "SCAN"
 STATE_ESTOP = "ESTOP"
 
 FRAME_ENCODE_EVERY = 2          # encode the camera jpeg every Nth tick
+HANDOFF_TRACE_TICKS = 12        # ticks of pin-level logging after a layer change
 PERF_WINDOW = 50                # ticks averaged for the performance card
 
 
@@ -73,19 +76,12 @@ class RobotRuntime:
                 camera = CameraSensor()
             except Exception as exc:
                 self.log.warning(f"camera unavailable ({exc}) — running without it")
-        battery = None
-        try:
-            from src.hardware.sensors.battery_sensor import BatterySensor
-            battery = BatterySensor()
-        except Exception as exc:
-            self.log.warning(f"battery sensor unavailable ({exc}) — using placeholder")
         self.sensors = SensorHub(
             front=UltrasonicSensor(UltrasonicPins(trig=23, echo=24)),
             back=UltrasonicSensor(UltrasonicPins(trig=17, echo=20)),
             front_left=UltrasonicSensor(UltrasonicPins(trig=27, echo=22)),
             front_right=UltrasonicSensor(UltrasonicPins(trig=5, echo=6)),
             camera=camera,
-            battery=battery,
         )
         self.camera_available = camera is not None
 
@@ -111,6 +107,7 @@ class RobotRuntime:
             self.arm = ArmExecutor(
                 sensors=self.sensors if self.camera_available else None,
                 grab_zone_check=collect_layer.can_still_in_grab_zone,
+                resume_camera=self.sensors.resume_camera if self.camera_available else None,
             )
         except Exception as exc:
             self.log.warning(f"arm unavailable ({exc}) — manual arm + grabs disabled")
@@ -119,6 +116,7 @@ class RobotRuntime:
         self.started_at = time.monotonic()
         self.win_message = ""
         self.win_layer = -1
+        self._trace_left = 0            # HANDOFF_TRACE_TICKS countdown
         self._tick_times = deque(maxlen=PERF_WINDOW)
         self._tick_stamps = deque(maxlen=PERF_WINDOW)
         self._frame_jpeg: Optional[bytes] = None
@@ -159,13 +157,7 @@ class RobotRuntime:
     def start_scan(self):
         self._transition(STATE_SCAN, "manual SCANNING (zigzag patrol only)")
 
-    def stop(self):
-        self._transition(STATE_STOPPED, "system STOP")
-        self.motion.stop()
-
     def estop(self):
-        # Cut power NOW from this thread — the loop may be inside a blocking
-        # grab and must not be waited on.
         self.motion.stop()
         self._transition(STATE_ESTOP, "EMERGENCY STOP")
 
@@ -176,7 +168,7 @@ class RobotRuntime:
         self.scan_layer.yield_to_targets = (new_state == STATE_AUTO)
 
         self.emergency_layer.grab_zone_check = ( # type: ignore
-            self.collect_layer.is_grabbable if new_state == STATE_AUTO else None)
+            self.collect_layer.is_holding_for_grab if new_state == STATE_AUTO else None)
         for layer in self._all_layers:
             layer.reset()
         self.log.warning(f"{why}  [{old} -> {new_state}]")
@@ -215,12 +207,18 @@ class RobotRuntime:
             self.arbitrator.clear()
 
             self.motion.execute(winning)
+            self._trace_handoff(winning)
             if self.arm is not None:
                 with self._arm_lock:
                     self._run_arm(winning)
 
             if winning.message != self.win_message:
-                self.log.info(f"[L{winning.layer_id}] {winning.message}")
+                duty = getattr(self.motion.actuator, "last_duty", None)
+                # DEBUG: which layer is driving right now, per tick -- not a
+                # one-off event, so it belongs with the print() chatter, not
+                # the INFO/SUCCESS/WARNING/FAIL/ERROR event log.
+                self.log.debug(f"[L{winning.layer_id}] {winning.message} "
+                               f"(vec={winning.motion_vector} duty={duty})")
                 if winning.layer_id == 0:
                     self.log.warning("no layer wants to drive - base parked on IDLE")
             self.win_message, self.win_layer = winning.message, winning.layer_id
@@ -233,6 +231,42 @@ class RobotRuntime:
         if (self.camera_available and self._stream_clients > 0
                 and tick_n % FRAME_ENCODE_EVERY == 0):
             self._encode_frame()
+
+    def _trace_handoff(self, winning):
+        """Pin-level trace across a layer change. last_duty is what the mixer
+        asked for; only the four input pins say whether the H-bridge is
+        coasting (all LOW), braking (all HIGH) or still driving, which is
+        what a base that creeps after being told to stop turns on."""
+        act = self.motion.actuator
+        pins = getattr(act, "last_pin_duty", None)
+        if pins is None:
+            return
+
+        if winning.layer_id != self.win_layer:
+            self._trace_left = HANDOFF_TRACE_TICKS
+            self.log.debug(f"[HANDOFF L{self.win_layer} -> L{winning.layer_id}] "
+                           f"{self._pin_state(pins)} vec={winning.motion_vector} "
+                           f"arm={winning.arm_action}")
+            return
+
+        if self._trace_left > 0:
+            self._trace_left -= 1
+            n = HANDOFF_TRACE_TICKS - self._trace_left
+            self.log.debug(f"[L{winning.layer_id} +{n}] {self._pin_state(pins)}")
+
+    @staticmethod
+    def _pin_state(pins) -> str:
+        """in1/in2 = left channel, in3/in4 = right channel (ZK-BM1 has no
+        enable line; the duty on the two inputs IS direction plus speed)."""
+        duties = " ".join(f"{pin}={duty:.0f}" for pin, duty in pins.items())
+        values = list(pins.values())
+        if all(v == 0 for v in values):
+            mode = "COAST (all LOW)"
+        elif all(v >= 100 for v in values):
+            mode = "ALL HIGH"          # nothing should produce this any more
+        else:
+            mode = "DRIVING"
+        return f"pins[{duties}] {mode}"
 
     def _run_arm(self, winning):
         """Dispatch the arm, with YOLO paused for the duration of a grab.
@@ -281,13 +315,27 @@ class RobotRuntime:
         with self._stream_lock:
             self._stream_clients = max(0, self._stream_clients - 1)
 
-    # ── Manual arm control (STOPPED only) ─────────────────────────────────
+    # ── Manual camera control (dashboard battery-save toggle) ─────────────
+
+    def camera_off(self):
+        if not self.camera_available:
+            raise RuntimeError("no camera on this run")
+        self.sensors.camera_off()
+        self.log.info("camera OFF (manual, battery save)")
+
+    def camera_on(self):
+        if not self.camera_available:
+            raise RuntimeError("no camera on this run")
+        self.sensors.camera_on()
+        self.log.info("camera ON (manual)")
+
+    # ── Manual arm control (base halted only: STOPPED or ESTOP) ───────────
 
     def _manual_arm_planner(self):
         if self.arm is None:
             raise RuntimeError("arm hardware not available")
-        if self._state != STATE_STOPPED:
-            raise RuntimeError(f"manual arm only in STOPPED state (now {self._state})")
+        if self._state not in (STATE_STOPPED, STATE_ESTOP):
+            raise RuntimeError(f"manual arm only while halted (now {self._state})")
         return self.arm.planner
 
     def arm_pose(self) -> Optional[dict]:
@@ -337,31 +385,74 @@ class RobotRuntime:
 
     def settings_registry(self):
         """Whitelisted live-tunable parameters:
-        (key, [(obj, attr), ...], lo, hi, step, label). Targets are the LIVE
-        layer objects -- the layers copy the module defaults in __init__, so
+        (key, group, [(obj, attr), ...], lo, hi, step, label). `group` is the
+        owning layer, purely for the dashboard to section the list under --
+        it plays no role in applying the setting. Targets are the LIVE layer
+        objects -- the layers copy the module defaults in __init__, so
         patching the module afterwards changed nothing."""
         scan, emerg = self.scan_layer, self.emergency_layer
+        L1, L2, L4, SYS = "Layer 1 - Scan", "Layer 2 - Approach", "Layer 4 - Emergency", "System"
         return [
-            ("scan.forward_speed", [(scan, "forward_speed")], 0.2, 1.0, 0.05, "Scan: lane speed (0-1)"),
-            # Layer 5 outvotes the scan pivot, so both must pivot at one speed.
-            ("scan.turn_speed",    [(scan, "turn_speed"), (emerg, "turn_speed")],
-             0.2, 1.0, 0.05, "Scan: pivot speed (0-1)"),
-            ("scan.turn_90_s",     [(scan, "turn_90_s")], 0.3, 3.0, 0.05, "Scan: 90° pivot time (s)"),
-            ("scan.shift_s",       [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
-            ("scan.max_lane_s",    [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
+            ("scan.forward_speed", L1, [(scan, "forward_speed")], 0.2, 1.0, 0.01, "Scan: lane speed (0-1)"),
+            ("scan.turn_speed",    L1, [(scan, "turn_speed")],
+             0.2, 1.0, 0.01, "Scan: pivot speed (0-1)"),
+            # Open-loop pivot: no odometry, so the 90 degrees is however far
+            # the base gets in this many seconds. Carpet, battery level and
+            # pivot speed all change that, hence the wide range.
+            ("scan.turn_90_s",     L1, [(scan, "turn_90_s")], 0.3, 10.0, 0.05, "Scan: 90° pivot time (s)"),
+            ("scan.shift_s",       L1, [(scan, "shift_s")], 0.3, 4.0, 0.10, "Scan: lane shift time (s)"),
+            ("scan.max_lane_s",    L1, [(scan, "max_lane_s")], 3.0, 60.0, 1.0, "Scan: lane timeout (s)"),
             # Read from the module every tick, so patching the global works.
-            ("scan.turn_at_cm",    [(scan_mod, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
-            ("safety.estop_cm",    [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
-            ("loop.hz",            [(self, "hz")], 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
+            ("scan.turn_at_cm",    L1, [(scan_tuning, "TURN_AT_CM")], 15.0, 100.0, 1.0, "Scan: turn at wall (cm)"),
+
+            # Layer 2 (approach) now calls reactive_controller.compute_reactive_
+            # command() directly -- the same validated function
+            # tests/test_ibvs_centering.py uses -- so these are the constants
+            # that actually drive it, read fresh from the module each call.
+            # Layer 2's overshoot retreat also reads BACKUP_SPEED live, so
+            # approach.backup_speed tunes both the too-close backoff and the
+            # retreat pulse from one slider.
+            ("approach.far_distance_cm", L2, [(reactive_mod, "FAR_DISTANCE_CM")],
+             30.0, 200.0, 5.0, "Approach: far tier starts beyond (cm)"),
+            ("approach.low_distance_cm", L2, [(reactive_mod, "LOW_DISTANCE_CM")],
+             10.0, 100.0, 5.0, "Approach: mid tier starts within (cm)"),
+            ("approach.forward_high_speed", L2, [(reactive_mod, "FORWARD_HIGH_SPEED")],
+             10.0, 60.0, 1.0, "Approach: speed beyond far tier (duty)"),
+            ("approach.forward_mid_speed", L2, [(reactive_mod, "FORWARD_MID_SPEED")],
+             10.0, 60.0, 1.0, "Approach: speed between tiers (duty)"),
+            ("approach.forward_low_speed", L2, [(reactive_mod, "FORWARD_LOW_SPEED")],
+             10.0, 60.0, 1.0, "Approach: speed within low tier (duty)"),
+            ("approach.backup_speed", L2, [(reactive_mod, "BACKUP_SPEED")],
+             5.0, 40.0, 1.0, "Approach: backup speed when too close (duty, also the retreat pulse)"),
+            ("approach.max_steer_deg", L2, [(reactive_mod, "MAX_STEER_ANGLE_DEG")],
+             10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
+
+            ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 50.0, 1.0, "Emergency stop range (cm)"),
+            # This layer's own speeds. They used to be tied to the scan
+            # pivot, so escaping a corner and patrolling a lane could not be
+            # tuned apart.
+            ("safety.turn_speed", L4, [(emerg, "turn_speed")],
+             0.1, 1.0, 0.01, "Emergency: pivot speed (0-1)"),
+            ("safety.backoff_speed", L4, [(emerg, "backoff_speed")],
+             0.1, 1.0, 0.01, "Emergency: reverse speed (0-1)"),
+
+            # How fast the base may CHANGE what it is doing, whichever layer
+            # won. Ramping up only -- stops and reversals are never delayed.
+            ("motion.slew_vx", SYS, [(motion_mod, "SLEW_VX_PER_S")],
+             0.1, 5.0, 0.1, "Motion: forward ramp rate (vector/s, lower = gentler)"),
+            ("motion.slew_vtheta", SYS, [(motion_mod, "SLEW_VTHETA_PER_S")],
+             0.05, 5.0, 0.05, "Motion: steering ramp rate (vector/s, lower = gentler)"),
+
+            ("loop.hz", SYS, [(self, "hz")], 2.0, 20.0, 1.0, "Control loop rate (Hz)"),
         ]
 
     def get_settings(self) -> list:
-        return [{"key": k, "value": round(float(getattr(*targets[0])), 3),
+        return [{"key": k, "group": group, "value": round(float(getattr(*targets[0])), 3),
                  "min": lo, "max": hi, "step": step, "label": label}
-                for k, targets, lo, hi, step, label in self.settings_registry()]
+                for k, group, targets, lo, hi, step, label in self.settings_registry()]
 
     def set_setting(self, key: str, value: float) -> float:
-        for k, targets, lo, hi, _step, _label in self.settings_registry():
+        for k, _group, targets, lo, hi, _step, _label in self.settings_registry():
             if k == key:
                 clamped = max(lo, min(hi, float(value)))
                 for obj, attr in targets:
@@ -387,9 +478,8 @@ class RobotRuntime:
             "message": self.win_message,
             "layer": self.win_layer,
             "distance_cm": round(dist, 1) if dist is not None else None,
-            "battery": round(self.sensors.get_battery_level(), 2),
-            "battery_placeholder": not self.sensors.has_real_battery_sensor(),
             "camera": self.camera_available,
+            "camera_on": self.sensors.camera_enabled,
             "arm": self.arm is not None,
             "uptime_s": int(time.monotonic() - self.started_at),
             "loop_hz": round(hz_actual, 1),

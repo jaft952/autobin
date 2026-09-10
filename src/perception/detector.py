@@ -103,22 +103,29 @@ class DetectionResult:
 
 def open_camera_capture(camera_index: int = 0,
                         frame_width: int = 1920,
-                        frame_height: int = 1080):
+                        frame_height: int = 1080,
+                        primary_retries: int = 4,
+                        primary_retry_delay_s: float = 0.4):
     """Open Logitech Brio 4K with platform-specific backend."""
     import cv2
+    import time
     backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
-    # After a mid-run USB drop the camera often re-enumerates at a new index,
-    # so fall back through a few before giving up.
     tried = []
     cap = None
     for idx in dict.fromkeys([camera_index, 0, 1, 2]):
-        cap = cv2.VideoCapture(idx, backend)
-        if cap.isOpened():
+        attempts = primary_retries if idx == camera_index else 1
+        for attempt in range(attempts):
+            cap = cv2.VideoCapture(idx, backend)
+            if cap.isOpened():
+                break
+            cap.release()
+            cap = None
+            if attempt < attempts - 1:
+                time.sleep(primary_retry_delay_s)
+        if cap is not None:
             if idx != camera_index:
                 print(f"[camera] index {camera_index} unavailable — using index {idx}")
             break
-        cap.release()
-        cap = None
         tried.append(idx)
     if cap is None:
         raise RuntimeError(
@@ -193,6 +200,10 @@ class AluminiumCanDetector:
         if self._cap and self._cap.isOpened():
             self._cap.release()
             print("✓ Camera released")
+
+    def reopen_camera(self):
+        """Reopen just the camera hardware after stop() -- no model reload."""
+        self._open_camera()
 
     def read_frame(self):
         """Grab frame without inference; updates cache for get_annotated_frame()."""

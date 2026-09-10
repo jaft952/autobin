@@ -78,6 +78,47 @@ except Exception:  # pragma: no cover
     GPIO = MockGPIO()  # type: ignore
 
 
+class _PigpioPWM:
+    """One pin's PWM through the pigpiod daemon. DMA-timed in the daemon
+    process, so the duty stays accurate while YOLO loads the CPU — the
+    soft-PWM jitter RPi.GPIO suffers does not apply. Same interface as
+    RPi.GPIO's PWM object so the driver logic below is backend-agnostic."""
+
+    # pigpio duty range per cycle; at 200 Hz the daemon resolves 1000 steps.
+    _RANGE = 1000
+
+    def __init__(self, pi, pin: int, freq: int) -> None:
+        self._pi = pi
+        self._pin = pin
+        pi.set_mode(pin, 1)                  # pigpio.OUTPUT
+        pi.set_PWM_frequency(pin, freq)
+        pi.set_PWM_range(pin, self._RANGE)
+        pi.set_PWM_dutycycle(pin, 0)
+
+    def start(self, value: float) -> None:
+        self.ChangeDutyCycle(value)
+
+    def ChangeDutyCycle(self, value: float) -> None:
+        duty = int(round(max(0.0, min(100.0, float(value))) * self._RANGE / 100.0))
+        self._pi.set_PWM_dutycycle(self._pin, duty)
+
+    def stop(self) -> None:
+        self._pi.set_PWM_dutycycle(self._pin, 0)
+
+
+def _connect_pigpio():
+    """A pigpiod connection, or None (daemon not running / not installed /
+    Pi 5, where pigpio is unsupported). None -> RPi.GPIO soft PWM fallback."""
+    try:
+        import pigpio  # type: ignore
+        pi = pigpio.pi()
+        if pi.connected:
+            return pi
+    except Exception:
+        pass
+    return None
+
+
 class PWMActuator:
     """Hardware module: converts wheel command into GPIO + PWM signals.
     Implements src.hardware.actuators.interfaces.ActuatorInterface.
@@ -98,8 +139,23 @@ class PWMActuator:
         self.pins = pins or MotorPins()
         self.cal = calibration or MotionCalibration()
         self.last_duty = (0.0, 0.0)
+        self._my_pins = [self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4]
+        # What was last written to each input pin. last_duty is the wheel
+        # speed the mixer asked for; this is what the H-bridge actually sees,
+        # which is the only thing that says coast (all LOW) from brake (all
+        # HIGH) from still driving.
+        self.last_pin_duty = {pin: 0.0 for pin in self._my_pins}
 
-        my_pins = [self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4]
+        # Prefer pigpiod (DMA-timed, duty immune to CPU load); fall back to
+        # RPi.GPIO soft PWM when the daemon is not available.
+        self._pi = _connect_pigpio()
+        if self._pi is not None:
+            self.pwm_in1 = _PigpioPWM(self._pi, self.pins.in1, pwm_freq)
+            self.pwm_in2 = _PigpioPWM(self._pi, self.pins.in2, pwm_freq)
+            self.pwm_in3 = _PigpioPWM(self._pi, self.pins.in3, pwm_freq)
+            self.pwm_in4 = _PigpioPWM(self._pi, self.pins.in4, pwm_freq)
+            print("[PWMActuator] pigpio backend (hardware-timed PWM)")
+            return
 
         # Release ONLY OUR OWN pins from a previous unclean run. A global
         # GPIO.cleanup() here would tear down every other module's setup in
@@ -107,7 +163,7 @@ class PWMActuator:
         # BEFORE the motor driver in the runtime, so a global cleanup made
         # every later distance read fail.
         try:
-            GPIO.cleanup(my_pins)  # type: ignore
+            GPIO.cleanup(self._my_pins)  # type: ignore
         except Exception:
             pass
 
@@ -117,7 +173,7 @@ class PWMActuator:
             # GPIO mode already set, that's fine
             pass
 
-        GPIO.setup(my_pins, GPIO.OUT)
+        GPIO.setup(self._my_pins, GPIO.OUT)
 
         # One PWM channel per input pin (ZK-BM1 has no separate enable line).
         self.pwm_in1 = GPIO.PWM(self.pins.in1, pwm_freq)
@@ -173,14 +229,18 @@ class PWMActuator:
         self._set_left(left_speed)
         self._set_right(right_speed)
 
+    def _write(self, pwm, pin: int, value: float) -> None:
+        pwm.ChangeDutyCycle(value)
+        self.last_pin_duty[pin] = value
+
     def stop(self) -> None:
         """COAST ('Free Running Motor Stop'): both inputs of each motor LOW,
         motor windings open. The wheels are free to spin — an external push
         (e.g. the arm shaking the chassis) can roll the robot out of position.
         Use brake() to hold."""
         self.last_duty = (0.0, 0.0)
-        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
-            pwm.ChangeDutyCycle(0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 0)
 
     def brake(self) -> None:
         """ACTIVE BRAKE ('Fast Motor Stop'): both inputs of each motor driven
@@ -191,14 +251,37 @@ class PWMActuator:
         brake exists; this is the strongest hold the hardware allows.
         Stationary, it draws ~no current; current only flows while something
         is actively trying to move it."""
-        for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
-            pwm.ChangeDutyCycle(100)
+        # ORDER MATTERS, same reason as _set_left(): raising the inputs in
+        # pin order walks past a state where one input is already HIGH and
+        # its partner still carries the old duty -- which is not a brake, it
+        # is a near-full-speed DRIVE on that one channel, and only on that
+        # one, so the chassis lurches and yaws before it stops. Drop
+        # everything to LOW first (a harmless coast) and raise from there.
+        self.last_duty = (0.0, 0.0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 0)
+        for pwm, pin in self._channels():
+            self._write(pwm, pin, 100)
 
     def close(self) -> None:
         self.stop()
         for pwm in (self.pwm_in1, self.pwm_in2, self.pwm_in3, self.pwm_in4):
             pwm.stop()
-        GPIO.cleanup()
+        if self._pi is not None:
+            try:
+                self._pi.stop()          # disconnect from pigpiod only
+            except Exception:
+                pass
+            return
+        # Own pins only — a global cleanup wipes the ultrasonic's setup too.
+        try:
+            GPIO.cleanup(self._my_pins)  # type: ignore
+        except Exception:
+            pass
+
+    def _channels(self):
+        return ((self.pwm_in1, self.pins.in1), (self.pwm_in2, self.pins.in2),
+                (self.pwm_in3, self.pins.in3), (self.pwm_in4, self.pins.in4))
 
     def _set_left(self, speed: float) -> None:
         # ZK-BM1: PWM the forward input for +speed, the reverse input for
@@ -207,22 +290,22 @@ class PWMActuator:
         # one — otherwise a direction change passes through a moment with
         # BOTH inputs high, which the board treats as a brake pulse.
         if speed > 0:
-            self.pwm_in2.ChangeDutyCycle(0)
-            self.pwm_in1.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in2, self.pins.in2, 0)
+            self._write(self.pwm_in1, self.pins.in1, abs(speed))
         elif speed < 0:
-            self.pwm_in1.ChangeDutyCycle(0)
-            self.pwm_in2.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in1, self.pins.in1, 0)
+            self._write(self.pwm_in2, self.pins.in2, abs(speed))
         else:
-            self.pwm_in1.ChangeDutyCycle(0)
-            self.pwm_in2.ChangeDutyCycle(0)
+            self._write(self.pwm_in1, self.pins.in1, 0)
+            self._write(self.pwm_in2, self.pins.in2, 0)
 
     def _set_right(self, speed: float) -> None:
         if speed > 0:
-            self.pwm_in4.ChangeDutyCycle(0)
-            self.pwm_in3.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in4, self.pins.in4, 0)
+            self._write(self.pwm_in3, self.pins.in3, abs(speed))
         elif speed < 0:
-            self.pwm_in3.ChangeDutyCycle(0)
-            self.pwm_in4.ChangeDutyCycle(abs(speed))
+            self._write(self.pwm_in3, self.pins.in3, 0)
+            self._write(self.pwm_in4, self.pins.in4, abs(speed))
         else:
-            self.pwm_in3.ChangeDutyCycle(0)
-            self.pwm_in4.ChangeDutyCycle(0)
+            self._write(self.pwm_in3, self.pins.in3, 0)
+            self._write(self.pwm_in4, self.pins.in4, 0)

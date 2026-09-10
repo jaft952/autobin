@@ -50,7 +50,7 @@ from src.subsumption.layers.layer0_idle import SystemIdleLayer
 from src.subsumption.layers.layer1_scan import ScanAroundLayer
 from src.subsumption.layers.layer2_approach import ApproachLitterLayer
 from src.subsumption.layers.layer3_collect import CollectLitterLayer
-from src.subsumption.layers.layer5_emergency import EmergencyStopLayer
+from src.subsumption.layers.layer4_emergency import EmergencyStopLayer
 
 
 class PrintPlanner:
@@ -99,10 +99,10 @@ def main():
               collect,
               # Without this Layer 5 outvotes the grab and drives away from
               # every tin the arm gets close enough to collect.
-              EmergencyStopLayer(grab_zone_check=collect.is_grabbable)]
+              EmergencyStopLayer(grab_zone_check=collect.is_grabbable)] # type: ignore
     arbitrator = Arbitrator()
-    motion = MotionExecutor(actuator=PrintActuator() if args.no_motors else None)
-    arm = ArmExecutor(planner=PrintPlanner() if args.no_arm else None,
+    motion = MotionExecutor(actuator=PrintActuator() if args.no_motors else None) # type: ignore
+    arm = ArmExecutor(planner=PrintPlanner() if args.no_arm else None, # type: ignore
                       sensors=sensors, grab_zone_check=collect.can_still_in_grab_zone)
 
     period = 1.0 / args.hz

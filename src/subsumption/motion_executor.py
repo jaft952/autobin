@@ -23,14 +23,24 @@ clips one wheel at 100% and silently straightens the arc:
     left  = v_x - v_theta
     right = v_x + v_theta
 
-HALT vs BRAKE: a zero motion_vector normally COASTS the wheels (power cut,
-free to spin). But when the halt accompanies a GRAB, the arm's motion shakes
-the chassis and coasting lets the robot drift off its aligned spot. So for a
-grab command the wheels are actively BRAKED (windings shorted) — they resist
-being pushed and hold position through the whole grab sequence.
+STOPPING: a zero motion_vector COASTS the wheels -- all four inputs LOW, so
+each motor is open-circuit and free to spin. There is no brake.
+
+There used to be one: both inputs of each motor driven HIGH shorts the
+windings, which resists being pushed, and a grab used it so the arm's
+shaking could not drift the base off its aligned spot. On this hardware it
+did the opposite. Held that way the base crept and yawed for a whole run of
+all-HIGH ticks, while a coasting base sat still. Four independently
+soft-timed PWM channels held at "100%" are not a guaranteed solid HIGH on
+all four at once, and any moment where one input of a motor is high while
+its partner is not is a DRIVE pulse -- per channel, so it steers as well as
+creeps. Removed rather than left as a trap; see
+docs/hardware_safety_patterns.md section 8.
 """
 from __future__ import annotations
 
+import math
+import time
 from typing import Optional
 
 from src.hardware.actuators.interfaces import ActuatorInterface
@@ -38,10 +48,38 @@ from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 from src.subsumption.arbitrator import ActionCommand
 
-# arm_actions during which the base must HOLD position, not coast. 'hold' is
-# Layer 3 waiting for the detection to settle before it fires the grab — the
-# tin must not drift out of the arc band while it waits.
-_GRAB_ACTIONS = frozenset({"grab_arc", "grab_sequence", "hold"})
+# SLEW LIMIT: how fast the driven vector may CHANGE, in vector units per
+# SECOND. Per second, not per tick: the loop rate is not constant, so a
+# per-tick cap would mean a different thing at every rate.
+#
+# A layer that wins arbitration used to take effect whole on the very next
+# tick. Layer 1 driving straight, then Layer 2 taking over with a 79-degree
+# arc, is a one-tick jump from (0.2, 0, 0) to (0.25, 0, 0.10): one wheel
+# +78%, the other -26%, and the chassis snaps sideways. Detection noise does
+# the same inside Layer 2, where the steer angle is 180x the lateral error.
+#
+# Ramping applies to speeding up ONLY. Slowing, stopping and reversing all
+# take effect at once -- a stop that arrives late is a safety bug, and a
+# direction flip is forced THROUGH zero rather than eased through it
+# (hardware_safety_patterns.md rule 7).
+SLEW_VX_PER_S = 0.6
+SLEW_VTHETA_PER_S = 0.3
+
+_SLEW_MAX_DT_S = 0.5      # a long stall must not authorise an unlimited step
+
+
+def _slew(current: float, target: float, max_step: float) -> float:
+    """One component, moved toward `target` by at most `max_step`."""
+    if target == 0.0:
+        return 0.0                       # stopping is never delayed
+    if current != 0.0 and (current > 0.0) != (target > 0.0):
+        return 0.0                       # direction flip passes through zero
+    if abs(target) <= abs(current):
+        return target                    # slowing down is free
+    delta = target - current
+    if abs(delta) <= max_step:
+        return target
+    return current + math.copysign(max_step, delta)
 
 
 class MotionExecutor:
@@ -58,6 +96,8 @@ class MotionExecutor:
             from src.hardware.actuators.pwm_driver import PWMActuator
             actuator = PWMActuator(pins=pins, calibration=self.cal)
         self.actuator: ActuatorInterface = actuator
+        self._vec = (0.0, 0.0)          # (v_x, v_theta) actually being driven
+        self._vec_at: Optional[float] = None
 
     def execute(self, command: ActionCommand) -> None:
         """Apply the winning command's motion_vector to the base.
@@ -70,12 +110,9 @@ class MotionExecutor:
             return
 
         v_x, _v_y, v_theta = command.motion_vector
+        v_x, v_theta = self._ramp(v_x, v_theta)
         if v_x == 0 and v_theta == 0:
-            # Hold position (brake) while the arm grabs; coast otherwise.
-            if command.arm_action in _GRAB_ACTIONS:
-                self.brake()
-            else:
-                self.stop()
+            self.stop()
             return
 
         left = v_x - v_theta
@@ -103,19 +140,26 @@ class MotionExecutor:
         )
         self.actuator.apply(cmd)
 
+    def _ramp(self, v_x: float, v_theta: float):
+        """Limit how far the driven vector may move since the last call."""
+        now = time.monotonic()
+        dt = _SLEW_MAX_DT_S if self._vec_at is None else min(now - self._vec_at,
+                                                            _SLEW_MAX_DT_S)
+        self._vec_at = now
+        cur_x, cur_theta = self._vec
+        self._vec = (_slew(cur_x, v_x, SLEW_VX_PER_S * dt),
+                     _slew(cur_theta, v_theta, SLEW_VTHETA_PER_S * dt))
+        return self._vec
+
+    def _ramp_reset(self) -> None:
+        """The wheels are not turning, so the ramp restarts from rest."""
+        self._vec = (0.0, 0.0)
+        self._vec_at = time.monotonic()
+
     def stop(self) -> None:
         """Coast: cut motor power, wheels free to spin (does not release GPIO)."""
+        self._ramp_reset()
         self.actuator.stop()
-
-    def brake(self) -> None:
-        """Actively hold position — resist being pushed. Used while the arm
-        grabs so the shaking chassis doesn't drift. brake() is optional on
-        ActuatorInterface; falls back to stop() when an actuator omits it."""
-        brake_fn = getattr(self.actuator, "brake", None)
-        if callable(brake_fn):
-            brake_fn()
-        else:
-            self.actuator.stop()
 
     def close(self) -> None:
         """Stop and release GPIO. Call once on shutdown."""
