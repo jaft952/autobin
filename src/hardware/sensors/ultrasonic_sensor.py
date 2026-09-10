@@ -93,12 +93,19 @@ class UltrasonicSensor:
         self._record(distance_cm if distance_cm >= MIN_VALID_DISTANCE_CM else None)
 
     def _record(self, reading: Optional[float]) -> None:
-        """Median filter: None (no echo) stays in the window so a dropout alone can't move the reading."""
+        """Nearest-of-window filter: None (no echo) stays in the window so a
+        dropout alone can't move the reading, but the reported distance is
+        the CLOSEST valid ping in the window, not the median. This is a
+        collision sensor: under-reporting how close something is would delay
+        an emergency stop until a second consecutive close ping arrived (up
+        to ~2 ping cycles late on a fast-closing obstacle), while
+        over-reporting it from one stray echo only costs an extra defensive
+        backoff. Still requires a majority of the window to be a real echo
+        before trusting any of it."""
         with self._lock:
             self._history.append(reading)
-            valid = sorted(r for r in self._history if r is not None)
-            # Lower of the two middles on an even count: report the nearer obstacle.
-            self._distance_cm = (valid[(len(valid) - 1) // 2]
+            valid = [r for r in self._history if r is not None]
+            self._distance_cm = (min(valid)
                                   if len(valid) * 2 > len(self._history) else None)
 
     def get_distance_cm(self) -> Optional[float]:

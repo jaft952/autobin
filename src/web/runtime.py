@@ -170,7 +170,7 @@ class RobotRuntime:
         self.scan_layer.yield_to_targets = (new_state == STATE_AUTO)
 
         self.emergency_layer.grab_zone_check = ( # type: ignore
-            self.collect_layer.is_grabbable if new_state == STATE_AUTO else None)
+            self.collect_layer.is_holding_for_grab if new_state == STATE_AUTO else None)
         if new_state == STATE_AUTO and self.camera_available:
             # Ultrasonic-only until something is close enough to be worth
             # checking; _update_camera_gate() wakes it per tick from here.
@@ -453,7 +453,7 @@ class RobotRuntime:
             ("approach.max_steer_deg", L2, [(reactive_mod, "MAX_STEER_ANGLE_DEG")],
              10.0, 90.0, 1.0, "Approach: max steer angle (deg)"),
 
-            ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 30.0, 1.0, "Emergency stop range (cm)"),
+            ("safety.estop_cm", L4, [(SensorHub, "EMERGENCY_STOP_CM")], 5.0, 50.0, 1.0, "Emergency stop range (cm)"),
             # This layer's own speeds. They used to be tied to the scan
             # pivot, so escaping a corner and patrolling a lane could not be
             # tuned apart.

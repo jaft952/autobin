@@ -30,15 +30,18 @@ class CollectLitterLayer(BaseLayer):
         self._ready_since: Optional[float] = None
         self._latched_until: float = 0.0
         self._suppressed_since: Optional[float] = None
+        self._last_won: bool = False
 
     def reset(self) -> None:
         self._ready_since = None
         self._latched_until = 0.0
         self._suppressed_since = None
+        self._last_won = False
 
     # ── Arbitration ───────────────────────────────────────────────────────
 
     def notify_arbitration(self, won: bool) -> None:
+        self._last_won = won
         if not won and self._suppressed_since is None:
             self._suppressed_since = time.monotonic()
 
@@ -112,6 +115,19 @@ class CollectLitterLayer(BaseLayer):
         Pure — no timers touched, so Layer 5 and ArmExecutor can ask it
         without disturbing this layer's stability clock."""
         return self._solve(sensors)[0] is not None
+
+    def is_holding_for_grab(self, sensors: Any) -> bool:
+        """Same solvability check as is_grabbable, gated on this layer having
+        actually WON arbitration last tick -- i.e. the base is genuinely
+        stopped for the grab, not still being driven by Layer 2's approach.
+
+        This is the one Layer 5 should exempt, not is_grabbable() alone: a
+        tin sitting right in front of a stopped base legitimately reads
+        "too close" on the front ultrasonic, and that must not disarm the
+        e-stop while the base is still moving -- a solvable pose can exist
+        several ticks before Layer 2 actually arrives, and a real obstacle
+        can be sitting right next to that solvable path the whole time."""
+        return self._last_won and self.is_grabbable(sensors)
 
     def can_still_in_grab_zone(self, sensors: Any) -> bool:
         """Re-run the grabbability check after a grab, once the arm is clear
