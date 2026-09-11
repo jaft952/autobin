@@ -17,7 +17,6 @@ Covers:
     - overshot past the nearest arc       -> active backoff, not a stand-down
     - the grab waits out GRAB_STABLE_S, and GRABBABLE_LATCH_S rides out a
       one-frame detection blink
-    - the front ultrasonic vetoes a grab it reads as out of range
     - ground-contact point preferred over bbox center
     - Layer 2 steering signs and distance scaling
     - Layer 4 stands down for a tin the arm can actually reach
@@ -45,7 +44,7 @@ from src.subsumption.layers.layer2_approach import (
 )
 import src.subsumption.layers.layer3_collect as collect_mod
 from src.subsumption.layers.layer3_collect import (
-    CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S, GRAB_CONFIRM_CM,
+    CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S,
 )
 from src.motion.calibration import MotionCalibration
 import src.visual_servoing.reactive_controller as reactive_mod
@@ -349,30 +348,6 @@ def test_layer2_parks_on_the_arc_grid_not_on_distance():
         assert cmd.active and cmd.motion_vector == (0, 0, 0), cmd.message
         assert "IN REACH" in cmd.message, cmd.message
     print("PASS Layer 2 parks on the arc grid")
-
-
-def test_ultrasonic_vetoes_a_far_grab():
-    """The front sensor is the independent check on the vision estimate. No
-    reading is NOT a veto — an off-center tin sits outside its narrow beam."""
-    with fake_collect_clock() as clock:
-        layer = CollectLitterLayer(arc_solver=make_solver())
-        sensors = FakeSensors()
-        sensors.ground = (0.5, 0.6) # type: ignore
-
-        sensors.dist = GRAB_CONFIRM_CM + 10.0 # type: ignore
-        layer.evaluate(sensors)
-        clock.tick(GRAB_STABLE_S + 0.01)
-        cmd = layer.evaluate(sensors)
-        assert cmd.active and cmd.motion_vector == (0, 0, 0), \
-            "must hold the base, not stand down, once the arc grid solves"
-        assert cmd.arm_action != 'grab_arc', "grabbed past the veto"
-
-        sensors.dist = GRAB_CONFIRM_CM - 5.0 # type: ignore
-        assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-
-        sensors.dist = None                     # no echo -> vision decides
-        assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-    print("PASS ultrasonic vetoes a far grab, missing echo does not")
 
 
 def test_inactive_when_outside_the_grid():
@@ -943,7 +918,6 @@ ALL_TESTS = [
     test_layer2_parks_on_the_arc_grid_not_on_distance,
     test_retreat_survives_a_one_frame_blink,
     test_layer3_stands_down_at_once_when_unreachable,
-    test_ultrasonic_vetoes_a_far_grab,
     test_inactive_when_outside_the_grid,
     test_prefers_ground_contact_over_center,
     test_is_grabbable_does_not_disturb_the_clock,

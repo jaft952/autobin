@@ -8,7 +8,6 @@ from src.subsumption.arbitrator import ActionCommand
 from src.arm.arc_grasp import ArcGraspSolver
 from src.arm.grasp_reach import solve_reach
 
-GRAB_CONFIRM_CM = 35.0
 GRAB_STABLE_S = 2.0
 GRABBABLE_LATCH_S = 2.0
 
@@ -64,16 +63,6 @@ class CollectLitterLayer(BaseLayer):
             return ActionCommand(layer_id=self.layer_id, active=False)
 
         self._latched_until = now + GRABBABLE_LATCH_S
-
-        if not self._ultrasonic_confirms(sensors):
-            # Hold, don't stand down: a single noisy HC-SR04 ping reading a
-            # hair past GRAB_CONFIRM_CM must not hand the wheels back to
-            # Layer 2 for even one tick -- its own steering correction is a
-            # visible flick, and it moves the base off the spot the arc grid
-            # already solved for, right before the grab fires on the next
-            # good reading.
-            self._ready_since = None
-            return self._stop("GRAB HOLD (ultrasonic not yet confirming range)")
 
         if self._ready_since is None:
             self._ready_since = now
@@ -141,10 +130,3 @@ class CollectLitterLayer(BaseLayer):
         2 arrives on -- one criterion, so the two layers cannot disagree
         about whether the base is in position."""
         return solve_reach(self.solver, sensors)
-
-    @staticmethod
-    def _ultrasonic_confirms(sensors: Any) -> bool:
-        """Front sensor agrees tin is in range. No reading is not a veto; too far still blocks."""
-        getter = getattr(sensors, "get_obstacle_distance_cm", None)
-        distance = getter() if getter is not None else None
-        return distance is None or distance <= GRAB_CONFIRM_CM
