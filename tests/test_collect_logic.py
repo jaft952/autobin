@@ -20,7 +20,7 @@ Covers:
     - the front ultrasonic vetoes a grab it reads as out of range
     - ground-contact point preferred over bbox center
     - Layer 2 steering signs and distance scaling
-    - Layer 5 stands down for a tin the arm can actually reach
+    -Layer 4 stands down for a tin the arm can actually reach
     - ArmExecutor: grab -> dump -> home, cooldown, stow idempotence
     - arbitration: collect(3) > approach(2) > scan(1), emergency(5) > all
 
@@ -489,7 +489,7 @@ def test_layer3_routes_lying_and_axial():
 
 def test_emergency_stands_down_for_a_grabbable_tin():
     """At grab range the front sensor is looking AT the tin. Without the
-    exemption Layer 5 outvoted the grab and drove away from every can the
+    exemptionLayer 4 outvoted the grab and drove away from every can the
     robot got close enough to collect."""
     with fake_collect_clock(), fake_emergency_clock():
         collect = CollectLitterLayer(arc_solver=make_solver())
@@ -869,7 +869,7 @@ def test_arbitration_stack():
         sensors.dist = 8.0 # type: ignore
         assert winner().layer_id == 5
 
-        # No litter, no obstacle -> scan patrols, but only once layer 5 has
+        # No litter, no obstacle -> scan patrols, but only onceLayer 4 has
         # finished its escape (settle -> backoff -> settle -> pivot, and the
         # pivot itself is held for MIN_TURN_S).
         sensors.center = sensors.ground = None

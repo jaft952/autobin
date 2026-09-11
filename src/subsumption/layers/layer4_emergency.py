@@ -64,7 +64,7 @@ class EmergencyStopLayer(BaseLayer):
     def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED,
                  backoff_speed: float = EMERGENCY_BACKOFF_SPEED,
                  grab_zone_check: Optional[Callable[[Any], bool]] = None):
-        super().__init__(layer_id=5)
+        super().__init__(layer_id=4)
         self.turn_speed = EMERGENCY_TURN_SPEED
         self.backoff_speed = EMERGENCY_BACKOFF_SPEED
         self.set_turn_speed(turn_speed)

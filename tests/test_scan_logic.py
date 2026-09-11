@@ -17,7 +17,7 @@ a fake sensors object whose ultrasonic distance we script. Covers:
     - wall appearing mid-SHIFT (corner) -> skips straight to TURN2
     - target detected -> layer yields and restarts the pattern afterwards
     - obstacle avoidance (dodge) is NOT this layer's job -- any front
-      obstacle just ends the lane like a wall; Layer 5 handles avoidance
+      obstacle just ends the lane like a wall;Layer 4 handles avoidance
     - MotionExecutor: vector -> wheel mixing, sign convention, renormalize, stop
     - arbitration: scan beats idle; emergency (< 10 cm) beats scan
 
@@ -153,7 +153,7 @@ def advance(layer, sensors, clock):
 
 def test_full_zigzag_cycle():
     """Wall reached -> pivot 1 -> shift -> pivot 2 -> drive, alternating pivot
-    side at the next wall. Dodging obstacles is Layer 5's job, not scan's."""
+    side at the next wall. Dodging obstacles isLayer 4's job, not scan's."""
     with fake_clock() as clock:
         layer = ScanAroundLayer()
         sensors = FakeDirectionalSensors(front=None, front_left=None, front_right=None)
@@ -443,7 +443,7 @@ def test_arbitration_with_real_hub():
         win = _vote(arb, hub)
         assert win.layer_id == 1, win.message
 
-        # Inside EMERGENCY_STOP_CM: layer 5 subsumes everything. What it then
+        # Inside EMERGENCY_STOP_CM:Layer 4 subsumes everything. What it then
         # does (settle/backoff/pivot) is covered by the avoid tests below.
         ultra.dist = SensorHub.EMERGENCY_STOP_CM - 2 # type: ignore
         win = _vote(arb, hub)
@@ -451,7 +451,7 @@ def test_arbitration_with_real_hub():
     print("PASS arbitration: scan > idle, emergency > scan")
 
 
-# ── Layer 5: obstacle avoidance ───────────────────────────────────────────
+# ──Layer 4: obstacle avoidance ───────────────────────────────────────────
 
 class FakeDirectionalSensors:
     """SensorHub stand-in with one reading per ultrasonic direction."""
