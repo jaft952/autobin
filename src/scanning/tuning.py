@@ -6,7 +6,7 @@ TURN_SPEED    = 0.30   # pivot speed; below this the base tends to stall
 
 TURN_AT_CM = 30.0   # front sensor: end the lane and start the zigzag turn
                      # (kept above SensorHub.EMERGENCY_STOP_CM by design: Layer 1
-                     # should turn away from a wall on its own well before Layer 5's
+                     # should turn away from a wall on its own well before Layer 4's
                      # hard stop is needed as a backstop, not after it)
 
 DIAGONAL_NUDGE_CM = 30.0   # side distance that starts the steering nudge

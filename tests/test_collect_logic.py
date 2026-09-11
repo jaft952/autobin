@@ -20,7 +20,7 @@ Covers:
     - the front ultrasonic vetoes a grab it reads as out of range
     - ground-contact point preferred over bbox center
     - Layer 2 steering signs and distance scaling
-    - Layer 5 stands down for a tin the arm can actually reach
+    - Layer 4 stands down for a tin the arm can actually reach
     - ArmExecutor: grab -> dump -> home, cooldown, stow idempotence
     - arbitration: collect(3) > approach(2) > scan(1), emergency(5) > all
 
@@ -399,7 +399,7 @@ def test_prefers_ground_contact_over_center():
 
 
 def test_is_grabbable_does_not_disturb_the_clock():
-    """Layer 5 and ArmExecutor both poll this every tick; if it advanced the
+    """Layer 4 and ArmExecutor both poll this every tick; if it advanced the
     stability clock it would either delay or short-circuit every grab."""
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
@@ -488,7 +488,7 @@ def test_layer3_routes_lying_and_axial():
 
 def test_emergency_stands_down_for_a_grabbable_tin():
     """At grab range the front sensor is looking AT the tin. Without the
-    exemption Layer 5 outvoted the grab and drove away from every can the
+    exemption Layer 4 outvoted the grab and drove away from every can the
     robot got close enough to collect."""
     with fake_collect_clock(), fake_emergency_clock():
         collect = CollectLitterLayer(arc_solver=make_solver())
@@ -868,7 +868,7 @@ def test_arbitration_stack():
         sensors.dist = 8.0 # type: ignore
         assert winner().layer_id == 4
 
-        # No litter, no obstacle -> scan patrols, but only once layer 5 has
+        # No litter, no obstacle -> scan patrols, but only once Layer 4 has
         # finished its escape (settle -> backoff -> settle -> pivot, and the
         # pivot itself is held for MIN_TURN_S).
         sensors.center = sensors.ground = None
@@ -879,7 +879,7 @@ def test_arbitration_stack():
             clock.tick(0.2)
             collect_clock.tick(0.2)     # lets Layer 3's blink latch expire
         else:
-            raise AssertionError("layer 5 never handed back to scan")
+            raise AssertionError("Layer 4 never handed back to scan")
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 

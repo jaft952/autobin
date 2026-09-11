@@ -30,18 +30,17 @@ class CollectLitterLayer(BaseLayer):
         self._ready_since: Optional[float] = None
         self._latched_until: float = 0.0
         self._suppressed_since: Optional[float] = None
-        self._last_won: bool = False
+        self._points: list = []          # (t, nx, ny) samples
 
     def reset(self) -> None:
         self._ready_since = None
         self._latched_until = 0.0
         self._suppressed_since = None
-        self._last_won = False
+        self._points.clear()
 
     # ── Arbitration ───────────────────────────────────────────────────────
 
     def notify_arbitration(self, won: bool) -> None:
-        self._last_won = won
         if not won and self._suppressed_since is None:
             self._suppressed_since = time.monotonic()
 
@@ -75,6 +74,9 @@ class CollectLitterLayer(BaseLayer):
             self._ready_since = None
             return self._stop("GRAB HOLD (ultrasonic not yet confirming range)")
 
+        nx, ny = point # type: ignore
+        self._track_point(now, nx, ny)
+
         if self._ready_since is None:
             self._ready_since = now
         stable_s = now - self._ready_since
@@ -82,7 +84,11 @@ class CollectLitterLayer(BaseLayer):
             return self._stop(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
                               f"/{GRAB_STABLE_S:.0f}s)")
 
-        nx, ny = point # type: ignore
+        drift = self._point_drift()
+        if drift > POSE_STABLE_EPS:
+            return self._hold(f"GRAB HOLD (target still moving, "
+                              f"drift {drift:.3f}/{POSE_STABLE_EPS})")
+
         if klass == "upright":
             label = "upright"
         elif klass == "axial":
@@ -94,13 +100,12 @@ class CollectLitterLayer(BaseLayer):
             active=True,
             motion_vector=(0, 0, 0),          # halt base for the grab
             arm_action='grab_arc',
-            # tin_pose picks the approach order (lying: elbow last)
-            arm_params={'pose': solved, 'tin_pose': klass},
+            arm_params={'pose': solved, 'tin_pose': klass},  # tin_pose sets approach order
             message=f"ARC GRAB ({label}) @ nx={nx:.2f} ny={ny:.2f}",
         )
 
     def _absorb_suppressed_time(self, now: float) -> None:
-        """Open-loop timers must not count time spent suppressed by Layer 5."""
+        """Don't count time suppressed by Layer 4 in the open-loop timers."""
         if self._suppressed_since is None:
             return
         paused = now - self._suppressed_since
@@ -111,28 +116,11 @@ class CollectLitterLayer(BaseLayer):
         self._suppressed_since = None
 
     def is_grabbable(self, sensors: Any) -> bool:
-        """Can the arc grid solve this tin from where the robot stands?
-        Pure — no timers touched, so Layer 5 and ArmExecutor can ask it
-        without disturbing this layer's stability clock."""
+        """Can the arc grid solve this tin now? Pure, no timers touched."""
         return self._solve(sensors)[0] is not None
 
-    def is_holding_for_grab(self, sensors: Any) -> bool:
-        """Same solvability check as is_grabbable, gated on this layer having
-        actually WON arbitration last tick -- i.e. the base is genuinely
-        stopped for the grab, not still being driven by Layer 2's approach.
-
-        This is the one Layer 5 should exempt, not is_grabbable() alone: a
-        tin sitting right in front of a stopped base legitimately reads
-        "too close" on the front ultrasonic, and that must not disarm the
-        e-stop while the base is still moving -- a solvable pose can exist
-        several ticks before Layer 2 actually arrives, and a real obstacle
-        can be sitting right next to that solvable path the whole time."""
-        return self._last_won and self.is_grabbable(sensors)
-
     def can_still_in_grab_zone(self, sensors: Any) -> bool:
-        """Re-run the grabbability check after a grab, once the arm is clear
-        of the camera — catches a miss regardless of where a knocked-but-not-
-        grabbed can ended up."""
+        """Re-check grabbability after a grab, once the arm clears the camera."""
         return self.is_grabbable(sensors)
 
     # ── Internals ─────────────────────────────────────────────────────────
@@ -157,10 +145,7 @@ class CollectLitterLayer(BaseLayer):
 
     @staticmethod
     def _ultrasonic_confirms(sensors: Any) -> bool:
-        """Front sensor agrees the tin is within arm range. No reading is NOT
-        a veto: an off-center tin (a normal calibrated position) sits outside
-        the sensor's narrow beam entirely, and vision plus the arc solver have
-        already placed it. A real too-far reading still blocks."""
+        """Front sensor agrees tin is in range. No reading is not a veto; too far still blocks."""
         getter = getattr(sensors, "get_obstacle_distance_cm", None)
         distance = getter() if getter is not None else None
         return distance is None or distance <= GRAB_CONFIRM_CM

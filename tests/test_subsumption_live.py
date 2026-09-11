@@ -97,7 +97,7 @@ def main():
     collect = CollectLitterLayer()
     layers = [SystemIdleLayer(), ScanAroundLayer(), ApproachLitterLayer(),
               collect,
-              # Without this Layer 5 outvotes the grab and drives away from
+              # Without this Layer 4 outvotes the grab and drives away from
               # every tin the arm gets close enough to collect.
               EmergencyStopLayer(grab_zone_check=collect.is_grabbable)] # type: ignore
     arbitrator = Arbitrator()
