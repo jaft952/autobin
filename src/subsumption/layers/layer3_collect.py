@@ -30,17 +30,18 @@ class CollectLitterLayer(BaseLayer):
         self._ready_since: Optional[float] = None
         self._latched_until: float = 0.0
         self._suppressed_since: Optional[float] = None
-        self._points: list = []          # (t, nx, ny) samples
+        self._last_won: bool = False
 
     def reset(self) -> None:
         self._ready_since = None
         self._latched_until = 0.0
         self._suppressed_since = None
-        self._points.clear()
+        self._last_won = False
 
     # ── Arbitration ───────────────────────────────────────────────────────
 
     def notify_arbitration(self, won: bool) -> None:
+        self._last_won = won
         if not won and self._suppressed_since is None:
             self._suppressed_since = time.monotonic()
 
@@ -74,9 +75,6 @@ class CollectLitterLayer(BaseLayer):
             self._ready_since = None
             return self._stop("GRAB HOLD (ultrasonic not yet confirming range)")
 
-        nx, ny = point # type: ignore
-        self._track_point(now, nx, ny)
-
         if self._ready_since is None:
             self._ready_since = now
         stable_s = now - self._ready_since
@@ -84,11 +82,7 @@ class CollectLitterLayer(BaseLayer):
             return self._stop(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
                               f"/{GRAB_STABLE_S:.0f}s)")
 
-        drift = self._point_drift()
-        if drift > POSE_STABLE_EPS:
-            return self._hold(f"GRAB HOLD (target still moving, "
-                              f"drift {drift:.3f}/{POSE_STABLE_EPS})")
-
+        nx, ny = point # type: ignore
         if klass == "upright":
             label = "upright"
         elif klass == "axial":
@@ -118,6 +112,11 @@ class CollectLitterLayer(BaseLayer):
     def is_grabbable(self, sensors: Any) -> bool:
         """Can the arc grid solve this tin now? Pure, no timers touched."""
         return self._solve(sensors)[0] is not None
+
+    def is_holding_for_grab(self, sensors: Any) -> bool:
+        """Grabbable AND this layer won last tick, so the base is already stopped.
+        Layer 4 exempts only this: a solvable pose can exist while the base still moves."""
+        return self._last_won and self.is_grabbable(sensors)
 
     def can_still_in_grab_zone(self, sensors: Any) -> bool:
         """Re-check grabbability after a grab, once the arm clears the camera."""
