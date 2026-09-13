@@ -1,4 +1,4 @@
-"""Zigzag scan state machine: one function per phase transition."""
+"""Steps of the zigzag scan: drive, settle, turn, shift, turn."""
 import enum
 
 from . import tuning
@@ -6,7 +6,7 @@ from . import geometry
 
 
 class Phase(enum.Enum):
-    SETTLE = enum.auto()   # brief halt between phases (direction flips)
+    SETTLE = enum.auto()
     DRIVE  = enum.auto()
     TURN1  = enum.auto()
     SHIFT  = enum.auto()
@@ -30,14 +30,13 @@ def turn1(layer, now, front, wall_ahead, sensors):
 
 
 def shift(layer, now, front, wall_ahead, sensors):
-    # Wall ahead during the shift -> skip straight to the second pivot.
     if wall_ahead or layer._elapsed(now) >= layer.shift_s:
         layer._settle(Phase.TURN2, now)
 
 
 def turn2(layer, now, front, wall_ahead, sensors):
     if layer._elapsed(now) >= layer._turn_s:
-        layer._turn_left = not layer._turn_left   # alternate -> zigzag
+        layer._turn_left = not layer._turn_left
         layer._start_lane(now)
         layer._settle(Phase.DRIVE, now)
 

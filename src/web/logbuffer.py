@@ -1,21 +1,4 @@
-"""
-web/logbuffer.py
-
-Log system backing the dashboard: one in-memory ring buffer that everything
-funnels into, so the web UI can poll increments with a cursor.
-
-Three inflows:
-    1. Python logging      — BufferLogHandler attached to the root logger
-    2. print() output      — TeeStream wraps sys.stdout/stderr; the existing
-                             modules narrate via print ([GraspPlanner] ...,
-                             [Actuator] ...), and those lines ARE the useful
-                             robot log, so they're captured too
-    3. direct .append()    — the runtime/server log their own events
-
-Every entry gets a monotonically increasing `seq`, so the frontend asks
-"give me everything after seq N" and never misses or duplicates lines.
-A plain FileHandler keeps a persistent copy on disk.
-"""
+"""Log storage for the dashboard."""
 from __future__ import annotations
 
 import logging
@@ -25,11 +8,11 @@ import time
 from collections import deque
 from pathlib import Path
 
-import src.log_levels  # noqa: F401 -- registers log.success()/log.fail()
+import src.log_levels  # noqa: F401
 
 
 class LogBuffer:
-    """Thread-safe ring buffer of structured log entries."""
+    """Thread-safe list of recent log entries."""
 
     def __init__(self, capacity: int = 1000):
         self._entries: deque = deque(maxlen=capacity)
@@ -60,7 +43,7 @@ class LogBuffer:
 
 
 class BufferLogHandler(logging.Handler):
-    """Routes the logging module into the LogBuffer."""
+    """Sends log messages into the LogBuffer."""
 
     def __init__(self, buffer: LogBuffer):
         super().__init__()
@@ -74,8 +57,7 @@ class BufferLogHandler(logging.Handler):
 
 
 class TeeStream:
-    """Wraps a real stream: passes writes through AND collects whole lines
-    into the LogBuffer. Replaces sys.stdout/sys.stderr."""
+    """Prints output and also saves each line to the LogBuffer."""
 
     def __init__(self, real, buffer: LogBuffer, level: str, source: str):
         self._real = real
@@ -101,13 +83,9 @@ class TeeStream:
 
 def setup_logging(buffer: LogBuffer, log_file: str = "logs/autobin.log",
                   capture_prints: bool = True) -> logging.Logger:
-    """Wire everything: root logger -> buffer + file, print() -> buffer.
-    Returns a logger for the web package's own messages."""
+    """Connect logging and print() to the log buffer and file."""
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)   # DEBUG carries the per-tick "which layer
-    # is running" chatter (runtime.py logs it via self.log.debug); INFO
-    # stays for one-off milestone/record events (startup, mode switches,
-    # manual actions, settings changes).
+    root.setLevel(logging.DEBUG)
 
     buf_handler = BufferLogHandler(buffer)
     buf_handler.setFormatter(logging.Formatter("%(message)s"))
@@ -120,24 +98,16 @@ def setup_logging(buffer: LogBuffer, log_file: str = "logs/autobin.log",
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root.addHandler(file_handler)
 
-    # Console output still goes to the REAL stdout (pre-tee) to avoid loops.
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     root.addHandler(console)
 
     if capture_prints:
-        # DEBUG: routine print() narration ("[arm] resuming...", model/
-        # camera startup lines) — same bucket as the per-tick layer chatter,
-        # tuckable away from the INFO/SUCCESS/WARNING/FAIL/ERROR event log.
         sys.stdout = TeeStream(sys.stdout, buffer, "DEBUG", "print")
         sys.stderr = TeeStream(sys.stderr, buffer, "ERROR", "stderr")
 
-    # ultralytics/opencv logging at DEBUG would otherwise flood the buffer
-    # now that root is DEBUG-level.
     logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
-    # The dashboard polls every second — werkzeug's per-request access lines
-    # would flood the very log panel that's polling.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     return logging.getLogger("web")

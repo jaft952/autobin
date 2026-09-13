@@ -1,46 +1,4 @@
-"""
-web/server.py
-
-AutoBin robot server — runs ON THE PI (the hardware is there), exposing the
-control/telemetry API around RobotRuntime. The React dashboard is hosted
-separately on Windows (web/dashboard.py) and connects here directly.
-
-Run on the Pi (needs: pip install flask):
-
-    python web/server.py                     # full robot, port 8000
-    python web/server.py --no-camera         # bench without YOLO/webcam
-
-Then on Windows:   python web/dashboard.py --pi <pi-ip>:8000
-(or open http://<pi-ip>:8000 directly — the Pi still serves the UI too,
-both deployment modes work).
-
-LOW LATENCY: the dashboard does NOT poll. /api/events is a Server-Sent
-Events stream — status is pushed at ~5 Hz and log lines the moment they
-appear (SSE = plain HTTP, native in browsers, zero extra pip deps, and CORS
-below lets the Windows-hosted UI subscribe cross-origin). Control buttons
-are single POSTs (~1-3 ms RTT on LAN). The camera is a continuous MJPEG
-stream, unchanged.
-
-API summary (all JSON unless noted):
-    GET  /api/status                  state + power + performance snapshot
-    POST /api/system/start            full autonomy (AUTO)
-    POST /api/system/scan             manual scanning (zigzag only)
-    POST /api/system/estop            EMERGENCY STOP
-    POST /api/system/shutdown         stop the server and power off the Pi
-                                      (both need the robot halted first)
-    POST /api/system/restart          re-exec the server (picks up edited source)
-    GET  /api/camera/stream           MJPEG stream (multipart)
-    POST /api/camera/off              release the camera hardware (battery save)
-    POST /api/camera/on               reopen the camera hardware
-    GET  /api/arm/pose                commanded arm pose
-    POST /api/arm/pose {name}         home | bin
-    POST /api/arm/gripper {action}    open | close
-    POST /api/arm/jog {channel,delta} nudge one channel (0-5), degrees
-    GET  /api/settings                quick-settings list
-    POST /api/settings {key,value}    live-patch one setting (session only)
-    GET  /api/logs?after=N            log entries with seq > N
-    POST /api/logs/clear
-"""
+"""Robot web server. Run on the Pi: python src/web/server.py"""
 import argparse
 import json
 import os
@@ -50,10 +8,10 @@ import threading
 import time
 
 _SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(_SRC_DIR)                       # for "web.xxx" imports
-sys.path.append(os.path.dirname(_SRC_DIR))      # for "src.xxx" imports
+sys.path.append(_SRC_DIR)
+sys.path.append(os.path.dirname(_SRC_DIR))
 
-from flask import Flask, Response, jsonify, request, send_from_directory # type: ignore
+from flask import Flask, Response, jsonify, request, send_from_directory  # type: ignore
 
 from web.logbuffer import LogBuffer, setup_logging
 from web.runtime import RobotRuntime, STATE_ESTOP, STATE_STOPPED
@@ -62,12 +20,8 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 app = Flask(__name__, static_folder=None)
 buffer = LogBuffer(capacity=1000)
-runtime: RobotRuntime = None          # type: ignore # created in main()
+runtime: RobotRuntime = None  # type: ignore
 
-
-# ── Public-tunnel gate: requests arriving through Cloudflare Tunnel carry a
-#    CF-Connecting-IP header; those must present one of the Pi's own IPs as a
-#    key before any /api/ route works. Direct LAN requests are untouched. ──
 
 def _local_ips():
     try:
@@ -80,7 +34,6 @@ def _local_ips():
 LOCAL_IPS = _local_ips()
 ENV_KEY = os.environ.get("AUTOBIN_KEY", "")
 
-# Brute-force lockout: visitor IP -> (fail_count, locked_until_monotonic).
 _KEY_FAILS: dict = {}
 _KEY_FAILS_LOCK = threading.Lock()
 MAX_KEY_FAILS = 10
@@ -95,7 +48,6 @@ def _key_valid(key):
         return True
     if key in LOCAL_IPS:
         return True
-    # IPs may have changed since boot (WiFi came up after autostart).
     LOCAL_IPS = _local_ips()
     return key in LOCAL_IPS
 
@@ -128,18 +80,12 @@ def gate_tunnel_requests():
     return jsonify({"ok": False, "error": "unauthorized"}), 403
 
 
-# ── CORS: the dashboard is served from Windows (different origin), so every
-#    response — including Flask's automatic OPTIONS preflights — must carry
-#    these headers. LAN-only tool, hence the permissive '*'. ───────────────
-
 @app.after_request
 def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Pi-Key"
     if request.path == "/" or request.path.startswith("/static/"):
-        # A stale cached app.js/index.html silently hides new UI features
-        # behind a hard-refresh -- always serve the current file.
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -152,11 +98,6 @@ def _fail(exc, code=409):
     return jsonify({"ok": False, "error": str(exc)}), code
 
 
-# Powering off or re-execing tears down GPIO and the camera on a 2 s timeout,
-# while a grab takes ~20 s. Do that mid-grab and the arm loses power halfway
-# through a move: it drops, and whatever it was holding drops with it. So
-# both need the robot halted first, which means the operator has pressed
-# EMERGENCY STOP (or has not started it yet).
 _HALTED_STATES = (STATE_STOPPED, STATE_ESTOP)
 
 
@@ -165,8 +106,6 @@ def _require_halted() -> None:
     if state not in _HALTED_STATES:
         raise RuntimeError(f"press EMERGENCY STOP first (state is {state})")
 
-
-# ── Frontend ──────────────────────────────────────────────────────────────
 
 @app.get("/")
 def index():
@@ -178,18 +117,12 @@ def static_files(name):
     return send_from_directory(STATIC_DIR, name)
 
 
-# ── Low-latency push: SSE stream of status + log entries ─────────────────
-
-STATUS_PUSH_PERIOD = 0.2              # status at 5 Hz
-EVENT_POLL_S = 0.05                   # log latency ceiling: ~50 ms
+STATUS_PUSH_PERIOD = 0.2
+EVENT_POLL_S = 0.05
 
 
 @app.get("/api/events")
 def api_events():
-    # A reconnect (page refresh, network hiccup, EventSource auto-retry)
-    # otherwise always started from 0 and replayed the ENTIRE buffered
-    # history again — the client passes back the highest seq it already
-    # has so a reconnect only streams what it actually missed.
     start_seq = request.args.get("after", 0, type=int)
 
     def gen():
@@ -213,8 +146,6 @@ def api_events():
                     headers={"Cache-Control": "no-cache",
                              "X-Accel-Buffering": "no"})
 
-
-# ── System control ────────────────────────────────────────────────────────
 
 @app.get("/api/status")
 def api_status():
@@ -247,7 +178,7 @@ def api_shutdown():
         return _fail(exc)
 
     def _later():
-        time.sleep(0.5)                     # let the HTTP response flush
+        time.sleep(0.5)
         runtime.close()
         os.system("sudo shutdown -h now")
 
@@ -257,24 +188,20 @@ def api_shutdown():
 
 @app.post("/api/system/restart")
 def api_restart():
-    """Re-exec this process so edited source files (layer speeds, thresholds,
-    etc.) are picked up on next import — a plain reconnect can't do that,
-    the old module stays loaded in memory until the process itself restarts."""
+    """Restart the server so code changes are loaded."""
     try:
         _require_halted()
     except Exception as exc:
         return _fail(exc)
 
     def _later():
-        time.sleep(0.5)                     # let the HTTP response flush
+        time.sleep(0.5)
         runtime.close()
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     threading.Thread(target=_later, daemon=True).start()
     return _ok(note="server restarting")
 
-
-# ── Camera ────────────────────────────────────────────────────────────────
 
 @app.get("/api/camera/stream")
 def api_camera_stream():
@@ -284,14 +211,14 @@ def api_camera_stream():
     def gen():
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
         last = None
-        runtime.stream_client_connected()   # runtime only encodes for viewers
+        runtime.stream_client_connected()
         try:
             while True:
                 jpeg = runtime.get_frame_jpeg()
                 if jpeg is not None and jpeg is not last:
                     yield boundary + jpeg + b"\r\n"
                     last = jpeg
-                time.sleep(0.1)             # ~10 fps ceiling
+                time.sleep(0.1)
         finally:
             runtime.stream_client_disconnected()
 
@@ -316,8 +243,6 @@ def api_camera_on():
         return _fail(exc)
 
 
-# ── Manual arm ────────────────────────────────────────────────────────────
-
 @app.get("/api/arm/pose")
 def api_arm_pose():
     pose = runtime.arm_pose()
@@ -330,7 +255,7 @@ def api_arm_pose():
 def api_arm_named_pose():
     try:
         runtime.arm_named_pose((request.get_json(force=True) or {}).get("name", ""))
-        return _ok(**runtime.arm_pose()) # type: ignore
+        return _ok(**runtime.arm_pose())  # type: ignore
     except Exception as exc:
         return _fail(exc)
 
@@ -342,7 +267,7 @@ def api_arm_gripper():
         if action not in ("open", "close"):
             raise ValueError("action must be open|close")
         runtime.arm_gripper(action)
-        return _ok(**runtime.arm_pose()) # type: ignore
+        return _ok(**runtime.arm_pose())  # type: ignore
     except Exception as exc:
         return _fail(exc)
 
@@ -352,12 +277,10 @@ def api_arm_jog():
     try:
         body = request.get_json(force=True) or {}
         runtime.arm_jog(int(body["channel"]), float(body["delta"]))
-        return _ok(**runtime.arm_pose()) # type: ignore
+        return _ok(**runtime.arm_pose())  # type: ignore
     except Exception as exc:
         return _fail(exc)
 
-
-# ── Quick settings ────────────────────────────────────────────────────────
 
 @app.get("/api/settings")
 def api_settings():
@@ -374,8 +297,6 @@ def api_set_setting():
         return _fail(exc, code=400)
 
 
-# ── Logs ──────────────────────────────────────────────────────────────────
-
 @app.get("/api/logs")
 def api_logs():
     after = request.args.get("after", 0, type=int)
@@ -389,8 +310,6 @@ def api_logs_clear():
     buffer.clear()
     return _ok()
 
-
-# ── Entrypoint ────────────────────────────────────────────────────────────
 
 def main():
     global runtime
@@ -409,7 +328,6 @@ def main():
     log.info(f"dashboard up at http://{args.host}:{args.port} — state STOPPED")
 
     try:
-        # threaded=True: status/log polls must not block the MJPEG stream.
         app.run(host=args.host, port=args.port, threaded=True, debug=False)
     finally:
         runtime.close()

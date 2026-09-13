@@ -1,25 +1,15 @@
-"""Grid-editing helpers for tests/test_arc_grasp.py ('a' = add sample).
-
-Split out of arc_grasp.py (the runtime solver) since this is calibration-only
-logic with exactly one caller.
-"""
+"""Helpers for editing the arc grasp grid during calibration."""
 from __future__ import annotations
 
 from src.arm.arc_grasp import row_ny_at
 
-# Samples on ONE arc share the CH2/CH3/CH4 fold (one radius = one posture);
-# only CH1 (azimuth) and CH5 (roll baseline) vary along it, so posture is the
-# reliable attach key — nearest-curve-ny alone mis-attaches edge samples
-# (the arc dips at the edges, but the curve doesn't know that yet).
-POSE_ATTACH_CHANNELS = (1, 2, 3)      # CH2, CH3, CH4
-POSE_ATTACH_AMBIGUOUS_DEG = 15.0      # postures closer than this: ny decides
-POSE_ATTACH_NEW_ARC_DEG = 45.0        # nothing this close: probably a new arc
+POSE_ATTACH_CHANNELS = (1, 2, 3)
+POSE_ATTACH_AMBIGUOUS_DEG = 15.0
+POSE_ATTACH_NEW_ARC_DEG = 45.0
 
 
 def choose_row_for_sample(rows, cur_arm, nx, ny):
-    """Pick the row a new sample belongs to: best CH2-4 posture match,
-    falling back to nearest curve-ny only when postures are ambiguous.
-    Returns (row, posture_dist_deg, note)."""
+    """Pick which grid row a new calibration sample belongs to."""
     if not rows:
         return None, float("inf"), "no rows"
 

@@ -8,35 +8,30 @@ from src.hardware.sensors.sensor_hub import SensorHub
 from src.hardware.sensors.clearance import read_distance_cm
 from src.safety.obstacle_avoidance import compare_room
 
-EMERGENCY_TURN_SPEED = 0.2   # this layer's own pivot speed (safety.turn_speed), independent of the scan patrol's
-# Reversing is its own speed: it is the one phase that moves the base into
-# ground it cannot see well (the rear sensor is a single narrow beam), and
-# tying it to the pivot speed meant one slider changed both plus the scan
-# patrol. Defaults to the pivot speed, so untouched behaviour is unchanged.
+EMERGENCY_TURN_SPEED = 0.2
 EMERGENCY_BACKOFF_SPEED = 0.2
-CLEAR_MARGIN = 1.6           # release the turn only once past this multiple of the trigger range
-DIAG_CLEAR_MARGIN = 1.2      # diagonals only need to leave the trigger range, not the full front margin
-MIN_TURN_S = 0.6             # hold a turn direction at least this long, re-deciding every tick oscillated
-MAX_TURN_S = 6.0             # still blocked after this long -> edging away isn't working, escape instead
+CLEAR_MARGIN = 1.6
+DIAG_CLEAR_MARGIN = 1.2
+MIN_TURN_S = 0.6
+MAX_TURN_S = 6.0
 
-# Wedge escape: reverse, spin about-face, drive out, retrying wider each time. No give-up state.
 TURN_180_S     = 2.0
 SPIN_STEP_S    = 0.5
 MAX_SPIN_S     = 4.0
 ESCAPE_BACK_S  = 1.0
 ESCAPE_DRIVE_S = 1.0
 
-BACKOFF_S = 0.4              # reverse first for turning room, a rectangular base sweeps its corners wide
+BACKOFF_S = 0.4
 BACKOFF_CLEARANCE_CM = 30.0
-SETTLE_S = 0.15              # halt between opposing wheel directions, instant flips brown out the rail
-TIE_MARGIN_CM = 5.0          # diagonals within this much of each other carry no steering information
-ROOMY_CM = 40.0              # past this range a diagonal counts as open regardless of exact distance
+SETTLE_S = 0.15
+TIE_MARGIN_CM = 5.0
+ROOMY_CM = 40.0
 
 _FAR = 1e6
 
 
 def _dist(sensors: Any, getter: str) -> float:
-    """None (no echo / missing getter) means nothing in range, never 0."""
+    """Distance reading. No reading means nothing in range."""
     value = read_distance_cm(sensors, getter)
     return _FAR if value is None else value
 
@@ -59,7 +54,7 @@ class _Readings(NamedTuple):
 
 
 class EmergencyStopLayer(BaseLayer):
-    """Priority 4. Suppresses everything below EMERGENCY_STOP_CM: backs off, pivots to the roomier side, or wedge-escapes."""
+    """Layer 4: stops and avoids obstacles that are too close."""
 
     def __init__(self, turn_speed: float = EMERGENCY_TURN_SPEED,
                  backoff_speed: float = EMERGENCY_BACKOFF_SPEED,
@@ -69,7 +64,7 @@ class EmergencyStopLayer(BaseLayer):
         self.backoff_speed = EMERGENCY_BACKOFF_SPEED
         self.set_turn_speed(turn_speed)
         self.set_backoff_speed(backoff_speed)
-        self.grab_zone_check = grab_zone_check   # e.g. CollectLitterLayer.is_grabbable; exempts the tin being grabbed
+        self.grab_zone_check = grab_zone_check
         self._phase: Optional[_Phase] = None
         self._phase_started: float = 0.0
         self._turn_dir: float = -1.0
@@ -118,8 +113,6 @@ class EmergencyStopLayer(BaseLayer):
             now=time.monotonic(),
         )
 
-    # ── Phase handlers ───────────────────────────────────────────────────
-
     def _evaluate_settle(self, r: _Readings) -> ActionCommand:
         elapsed = r.now - self._phase_started
         if elapsed < SETTLE_S:
@@ -164,7 +157,7 @@ class EmergencyStopLayer(BaseLayer):
         return self._phase_command(r.front, r.back, r.left, r.right, r.trigger_cm)
 
     def _decide_new_manoeuvre(self, sensors: Any, r: _Readings) -> ActionCommand:
-        """The rear only gates reversing here, never triggers a manoeuvre on its own."""
+        """Choose how to get away from the obstacle."""
         if min(r.front, r.left, r.right) >= r.trigger_cm:
             self._reset()
             return ActionCommand(layer_id=self.layer_id, active=False)
@@ -183,8 +176,6 @@ class EmergencyStopLayer(BaseLayer):
 
         return self._settle(_Phase.TURN, r.now)
 
-    # ── Escape ───────────────────────────────────────────────────────────
-
     def _start_escape(self, back: float, now: float) -> ActionCommand:
         self._attempt += 1
         self._spin_s = min(TURN_180_S + SPIN_STEP_S * (self._attempt - 1), MAX_SPIN_S)
@@ -195,7 +186,7 @@ class EmergencyStopLayer(BaseLayer):
         return self._settle(_Phase.SPIN, now)
 
     def _stand_down_for_grab(self, sensors: Any) -> bool:
-        """A broken predicate must never disarm the e-stop -- fail safe."""
+        """True if the emergency stop may pause for a grab. Fails safe."""
         if self.grab_zone_check is None:
             return False
         try:

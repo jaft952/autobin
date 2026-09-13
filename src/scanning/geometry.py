@@ -1,4 +1,4 @@
-"""Pure sensor-reading helpers for the scan layer. No state, no time."""
+"""Sensor helpers for the zigzag scan."""
 import random
 from typing import Any
 
@@ -16,14 +16,14 @@ def fmt(value) -> str:
 
 
 def side_room_cm(sensors: Any, getter: str) -> float:
-    """Free space on one side, capped at PIVOT_ROOM_CM. None (no echo) means open."""
+    """Free space on one side, with a maximum."""
     fn = getattr(sensors, getter, None)
     value = fn() if fn is not None else None
     return tuning.PIVOT_ROOM_CM if value is None else min(value, tuning.PIVOT_ROOM_CM)
 
 
 def clearances(sensors: Any):
-    """(front, front_left, front_right) in cm; None = nothing in range."""
+    """Front, front-left and front-right distances in cm."""
     out = []
     for name in ("get_obstacle_distance_cm",
                  "get_obstacle_distance_front_left_cm",
@@ -34,7 +34,7 @@ def clearances(sensors: Any):
 
 
 def lane_bias(left, right, turn_speed: float) -> float:
-    """Steer away from a close side wall; opposing walls cancel out."""
+    """Steer away from a side wall that is too close."""
     bias = 0.0
     if left is not None and left < tuning.DIAGONAL_NUDGE_CM:
         bias -= tuning.NUDGE_GAIN * (1.0 - left / tuning.DIAGONAL_NUDGE_CM)
@@ -44,9 +44,7 @@ def lane_bias(left, right, turn_speed: float) -> float:
 
 
 def pivot_side(sensors: Any, turn_left: bool):
-    """Lane-change pivot direction: keep alternating unless the intended
-    side is clearly too tight and the other side is clearly roomier.
-    Returns (new_turn_left, debug_note)."""
+    """Pick the turn side at the end of a lane."""
     left = side_room_cm(sensors, "get_obstacle_distance_front_left_cm")
     right = side_room_cm(sensors, "get_obstacle_distance_front_right_cm")
     note = f"L{left:.0f} R{right:.0f}"

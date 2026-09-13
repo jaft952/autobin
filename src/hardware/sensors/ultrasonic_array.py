@@ -1,4 +1,4 @@
-"""One background thread round-robins all ultrasonics so control-loop reads never block."""
+"""Reads all ultrasonic sensors in one background thread."""
 from __future__ import annotations
 
 import threading
@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from src.hardware.sensors.ultrasonic_sensor import UltrasonicSensor
 
-PING_INTERVAL_S = 0.06   # matches the HC-SR04 ~60ms between-measurement minimum
+PING_INTERVAL_S = 0.06
 
 
 class UltrasonicArray:

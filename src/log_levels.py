@@ -1,13 +1,4 @@
-"""
-src/log_levels.py
-
-Registers SUCCESS/FAIL as real logging levels so any module can call
-log.success(...) / log.fail(...) like the built-in log.info()/log.warning().
-Import this before using either — arm_executor.py and web/logbuffer.py both
-do, so it's set up regardless of which one runs first.
-
-DEBUG(10) < INFO(20) < SUCCESS(25) < WARNING(30) < FAIL(35) < ERROR(40)
-"""
+"""Adds SUCCESS and FAIL log levels."""
 import logging
 
 SUCCESS = 25

@@ -3,25 +3,14 @@ from typing import Protocol
 from src.motion.calibration import MotionCalibration, MotorPins
 from src.motion.differential_kinematics import WheelCommand
 
-# ZK-BM1 accepts PWM up to ~2 kHz (board limit, guarded below). But RPi.GPIO
-# PWM is SOFTWARE-timed: above a few hundred Hz the duty cycle jitters badly
-# (at 1 kHz the period is 1 ms; ±0.1 ms scheduler jitter = ±10% duty error,
-# worse while YOLO loads the CPU). 200 Hz keeps the duty accurate.
 PWM_FREQ_HZ = 200
 ZKBM1_MAX_PWM_HZ = 2000
 
-# Static friction floor: duty below this buzzes without turning. 0 = off.
-MIN_MOVE_DUTY = 0.0   # TODO tune on hardware: raise until the chassis creeps
+MIN_MOVE_DUTY = 0.0
 
 
 def _apply_stiction_floor(left: float, right: float):
-    """Scale a too-weak wheel pair up together so the faster wheel clears
-    MIN_MOVE_DUTY, keeping left/right ratio (and so the steering) intact.
-
-    The slower wheel may still land under the floor -- that is wanted: a
-    dragging inner wheel tightens the arc, which is what a low-speed turn
-    physically is. A stopped pair stays stopped.
-    """
+    """Raise weak wheel speeds so the wheels actually start turning."""
     peak = max(abs(left), abs(right))
     if MIN_MOVE_DUTY <= 0.0 or peak <= 0.0 or peak >= MIN_MOVE_DUTY:
         return left, right
@@ -79,18 +68,14 @@ except Exception:  # pragma: no cover
 
 
 class _PigpioPWM:
-    """One pin's PWM through the pigpiod daemon. DMA-timed in the daemon
-    process, so the duty stays accurate while YOLO loads the CPU — the
-    soft-PWM jitter RPi.GPIO suffers does not apply. Same interface as
-    RPi.GPIO's PWM object so the driver logic below is backend-agnostic."""
+    """PWM on one pin using the pigpio daemon."""
 
-    # pigpio duty range per cycle; at 200 Hz the daemon resolves 1000 steps.
     _RANGE = 1000
 
     def __init__(self, pi, pin: int, freq: int) -> None:
         self._pi = pi
         self._pin = pin
-        pi.set_mode(pin, 1)                  # pigpio.OUTPUT
+        pi.set_mode(pin, 1)
         pi.set_PWM_frequency(pin, freq)
         pi.set_PWM_range(pin, self._RANGE)
         pi.set_PWM_dutycycle(pin, 0)
@@ -107,8 +92,7 @@ class _PigpioPWM:
 
 
 def _connect_pigpio():
-    """A pigpiod connection, or None (daemon not running / not installed /
-    Pi 5, where pigpio is unsupported). None -> RPi.GPIO soft PWM fallback."""
+    """Connect to pigpio, or return None if not available."""
     try:
         import pigpio  # type: ignore
         pi = pigpio.pi()
@@ -120,17 +104,7 @@ def _connect_pigpio():
 
 
 class PWMActuator:
-    """Hardware module: converts wheel command into GPIO + PWM signals.
-    Implements src.hardware.actuators.interfaces.ActuatorInterface.
-
-    Wired for the ZK-BM1 dual H-bridge, which has NO ENA/ENB enable pins.
-    Unlike an L298N (separate direction inputs + a PWM enable line), the
-    ZK-BM1 sets both direction AND speed on the two input pins per motor:
-    to run a motor, PWM one input and hold the other LOW; the duty cycle IS
-    the speed. So this driver keeps a PWM channel on all four input pins.
-        Left  motor (A): in1 / in2
-        Right motor (B): in3 / in4
-    """
+    """Wheel driver for the ZK-BM1 motor board."""
 
     def __init__(self, pins: MotorPins | None = None, calibration: MotionCalibration | None = None, pwm_freq: int = PWM_FREQ_HZ) -> None:
         if pwm_freq > ZKBM1_MAX_PWM_HZ:
@@ -140,14 +114,8 @@ class PWMActuator:
         self.cal = calibration or MotionCalibration()
         self.last_duty = (0.0, 0.0)
         self._my_pins = [self.pins.in1, self.pins.in2, self.pins.in3, self.pins.in4]
-        # What was last written to each input pin. last_duty is the wheel
-        # speed the mixer asked for; this is what the H-bridge actually sees,
-        # which is the only thing that says coast (all LOW) from brake (all
-        # HIGH) from still driving.
         self.last_pin_duty = {pin: 0.0 for pin in self._my_pins}
 
-        # Prefer pigpiod (DMA-timed, duty immune to CPU load); fall back to
-        # RPi.GPIO soft PWM when the daemon is not available.
         self._pi = _connect_pigpio()
         if self._pi is not None:
             self.pwm_in1 = _PigpioPWM(self._pi, self.pins.in1, pwm_freq)
@@ -157,11 +125,6 @@ class PWMActuator:
             print("[PWMActuator] pigpio backend (hardware-timed PWM)")
             return
 
-        # Release ONLY OUR OWN pins from a previous unclean run. A global
-        # GPIO.cleanup() here would tear down every other module's setup in
-        # this process — the ultrasonic's TRIG/ECHO pins are configured
-        # BEFORE the motor driver in the runtime, so a global cleanup made
-        # every later distance read fail.
         try:
             GPIO.cleanup(self._my_pins)  # type: ignore
         except Exception:
@@ -170,12 +133,10 @@ class PWMActuator:
         try:
             GPIO.setmode(GPIO.BCM)  # type: ignore
         except RuntimeError:
-            # GPIO mode already set, that's fine
             pass
 
         GPIO.setup(self._my_pins, GPIO.OUT)
 
-        # One PWM channel per input pin (ZK-BM1 has no separate enable line).
         self.pwm_in1 = GPIO.PWM(self.pins.in1, pwm_freq)
         self.pwm_in2 = GPIO.PWM(self.pins.in2, pwm_freq)
         self.pwm_in3 = GPIO.PWM(self.pins.in3, pwm_freq)
@@ -187,12 +148,6 @@ class PWMActuator:
         left_speed = command.left_speed
         right_speed = command.right_speed
 
-        # Motors plugged into each other's channels -> send each speed to the
-        # other side. This runs FIRST because trim and invert describe the
-        # CHANNEL, not the command: applying them before the swap put the
-        # straightness trim on the wrong wheel, and left a pure pivot (equal
-        # and opposite speeds) with two identical values, so swapping them
-        # afterwards did nothing at all and turns stayed mirrored.
         if self.cal.swap_left_right:
             left_speed, right_speed = right_speed, left_speed
 
@@ -216,15 +171,11 @@ class PWMActuator:
         left_speed = max(-100.0, min(100.0, left_speed))
         right_speed = max(-100.0, min(100.0, right_speed))
 
-        # Fix reversed motor wiring: flip polarity so the wheel turns the way the
-        # command (and the on-screen suggestion) means it to.
         if self.cal.invert_left:
             left_speed = -left_speed
         if self.cal.invert_right:
             right_speed = -right_speed
 
-        # Telemetry for bench tools: the duty actually sent, after swap, trim,
-        # stiction floor, clamp and invert.
         self.last_duty = (left_speed, right_speed)
         self._set_left(left_speed)
         self._set_right(right_speed)
@@ -234,29 +185,13 @@ class PWMActuator:
         self.last_pin_duty[pin] = value
 
     def stop(self) -> None:
-        """COAST ('Free Running Motor Stop'): both inputs of each motor LOW,
-        motor windings open. The wheels are free to spin — an external push
-        (e.g. the arm shaking the chassis) can roll the robot out of position.
-        Use brake() to hold."""
+        """Coast: cut motor power and let the wheels roll."""
         self.last_duty = (0.0, 0.0)
         for pwm, pin in self._channels():
             self._write(pwm, pin, 0)
 
     def brake(self) -> None:
-        """ACTIVE BRAKE ('Fast Motor Stop'): both inputs of each motor driven
-        HIGH (PWM 100%) at the same time. This shorts the motor windings, so
-        any attempt to turn the wheel — a push forward or back — induces a
-        current that opposes the motion (dynamic braking). The robot resists
-        being rolled, holding position while the arm actuates. No mechanical
-        brake exists; this is the strongest hold the hardware allows.
-        Stationary, it draws ~no current; current only flows while something
-        is actively trying to move it."""
-        # ORDER MATTERS, same reason as _set_left(): raising the inputs in
-        # pin order walks past a state where one input is already HIGH and
-        # its partner still carries the old duty -- which is not a brake, it
-        # is a near-full-speed DRIVE on that one channel, and only on that
-        # one, so the chassis lurches and yaws before it stops. Drop
-        # everything to LOW first (a harmless coast) and raise from there.
+        """Brake: hold the motors to stop quickly."""
         self.last_duty = (0.0, 0.0)
         for pwm, pin in self._channels():
             self._write(pwm, pin, 0)
@@ -269,11 +204,10 @@ class PWMActuator:
             pwm.stop()
         if self._pi is not None:
             try:
-                self._pi.stop()          # disconnect from pigpiod only
+                self._pi.stop()
             except Exception:
                 pass
             return
-        # Own pins only — a global cleanup wipes the ultrasonic's setup too.
         try:
             GPIO.cleanup(self._my_pins)  # type: ignore
         except Exception:
@@ -284,11 +218,6 @@ class PWMActuator:
                 (self.pwm_in3, self.pins.in3), (self.pwm_in4, self.pins.in4))
 
     def _set_left(self, speed: float) -> None:
-        # ZK-BM1: PWM the forward input for +speed, the reverse input for
-        # -speed; the idle input is held at 0% (LOW). Duty cycle = speed.
-        # ORDER MATTERS: drop the idle input to 0 BEFORE raising the active
-        # one — otherwise a direction change passes through a moment with
-        # BOTH inputs high, which the board treats as a brake pulse.
         if speed > 0:
             self._write(self.pwm_in2, self.pins.in2, 0)
             self._write(self.pwm_in1, self.pins.in1, abs(speed))

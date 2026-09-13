@@ -1,41 +1,4 @@
-"""
-src/hardware/sensors/camera_sensor.py
-
-CameraSensor — Concrete implementation of SensorInterface.
-Bridges AluminiumCanDetector (perception) with the Subsumption layers.
-
-THREADING (2026-07-08): YOLO inference runs in its OWN background thread,
-not inside update(). On the Pi's CPU one inference takes hundreds of ms; if
-update() ran it synchronously the whole 10 Hz control loop (ultrasonic
-avoidance, emergency stop, zigzag timing) would be dragged down to 2-3 Hz.
-Instead the worker continuously captures + infers at whatever rate the model
-manages, and the polled getters read the LATEST result — the control loop
-stays at full rate and simply sees detections a frame-age late.
-
-Staleness guard: if the worker hasn't produced a result recently (camera
-unplugged, inference crash-looping), the getters report "no detection"
-rather than acting on a frozen frame.
-
-TARGET PRIORITY: the getters do NOT expose every detection — TargetLock
-picks the largest-bbox tin, holds it across frames, and hides the rest until
-that tin is collected (see src/perception/target_lock.py). One tin at a
-time, nearest first, no re-aiming mid-approach.
-
-PAUSING: the worker is paused around a grab (see RobotRuntime._tick). YOLO
-saturates the Pi's CPU, and the arm's stepped_move paces itself against the
-wall clock at 50 Hz -- a GIL stall longer than one 20 ms tick turns a smooth
-descent into the stop-start jerking the stepped-move rewrite existed to
-remove. Inference during a grab is worthless anyway: the arm occludes the
-camera. tests/test_ibvs_centering.py gets this for free, because it infers on
-its main loop, which is blocked for the whole grab.
-
-RESOLUTION: capture defaults to 1280x720 (not 1920x1080). Inference is
-letterboxed to 640 px anyway, so 1080p only added USB/decode/resize cost.
-All downstream consumers use NORMALIZED coordinates, which are unchanged as
-long as the camera's field of view is the same at both resolutions — verify
-once on the Pi (arc ny values should match the calibration); if the FOV
-differs, pass frame_width=1920, frame_height=1080 here instead of recalibrating.
-"""
+"""Camera sensor that runs YOLO to find cans."""
 
 import math
 import threading
@@ -47,33 +10,21 @@ from src.perception.detector import (
 )
 from src.perception.target_lock import TargetLock
 
-# If the newest inference result is older than this, report "no detection"
-# instead of acting on a frozen scene.
 STALE_AFTER_S = 1.5
 
 
 class CameraSensor(SensorInterface):
-    """
-    Concrete sensor that uses the webcam + YOLO11n-seg to detect aluminium
-    cans and expose their position/pose to the Subsumption layers.
-
-    Implements the SensorInterface contract:
-        update()               — cheap; inference runs in a background thread
-        get_litter_position()  — returns (norm_x, norm_y) or None
-    """
+    """Webcam plus YOLO11n-seg can detection."""
 
     def __init__(
         self,
-        model_path: str = RUNTIME_MODEL_PATH,   # single source of truth
+        model_path: str = RUNTIME_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.75,   # keep = AluminiumCanDetector's default
+        conf_threshold: float = 0.75,
         frame_width: int = 1280,
         frame_height: int = 720,
         device: str = "cpu",
     ):
-        # device="cpu" explicitly: auto-select picks CUDA when torch reports it
-        # available, and the CUDA build on this Pi imports fine but SIGILLs on
-        # the first real op. The live demos have always forced cpu.
         self._detector = AluminiumCanDetector(
             model_path=model_path,
             camera_index=camera_index,
@@ -91,13 +42,11 @@ class CameraSensor(SensorInterface):
         self._alive = False
         self._worker = None
         self._running = threading.Event()
-        self._running.set()          # cleared only while the arm is grabbing
-        self._camera_enabled = True  # dashboard battery-save toggle
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────
+        self._running.set()
+        self._camera_enabled = True
 
     def start(self):
-        """Start the camera and the background inference worker."""
+        """Start the camera and the detection thread."""
         self._detector.start()
         self._alive = True
         self._worker = threading.Thread(target=self._run, daemon=True,
@@ -105,31 +54,29 @@ class CameraSensor(SensorInterface):
         self._worker.start()
 
     def stop(self):
-        """Stop the worker and release the camera. Call on system shutdown."""
+        """Stop detection and release the camera."""
         self._alive = False
-        self._running.set()          # never leave the worker parked on the wait
+        self._running.set()
         if self._worker is not None:
             self._worker.join(timeout=2.0)
         self._detector.stop()
 
     def pause(self):
-        """Stop inferring until resume(). The getters keep serving the last
-        result, which STALE_AFTER_S retires on its own if the pause runs long."""
+        """Pause detection until resume()."""
         self._running.clear()
 
     def resume(self):
-        if self._camera_enabled:   # don't let a grab's auto-resume override a manual camera_off()
+        if self._camera_enabled:
             self._running.set()
 
     def camera_off(self) -> None:
-        """Release the camera hardware (dashboard battery-save toggle).
-        Pauses the worker first so it isn't mid-read when the capture closes."""
+        """Turn the camera off to save battery."""
         self._camera_enabled = False
         self.pause()
         self._detector.stop()
 
     def camera_on(self) -> None:
-        """Reopen the camera hardware and resume inference."""
+        """Turn the camera back on and resume detection."""
         self._detector.reopen_camera()
         self._camera_enabled = True
         self.resume()
@@ -139,10 +86,7 @@ class CameraSensor(SensorInterface):
         return self._camera_enabled
 
     def wait_for_fresh_frames(self, n: int = 2, timeout: float = 2.0) -> int:
-        """Block until the worker has published `n` NEW inference results
-        (not just elapsed time), so a caller resuming after a pause acts on
-        real post-resume frames instead of guessing how long inference
-        takes. Returns how many were actually seen (< n on timeout)."""
+        """Wait until n new detection results are ready."""
         start_at = self._latest_at
         deadline = time.monotonic() + timeout
         seen = 0
@@ -156,9 +100,8 @@ class CameraSensor(SensorInterface):
         return seen
 
     def _run(self):
-        """Capture + infer as fast as the model allows; publish the result."""
+        """Capture and detect in a loop."""
         while self._alive:
-            # Timed wait so stop() during a pause still ends the thread.
             if not self._running.wait(timeout=0.2):
                 continue
             try:
@@ -171,17 +114,12 @@ class CameraSensor(SensorInterface):
                 self._latest_result = result
                 self._latest_at = time.monotonic()
 
-    # ── SensorInterface Implementation ─────────────────────────────────
-
     def update(self):
-        """Cheap by design — inference happens in the worker thread. Kept so
-        the polled-sensor contract (update every tick) stays uniform."""
+        """Nothing heavy here, detection runs in its own thread."""
         pass
-        
+
     def _current_target(self):
-        """(box, result) of the LOCKED tin — the largest-bbox one, held until
-        it leaves the frame. Selection runs once per new inference result, so
-        the three getters in one tick all describe the same tin."""
+        """Box and result of the locked can."""
         with self._result_lock:
             result = self._latest_result
             at = self._latest_at
@@ -194,41 +132,32 @@ class CameraSensor(SensorInterface):
         return self._selected_box, result
 
     def release_target(self):
-        """Forget the current tin now (e.g. after a collection) so the next
-        frame re-picks the largest. Normally unnecessary — a collected tin
-        leaves the frame and the lock times out on its own."""
+        """Forget the locked can."""
         self._target_lock.release()
         self._selected_box = None
         self._selected_at = -1.0
 
-    def get_litter_position(self): # type: ignore
-        """Normalized (x, y) of the locked can, or None if not locked / stale."""
+    def get_litter_position(self):  # type: ignore
+        """Image position of the locked can, or None."""
         box, result = self._current_target()
         if box is None or result.frame_width == 0:
             return None
         return (box.center_x / result.frame_width,
                 box.center_y / result.frame_height)
 
-    def get_litter_locked(self) -> bool: # type: ignore
-        """True while TargetLock holds a tin, including mid-blink inside its grace window."""
+    def get_litter_locked(self) -> bool:  # type: ignore
+        """True while a can is locked."""
         return self._target_lock.locked
 
-    def get_litter_ground_contact(self): # type: ignore
-        """
-        Returns normalized (x, y) of the locked tin's ground-contact point
-        (bbox bottom-center), or None. Arc-grasp and pixel_to_arm
-        calibrations are anchored to this point.
-
-        Used by:
-            layer3_collect.py — to solve the grasp pose
-        """
+    def get_litter_ground_contact(self):  # type: ignore
+        """Point where the locked can touches the floor."""
         box, result = self._current_target()
         if box is None or result.frame_width == 0:
             return None
         u, v = box.base_center
         return (u / result.frame_width, v / result.frame_height)
 
-    def get_litter_distance_cm(self): # type: ignore
+    def get_litter_distance_cm(self):  # type: ignore
         box, result = self._current_target()
         if box is None or box.width <= 0 or box.height <= 0:
             return None
@@ -236,7 +165,7 @@ class CameraSensor(SensorInterface):
         bbox_area_px = box.width * box.height
         return math.sqrt(CALIBRATION_CONSTANT_PX_CM / bbox_area_px)
 
-    def get_litter_too_close(self): # type: ignore
+    def get_litter_too_close(self):  # type: ignore
         box, result = self._current_target()
         if box is None or result.frame_height == 0:
             return False
@@ -247,11 +176,8 @@ class CameraSensor(SensorInterface):
         distance_cm = self.get_litter_distance_cm()
         return distance_cm is not None and distance_cm <= TOO_CLOSE_DISTANCE_CM
 
-    def get_litter_target_error(self): # type: ignore
-        """The exact TargetError tests/test_ibvs_centering.py's live loop
-        computes: same compute_target_error() call, against the same locked-
-        target DetectionResult (one detection, the locked box), not values
-        re-derived from the other getters above."""
+    def get_litter_target_error(self):  # type: ignore
+        """Steering error to the locked can."""
         box, result = self._current_target()
         from src.visual_servoing.distance_error import compute_target_error
         locked_result = DetectionResult(
@@ -259,50 +185,33 @@ class CameraSensor(SensorInterface):
             frame_width=result.frame_width, frame_height=result.frame_height)
         return compute_target_error(locked_result)
 
-    def get_litter_pose(self): # type: ignore
-        """
-        Returns the locked tin's pose estimated from its segmentation mask:
-        {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180},
-        or None when there is no target / no usable mask.
-
-        Used by:
-            layer3_collect.py — upright vs lying picks the grasp grid, and
-            the angle drives the wrist roll (CH5) for lying tins.
-        """
+    def get_litter_pose(self):  # type: ignore
+        """Pose of the locked can from its mask."""
         box, _ = self._current_target()
         if box is None or box.orientation is None:
             return None
         o = box.orientation
         return {"klass": o.klass, "angle": o.angle}
 
-    def get_aerial_trash_position(self): # type: ignore
-        """Not used for floor litter. Returns None."""
+    def get_aerial_trash_position(self):  # type: ignore
+        """Not used."""
         return None
 
     def has_obstacle(self) -> bool:
-        """Placeholder. Replace with actual proximity sensor reading."""
+        """Not used by the camera."""
         return False
 
-    # ── Extra: Access raw result for debugging ──────────────────────────
-
     def get_latest_result(self) -> DetectionResult:
-        """Returns the newest DetectionResult (even if stale) for debugging."""
+        """Newest detection result, for debugging."""
         with self._result_lock:
             return self._latest_result
 
     def get_annotated_frame(self):
-        """
-        Returns the last camera frame with bounding boxes drawn, the locked
-        target highlighted. Use with cv2.imshow() or the dashboard stream.
-        """
+        """Last frame with detection boxes drawn."""
         return self._detector.get_annotated_frame(self.get_latest_result(), target=self._target_lock.target)
 
     def read_camera_frame(self):
-        """
-        Opens the camera (if not already open) and returns one raw frame —
-        no model load, no inference. For sanity-checking the camera feed by
-        itself, e.g. cv2.imshow() from a manual test script.
-        """
+        """Read one raw camera frame without detection."""
         if not self._detector._cap or not self._detector._cap.isOpened():
             self._detector._open_camera()
         return self._detector.read_frame()

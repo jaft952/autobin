@@ -1,34 +1,4 @@
-"""
-src/subsumption/layers/layer2_approach.py
-
-Layer 2: Approach Litter -- owns every base movement made while closing on a
-tin, and decides when the base has arrived.
-
-Steering is the SAME two functions, on the SAME data, as tests/test_ibvs_
-centering.py's validated live loop:
-
-    error  = sensors.get_litter_target_error()   # compute_target_error()
-    wheels = compute_reactive_command(error, kin) # arc steering + speed tiers
-
-ARRIVAL is judged by the arc grid (src/arm/grasp_reach.py), NOT by the
-monocular distance estimate. Those are different measurements: the base used
-to park on distance_cm <= STOP_DISTANCE_CM while Layer 3 read the same spot
-off the grid and called it an overshoot, so the two layers drove the base
-back and forth against each other. One criterion, owned here, ends that --
-and the overshoot back-off lives here too, because backing up is base
-movement and Layer 3 has no business steering.
-
-By the time Layer 3 wins arbitration the base is already stopped, so the
-grab does not start on a chassis that is still rolling.
-
-compute_reactive_command() returns a WheelCommand already in duty units (the
-~20-32 scale PWMActuator expects directly), not the -1..1 motion fraction
-this layer must emit (Rule 1: hardware mixing happens once, in
-MotionExecutor, after arbitration -- a layer never touches wheel-level
-values). _to_motion_vector() undoes MotionExecutor's own mixing formula, so
-when MotionExecutor re-mixes the vector this layer emits, it reproduces the
-exact duty compute_reactive_command() intended.
-"""
+"""Layer 2: drive toward the locked can."""
 from __future__ import annotations
 
 import time
@@ -48,16 +18,11 @@ _KIN = DifferentialKinematics(_CAL)
 
 RETREAT_GAP_S = 0.05
 RETREAT_PULSE_S = 0.3
-# A one-frame detection blink must not abandon a retreat half-way: Layer 2
-# would go inactive, Layer 0 would win, and the base would COAST away from
-# the spot mid-manoeuvre.
 LOST_GRACE_S = 1.0
 
 
 def _to_motion_vector(wheels: WheelCommand):
-    """Inverse of MotionExecutor's left = v_x - v_theta, right = v_x +
-    v_theta mix, so re-mixing this vector reproduces `wheels` exactly
-    (peak stays under the renormalize threshold at these duty levels)."""
+    """Convert wheel speeds back into a motion vector."""
     scale = 2.0 * _CAL.forward_speed
     v_x = (wheels.left_speed + wheels.right_speed) / scale
     v_theta = (wheels.right_speed - wheels.left_speed) / scale
@@ -65,22 +30,15 @@ def _to_motion_vector(wheels: WheelCommand):
 
 
 class ApproachLitterLayer(BaseLayer):
-    """
-    Layer 2: Approach Litter
-    Priority: 2 (Low)
-    Behavior: Arcs the base toward detected ground litter, backs off an
-              overshoot, and holds the spot once the arc grid can solve the
-              tin from where the base stands. Layer 3 then grabs without
-              moving the base at all.
-    """
+    """Layer 2: steers the robot toward a detected can."""
 
     def __init__(self, arc_solver: Optional[ArcGraspSolver] = None):
         super().__init__(layer_id=2)
         self.solver = arc_solver or ArcGraspSolver()
-        self._retreating: bool = False   # True = mid-pulse, False = mid-gap
+        self._retreating: bool = False
         self._retreat_until: float = 0.0
         self._was_too_close: bool = False
-        self._lost_until: float = 0.0    # blink grace while backing off
+        self._lost_until: float = 0.0
         self._suppressed_since: Optional[float] = None
 
     def reset(self) -> None:
@@ -89,8 +47,6 @@ class ApproachLitterLayer(BaseLayer):
         self._was_too_close = False
         self._lost_until = 0.0
         self._suppressed_since = None
-
-    # ── Arbitration ───────────────────────────────────────────────────────
 
     def notify_arbitration(self, won: bool) -> None:
         if not won and self._suppressed_since is None:
@@ -103,9 +59,6 @@ class ApproachLitterLayer(BaseLayer):
         error = sensors.get_litter_target_error()
         if error is None or not error.found:
             if self._was_too_close and now < self._lost_until:
-                # Mid-retreat blink. Stop the pulse -- reversing blind is not
-                # worth it -- but keep the manoeuvre alive so the next good
-                # frame resumes it instead of restarting from the gap.
                 return self._stop("OVERSHOT - waiting for the detection")
             self._was_too_close = False
             return ActionCommand(layer_id=self.layer_id, active=False)
@@ -118,17 +71,12 @@ class ApproachLitterLayer(BaseLayer):
         self._was_too_close = False
 
         if reach.pose is not None:
-            # Arrived. Brake and stay put: Layer 3 wins from here, and it
-            # should inherit a base that has already stopped.
-            nx, ny = reach.point # type: ignore
+            nx, ny = reach.point  # type: ignore
             return self._stop(f"IN REACH, holding ({reach.klass} "
                               f"nx={nx:.2f} ny={ny:.2f})")
 
         wheels = compute_reactive_command(error, _KIN)
         if wheels is None:
-            # Vision says centered and close, but the grid cannot solve this
-            # spot (uncalibrated, or the tin sits off the sampled span).
-            # Hold rather than keep driving on a criterion the arm ignores.
             return self._stop(f"REACHED but not in reach "
                               f"(dist={error.distance_cm}, band={reach.band})")
 
@@ -138,16 +86,12 @@ class ApproachLitterLayer(BaseLayer):
             layer_id=self.layer_id,
             active=True,
             motion_vector=_to_motion_vector(wheels),
-            arm_action='deploy',             # travel pose, ready to grab
+            arm_action='deploy',
             message=label,
         )
 
-    # ── Internals ─────────────────────────────────────────────────────────
-
     def _absorb_suppressed_time(self, now: float) -> None:
-        """Open-loop timers must not count time spent suppressed by a higher
-        layer -- the retreat pulse would run its phases while the base was
-        being driven by somebody else."""
+        """Do not count time paused by a higher layer."""
         if self._suppressed_since is None:
             return
         paused = now - self._suppressed_since
@@ -158,14 +102,8 @@ class ApproachLitterLayer(BaseLayer):
         self._suppressed_since = None
 
     def _retreat_pulse(self, now: float) -> ActionCommand:
-        """Bounded backward pulse with a brief stopped gap before it, same
-        shape as test_ibvs_centering.py's _retreat_pulse() (stop -> backward
-        at BACKUP_SPEED for RETREAT_PULSE_S -> stop), re-expressed as a timed
-        phase instead of blocking sleeps."""
+        """Back up a short distance."""
         if not self._was_too_close:
-            # Freshly entered BAND_TOO_CLOSE: always start with the stopped
-            # gap, never straight into reverse (hardware_safety_patterns.md
-            # rule 7 -- a direction flip needs a stop in between).
             self._was_too_close = True
             self._retreating = False
             self._retreat_until = now + RETREAT_GAP_S
@@ -175,10 +113,6 @@ class ApproachLitterLayer(BaseLayer):
                                          else RETREAT_GAP_S)
 
         if self._retreating:
-            # Read off the MODULE, not a name bound at import: the dashboard
-            # live-patches reactive_controller.BACKUP_SPEED (see
-            # RobotRuntime's settings table), and a `from ... import` copy
-            # would keep serving the value this file was loaded with.
             v_x = -reactive_mod.BACKUP_SPEED / _CAL.forward_speed
             return ActionCommand(
                 layer_id=self.layer_id, active=True,
@@ -188,8 +122,7 @@ class ApproachLitterLayer(BaseLayer):
         return self._stop("OVERSHOT past nearest arc - pulse gap")
 
     def _stop(self, message: str) -> ActionCommand:
-        """Cut power and let the base roll to rest, arm at the travel pose.
-        Coast is the only halt -- see MotionExecutor's STOPPING note."""
+        """Stop the robot and park the arm."""
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,

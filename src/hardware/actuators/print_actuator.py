@@ -1,14 +1,9 @@
-"""Dry-run stand-in for PWMActuator: prints what WOULD be sent to the wheels.
-
-Used by the --no-motors mode of the scan/subsumption test scripts so the
-decision logic can be watched with the motors electrically idle.
-"""
+"""Fake wheel driver that prints commands instead of moving."""
 from __future__ import annotations
 
 
 class PrintActuator:
-    """Same call surface as PWMActuator, minus the hardware.
-    Implements src.hardware.actuators.interfaces.ActuatorInterface."""
+    """Prints wheel commands, no hardware needed."""
 
     def apply(self, cmd) -> None:
         print(f"   [wheels] L={cmd.left_speed:+6.1f}  R={cmd.right_speed:+6.1f}  ({cmd.trim_set})")

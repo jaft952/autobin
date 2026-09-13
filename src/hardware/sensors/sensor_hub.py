@@ -1,4 +1,4 @@
-"""SensorHub — the single `sensors` object handed to every subsumption layer. Ultrasonics run on UltrasonicArray's own thread; getters below never block."""
+"""One object that holds all sensors for the layers."""
 from __future__ import annotations
 
 from typing import Optional
@@ -9,15 +9,11 @@ from src.hardware.sensors.ultrasonic_array import UltrasonicArray
 
 class SensorHub(SensorInterface):
 
-    # Inside this range the situation is "imminent collision": Layer 5 halts.
-    # 15cm left almost no margin once sensor latency (up to ~2 ping cycles),
-    # the 0.15s settle pause before the escape manoeuvre starts, and the
-    # chassis's own physical extent past the sensor are all accounted for.
     EMERGENCY_STOP_CM = 15.0
 
     def __init__(self, front=None, back=None, front_left=None, front_right=None,
                  camera=None):
-        """Any sensor may be None if not fitted."""
+        """Any sensor can be None if it is not fitted."""
         self._front = front
         self._back = back
         self._front_left = front_left
@@ -26,39 +22,35 @@ class SensorHub(SensorInterface):
         self._ultrasonics = [s for s in (front, back, front_left, front_right) if s is not None]
         self._ultrasonic_array = UltrasonicArray(self._ultrasonics)
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────
-
     def start(self):
-        """Call once before the main loop."""
+        """Start all sensors. Call once before the main loop."""
         if self._camera is not None:
             self._camera.start()
         self._ultrasonic_array.start()
 
     def stop(self):
-        """Call once on shutdown."""
+        """Stop all sensors. Call once on shutdown."""
         if self._camera is not None:
             self._camera.stop()
         self._ultrasonic_array.stop()
 
-    # ── SensorInterface implementation ────────────────────────────────────
-
     def update(self):
-        """Ultrasonics self-refresh on their own thread; only the camera still polls per tick."""
+        """Update the camera. Ultrasonics update on their own thread."""
         if self._camera is not None:
             self._camera.update()
 
-    def get_obstacle_distance_cm(self) -> Optional[float]: # type: ignore
+    def get_obstacle_distance_cm(self) -> Optional[float]:  # type: ignore
         if self._front is None:
             return None
         return self._front.get_distance_cm()
 
-    def get_obstacle_distance_back_cm(self) -> Optional[float]: # type: ignore
+    def get_obstacle_distance_back_cm(self) -> Optional[float]:  # type: ignore
         return self._back.get_distance_cm() if self._back is not None else None
 
-    def get_obstacle_distance_front_left_cm(self) -> Optional[float]: # type: ignore
+    def get_obstacle_distance_front_left_cm(self) -> Optional[float]:  # type: ignore
         return self._front_left.get_distance_cm() if self._front_left is not None else None
 
-    def get_obstacle_distance_front_right_cm(self) -> Optional[float]: # type: ignore
+    def get_obstacle_distance_front_right_cm(self) -> Optional[float]:  # type: ignore
         return self._front_right.get_distance_cm() if self._front_right is not None else None
 
     def has_obstacle(self) -> bool:
@@ -67,7 +59,7 @@ class SensorHub(SensorInterface):
             for sensor in self._ultrasonics
         )
 
-    def get_litter_position(self): # type: ignore
+    def get_litter_position(self):  # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_litter_position()
@@ -77,12 +69,12 @@ class SensorHub(SensorInterface):
             return False
         return self._camera.get_litter_locked()
 
-    def get_litter_ground_contact(self): # type: ignore
+    def get_litter_ground_contact(self):  # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_litter_ground_contact()
 
-    def get_litter_pose(self): # type: ignore
+    def get_litter_pose(self):  # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_litter_pose()
@@ -102,16 +94,13 @@ class SensorHub(SensorInterface):
             return None
         return self._camera.get_litter_target_error()
 
-    def get_aerial_trash_position(self): # type: ignore
+    def get_aerial_trash_position(self):  # type: ignore
         if self._camera is None:
             return None
         return self._camera.get_aerial_trash_position()
 
-    # ── Camera worker control ─────────────────────────────────────────────
-
     def pause_camera(self):
-        """Stop YOLO inference (it competes with the arm's move pacing for
-        CPU — see CameraSensor's PAUSING note). No-op without a camera."""
+        """Pause detection so the arm gets more CPU."""
         if self._camera is not None and hasattr(self._camera, "pause"):
             self._camera.pause()
 
@@ -125,12 +114,12 @@ class SensorHub(SensorInterface):
         return 0
 
     def release_target(self):
-        """Forget the locked tin (call after a collection)."""
+        """Forget the locked can after a pickup."""
         if self._camera is not None and hasattr(self._camera, "release_target"):
             self._camera.release_target()
 
     def camera_off(self) -> None:
-        """Battery-save toggle: release the camera hardware. No-op without one."""
+        """Turn the camera off to save battery."""
         if self._camera is not None and hasattr(self._camera, "camera_off"):
             self._camera.camera_off()
 
@@ -143,8 +132,6 @@ class SensorHub(SensorInterface):
         if self._camera is None:
             return False
         return getattr(self._camera, "camera_enabled", True)
-
-    # ── Debug passthrough ─────────────────────────────────────────────────
 
     def get_annotated_frame(self):
         if self._camera is None:

@@ -1,4 +1,4 @@
-"""Shared ultrasonic clearance reading: missing getter or no echo both mean 'no info', never 0cm."""
+"""Read ultrasonic distance. No reading means nothing in range."""
 from __future__ import annotations
 
 from typing import Any, NamedTuple, Optional
@@ -32,7 +32,7 @@ def read_clearances(sensors: Any) -> Clearances:
 
 def clearance_cm(sensors: Any, getter_name: str, *,
                   default: float, cap: Optional[float] = None) -> float:
-    """Cap applies to a present reading too, not just the default."""
+    """Distance from one ultrasonic sensor, capped at a maximum."""
     value = read_distance_cm(sensors, getter_name)
     result = default if value is None else value
     return min(result, cap) if cap is not None else result

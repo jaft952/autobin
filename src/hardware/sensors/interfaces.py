@@ -1,72 +1,57 @@
 class SensorInterface:
-    """Base class for Hardware Sensors using Polled Abstraction."""
+    """Base class for all sensors."""
     def update(self):
-        """Poll the hardware to update current state. Called every tick by main loop."""
+        """Read the sensor."""
         pass
-        
+
     def has_obstacle(self) -> bool:
-        """Returns True if there is an imminent collision"""
+        """True if something is about to be hit."""
         return False
 
     def get_obstacle_distance_cm(self):
-        """Returns distance (cm) to the nearest forward obstacle, or None if
-        unknown/out of range. None must be treated as 'no information',
-        never as an obstacle at 0 cm."""
+        """Distance to the nearest object in front, or None."""
         return None
 
     def get_obstacle_distance_back_cm(self):
-        """Same contract as get_obstacle_distance_cm(), rear-facing sensor."""
+        """Distance to the nearest object behind, or None."""
         return None
 
     def get_obstacle_distance_front_left_cm(self):
-        """Same contract as get_obstacle_distance_cm(), front-left diagonal sensor."""
+        """Distance from the front-left sensor, or None."""
         return None
 
     def get_obstacle_distance_front_right_cm(self):
-        """Same contract as get_obstacle_distance_cm(), front-right diagonal sensor."""
+        """Distance from the front-right sensor, or None."""
         return None
 
     def get_litter_position(self) -> tuple:
-        """Returns (x, y) coordinates of ground litter relative to robot, or None"""
+        """Position of the litter, or None."""
         return None
 
     def get_litter_locked(self) -> bool:
-        """True while a tin is held by TargetLock, including its occlusion grace window (unlike get_litter_position())."""
+        """True while a can is locked."""
         return False
 
     def get_litter_ground_contact(self) -> tuple:
-        """Returns normalized (x, y) of the litter's ground-contact point
-        (where it touches the floor), or None. Grasp solvers are calibrated
-        against this point, not the bounding-box center."""
+        """Point where the litter touches the floor, or None."""
         return None
 
     def get_litter_distance_cm(self):
-        """Monocular distance estimate to the locked litter (bbox-size
-        based), or None if no target / not estimable."""
+        """Estimated distance to the locked litter, or None."""
         return None
 
     def get_litter_too_close(self) -> bool:
-        """True when the locked litter's bbox is close enough that the
-        base should back off regardless of the distance estimate."""
+        """True if the litter is too close and the robot should back off."""
         return False
 
     def get_litter_target_error(self):
-        """Returns the TargetError (src/visual_servoing/distance_error.py)
-        for the locked litter target, from calling compute_target_error()
-        on the sensor's own DetectionResult -- the same function and the
-        same data tests/test_ibvs_centering.py's validated loop uses, not a
-        value re-derived from the other getters above. None if unavailable
-        (no camera): callers must treat that the same as 'not found'."""
+        """Steering error to the locked litter, or None."""
         return None
 
     def get_litter_pose(self) -> dict:
-        """Returns the litter's pose from segmentation, or None if unknown:
-        {'klass': 'upright'|'lying'|'axial', 'angle': deg 0..180}.
-        angle is the image-plane long-axis angle (90 = vertical in image);
-        it is only meaningful for 'lying'. None must be treated as
-        'upright' (the historical assumption)."""
+        """Pose of the litter from its mask, or None."""
         return None
-        
+
     def get_aerial_trash_position(self) -> tuple:
-        """Returns (x, y, z) coordinates of airborne trash, or None"""
+        """Position of trash in the air, or None."""
         return None

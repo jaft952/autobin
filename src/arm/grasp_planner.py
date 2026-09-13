@@ -1,12 +1,4 @@
-"""The one arm driver: pose tracking, gentle moves and the tuned arc grasp.
-Used by the autonomous stack (ArmExecutor), the web dashboard, and the manual
-calibration tools in tests/.
-
-Poses, gripper angles and pacing come from arm_settings; callers retune them
-through set_speed() / set_gripper_angles() instead of declaring their own
-numbers. Nothing moves on construction — the true pose is unknown
-without joint feedback, so no tool may surprise-move the arm.
-"""
+"""Arm driver: tracks the pose, moves smoothly and runs the grasp."""
 from __future__ import annotations
 
 from typing import Optional
@@ -21,16 +13,12 @@ from src.hardware.actuators.pca9685_driver import (
 )
 
 class GraspPlanner:
-    """Rule 1 & 2: reads solver output and routes it to the actuator
-    interface; never talks to I2C/SPI itself.
-    Implements src.hardware.actuators.interfaces.ArmPlannerInterface."""
+    """Sends solved arm poses to the servo driver."""
 
     def __init__(self, actuator: Optional[ArmActuator] = None,
                  profile: Optional[MotionProfile] = None,
                  release_on_start: bool = False):
-        """release_on_start cuts PWM immediately (calibration tools: the
-        PCA9685 still holds the previous process's angles, so "no movement"
-        is not "at rest")."""
+        """Set up the arm. release_on_start turns the servos off at once."""
         self.actuator = actuator or ArmActuator()
         self.profile = profile or MotionProfile()
         self.poses = {
@@ -39,8 +27,6 @@ class GraspPlanner:
             "bin":  list(BIN_DROP_ANGLES),
             "grab": list(GRAB_ANGLES),
         }
-        # A wrong start turns "stepped" moves into full-speed snaps, so prefer
-        # the pose persisted by the previous session over assuming home.
         last = load_last_pose()
         if last is not None:
             self.arm, self.gripper = last[:5], last[5]
@@ -54,22 +40,16 @@ class GraspPlanner:
         if release_on_start:
             self.release()
 
-    # ── Tunables ─────────────────────────────────────────────────────────
-
     def set_speed(self, step_deg=None, step_delay=None) -> MotionProfile:
-        """Retune move pacing (step_deg degrees per step_delay seconds)."""
+        """Change how fast the arm moves."""
         return self.profile.set_speed(step_deg, step_delay)
 
     def set_gripper_angles(self, open_deg=None, closed_deg=None) -> MotionProfile:
-        """Retune the open/close gripper angles (clamped to the safe window)."""
+        """Change the gripper open and close angles."""
         return self.profile.set_gripper_angles(open_deg, closed_deg)
 
-    # ── Moves ────────────────────────────────────────────────────────────
-
     def move_channel(self, ch: int, value: float) -> None:
-        """Ramp ONE channel (0-4 = CH1-5, 5 = gripper) to value, ending with a
-        write-through: tracking can be wrong (no joint feedback), and a
-        diff-only path silently drops such commands."""
+        """Move one channel smoothly to an angle."""
         start = list(self.arm) + [self.gripper]
         target = list(start)
         target[ch] = clamp_channel_angle(ch, float(value))
@@ -83,12 +63,7 @@ class GraspPlanner:
         save_last_pose(list(self.arm) + [self.gripper])
 
     def goto(self, target, label: str = "") -> None:
-        """Move CH1-5 to a pose, one channel at a time.
-
-        target: a name from self.poses ('home' | 'lift' | 'bin' | 'grab') or
-        five explicit CH1..CH5 angles. The gripper is left as it is — open or
-        close it explicitly, so carrying a can to a pose never drops it.
-        """
+        """Move CH1 to CH5 to a pose, one channel at a time."""
         if isinstance(target, str):
             if target not in self.poses:
                 raise ValueError(f"unknown pose '{target}'; "
@@ -101,9 +76,7 @@ class GraspPlanner:
             self.move_channel(ch, target[ch])
 
     def goto_stacked(self, target, label: str = "") -> None:
-        """Like goto(), but unwinds CH5->CH1 (LIFO) instead of CH1->CH5 --
-        folds the arm back the way it extended, so the wrist (CH4) tucks in
-        before the elbow (CH3) sweeps, instead of catching on the bin rim."""
+        """Like goto(), but moves CH5 back to CH1 to fold the arm."""
         if isinstance(target, str):
             if target not in self.poses:
                 raise ValueError(f"unknown pose '{target}'; "
@@ -122,8 +95,7 @@ class GraspPlanner:
         self.move_channel(5, self.profile.gripper_closed)
 
     def jog_channel(self, ch: int, delta_deg: float) -> float:
-        """Nudge one channel by delta degrees; returns the new commanded
-        angle. Used by the web dashboard's manual arm control."""
+        """Nudge one channel and return its new angle."""
         if not 0 <= ch <= 5:
             raise ValueError(f"channel {ch} out of range 0-5")
         current = self.gripper if ch == 5 else self.arm[ch]
@@ -131,11 +103,8 @@ class GraspPlanner:
         self.move_channel(ch, target)
         return target
 
-    # ── Power ────────────────────────────────────────────────────────────
-
     def release(self) -> None:
-        """Cut PWM to all 6 channels: servos go limp, nothing holds a pose
-        against gravity after the process exits. The arm will droop."""
+        """Turn off all servos so the arm goes limp."""
         try:
             self.actuator.release()
             print("[arm] RELEASED — no PWM, arm is limp (any move re-engages).")
@@ -143,9 +112,7 @@ class GraspPlanner:
             print(f"[arm] release failed ({exc})")
 
     def get_pose(self) -> dict:
-        """COMMANDED pose for UIs: {'arm': [CH1..CH5], 'gripper': CH6}. Valid
-        as long as every move went through this class (servos have no
-        feedback)."""
+        """Current commanded arm pose and gripper angle."""
         return {"arm": list(self.arm), "gripper": self.gripper}
 
     def print_pose(self) -> None:
@@ -153,34 +120,20 @@ class GraspPlanner:
                            for n, v in zip(CH_NAMES, self.arm))
         print(f"[pose] {angles}  grip={self.gripper:.1f}")
 
-    # ── Collecting ───────────────────────────────────────────────────────
-
     def collect(self, solved: list, tin_pose: str = "upright",
                 dump: bool = True) -> bool:
-        """Grab the can at a solved [CH1..CH5] (from ArcGraspSolver), then
-        dump_to_bin() unless dump=False (stops after the grab, still HOLDING
-        — for checking the grip by hand during calibration).
-
-        tin_pose: "upright" | "lying" | "axial" picks the approach order,
-        whose LAST channel lowers onto the can. The base must already be
-        held — callers that own a motor driver brake it around this call.
-        """
+        """Grab the can at the solved pose, then drop it in the bin."""
         if solved is None or len(solved) < 5:
             print("[arm] collect: invalid pose, arm NOT moved.")
             return False
         print(f"[arm] collect ({tin_pose}) at CH1-5 = {solved}")
         self.open_gripper()
-        # Without this, the first channel in grab_order sweeps straight from
-        # HOME (travel pose) to the solved angle in one uninterrupted move --
-        # e.g. CH4 (wrist) alone can swing 150+ degrees, which visibly rocks
-        # the chassis and shifts it off the tin the arc grid just solved for.
-        # Staging through "lift" first keeps each leg's sweep small.
-        for ch in (1, 2, 3):                         # CH2/CH3/CH4 -> lift high
+        for ch in (1, 2, 3):
             self.move_channel(ch, self.poses["lift"][ch])
         for ch in grab_order(tin_pose):
             self.move_channel(ch, float(solved[ch]))
         self.close_gripper()
-        self.move_channel(1, self.poses["lift"][1])  # lift shoulder, holding
+        self.move_channel(1, self.poses["lift"][1])
         if not dump:
             print("[arm] grabbed — still holding.")
             return True
@@ -189,7 +142,7 @@ class GraspPlanner:
         return True
 
     def dump_to_bin(self) -> None:
-        """Carry the held tin to the onboard bin pose and release it there."""
+        """Carry the held can to the bin and release it."""
         self.goto("bin", "carrying to the bin")
         self.open_gripper()
         print("[arm] collected — can dropped in the bin.")

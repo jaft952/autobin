@@ -13,15 +13,7 @@ GRABBABLE_LATCH_S = 2.0
 
 
 class CollectLitterLayer(BaseLayer):
-    """
-    Layer 3: Collect Litter
-    Priority: 3 (Medium)
-    Behavior: Arm only. Once the tin is inside the calibrated arc grid and
-              the reading has settled, commands the arc grab. Every command
-              it emits is a zero motion vector -- getting the base to a spot
-              the arm can reach, and backing out of an overshoot, is Layer
-              2's job (src/subsumption/layers/layer2_approach.py).
-    """
+    """Layer 3: picks up the can with the arm."""
 
     def __init__(self, arc_solver: Optional[ArcGraspSolver] = None):
         super().__init__(layer_id=3)
@@ -36,8 +28,6 @@ class CollectLitterLayer(BaseLayer):
         self._latched_until = 0.0
         self._suppressed_since = None
         self._last_won = False
-
-    # ── Arbitration ───────────────────────────────────────────────────────
 
     def notify_arbitration(self, won: bool) -> None:
         self._last_won = won
@@ -64,7 +54,7 @@ class CollectLitterLayer(BaseLayer):
             return self._stop(f"GRAB HOLD (stabilizing {stable_s:.1f}s"
                               f"/{GRAB_STABLE_S:.0f}s)")
 
-        nx, ny = point # type: ignore
+        nx, ny = point  # type: ignore
         if klass == "upright":
             label = "upright"
         elif klass == "axial":
@@ -74,14 +64,14 @@ class CollectLitterLayer(BaseLayer):
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
-            motion_vector=(0, 0, 0),          # halt base for the grab
+            motion_vector=(0, 0, 0),
             arm_action='grab_arc',
-            arm_params={'pose': solved, 'tin_pose': klass},  # tin_pose sets approach order
+            arm_params={'pose': solved, 'tin_pose': klass},
             message=f"ARC GRAB ({label}) @ nx={nx:.2f} ny={ny:.2f}",
         )
 
     def _absorb_suppressed_time(self, now: float) -> None:
-        """Don't count time suppressed by Layer 4 in the open-loop timers."""
+        """Do not count time paused by Layer 4."""
         if self._suppressed_since is None:
             return
         paused = now - self._suppressed_since
@@ -92,24 +82,19 @@ class CollectLitterLayer(BaseLayer):
         self._suppressed_since = None
 
     def is_grabbable(self, sensors: Any) -> bool:
-        """Can the arc grid solve this tin now? Pure, no timers touched."""
+        """True if the arm can reach the can now."""
         return self._solve(sensors)[0] is not None
 
     def is_holding_for_grab(self, sensors: Any) -> bool:
-        """Grabbable AND this layer won last tick, so the base is already stopped.
-        Layer 4 exempts only this: a solvable pose can exist while the base still moves."""
+        """True if the can is reachable and the robot is already stopped."""
         return self._last_won and self.is_grabbable(sensors)
 
     def can_still_in_grab_zone(self, sensors: Any) -> bool:
-        """Re-check grabbability after a grab, once the arm clears the camera."""
+        """Check if the can is still there after a grab."""
         return self.is_grabbable(sensors)
 
-    # ── Internals ─────────────────────────────────────────────────────────
-
     def _stop(self, message: str) -> ActionCommand:
-        """Base stopped, arm parked at the travel pose. The wheels coast --
-        coast is the only halt, see MotionExecutor's STOPPING note -- so this
-        relies on the gearboxes to keep the base on the spot."""
+        """Stop the robot and park the arm."""
         return ActionCommand(
             layer_id=self.layer_id,
             active=True,
@@ -119,7 +104,5 @@ class CollectLitterLayer(BaseLayer):
         )
 
     def _solve(self, sensors: Any):
-        """(solved_or_None, klass, (nx, ny) or None, band). Same solve Layer
-        2 arrives on -- one criterion, so the two layers cannot disagree
-        about whether the base is in position."""
+        """Solve the grasp for the locked can."""
         return solve_reach(self.solver, sensors)

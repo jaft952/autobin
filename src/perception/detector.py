@@ -1,7 +1,4 @@
-"""
-Aluminium Can Detector — YOLO11n-seg with Logitech Brio 4K.
-Lazy imports keep pure-Python data classes importable without torch/cv2.
-"""
+"""YOLO11n-seg can detector."""
 
 from __future__ import annotations
 import math
@@ -15,9 +12,6 @@ from ultralytics import YOLO
 
 from src.perception.orientation import Orientation, estimate_orientation
 
-# THE production model — single source of truth. CameraSensor (runtime),
-# the calibration tools and the NCNN export all read this constant, so
-# switching to a newly trained checkpoint is a ONE-LINE change here.
 RUNTIME_MODEL_PATH = "src/models/yolov11n-seg.pt"
 
 
@@ -29,7 +23,7 @@ class BoundingBox:
     y2: int
     confidence: float
     orientation: Optional[Orientation] = None
-    mask_poly: Optional[object] = None  # YOLO11n-seg segmentation outline (Nx2 pixel coords)
+    mask_poly: Optional[object] = None
 
     @property
     def center_x(self) -> int:
@@ -57,7 +51,7 @@ class BoundingBox:
 
     @property
     def mask_area(self) -> Optional[int]:
-        """Actual pixel count of segmented can."""
+        """Number of pixels in the can's mask."""
         if self.mask_poly is None:
             return None
         import numpy as np
@@ -91,10 +85,7 @@ class DetectionResult:
         )
 
     def normalized_base_center(self) -> Optional[tuple]:
-        """Ground-contact point (bbox bottom-center), normalized. This is
-        what the arc-grasp calibration and pixel_to_arm homography are
-        anchored to — the tin touches the floor here, not at the bbox
-        center."""
+        """Point where the can touches the floor, as 0 to 1 values."""
         if not self.best or self.frame_width == 0:
             return None
         u, v = self.best.base_center
@@ -106,7 +97,7 @@ def open_camera_capture(camera_index: int = 0,
                         frame_height: int = 1080,
                         primary_retries: int = 4,
                         primary_retry_delay_s: float = 0.4):
-    """Open Logitech Brio 4K with platform-specific backend."""
+    """Open the camera."""
     import cv2
     import time
     backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
@@ -145,7 +136,7 @@ def open_camera_capture(camera_index: int = 0,
 
 
 def _filter_contained_boxes(detections, contain_thresh=0.8):
-    """Remove boxes that are ≥80% contained inside higher-confidence boxes."""
+    """Remove boxes that sit mostly inside a better box."""
     kept = []
     for d in sorted(detections, key=lambda b: b.confidence, reverse=True):
         d_area = max(1, (d.x2 - d.x1) * (d.y2 - d.y1))
@@ -169,7 +160,7 @@ class AluminiumCanDetector:
         self,
         model_path: str = DEFAULT_MODEL_PATH,
         camera_index: int = 0,
-        conf_threshold: float = 0.75,       # keep = runtime CameraSensor
+        conf_threshold: float = 0.75,
         frame_width: int = 1920,
         frame_height: int = 1080,
         device=None,
@@ -181,32 +172,32 @@ class AluminiumCanDetector:
         self._conf_threshold = conf_threshold
         self._frame_width = frame_width
         self._frame_height = frame_height
-        self._device = device  # None = auto (CUDA if available, else CPU)
+        self._device = device
         self._imgsz = imgsz
-        self._use_ncnn = use_ncnn  # False forces .pt even if an NCNN export exists
+        self._use_ncnn = use_ncnn
 
         self._model: Optional[YOLO] = None
         self._cap: Optional[cv2.VideoCapture] = None
         self._last_frame = None
 
     def start(self):
-        """Load model and open camera."""
+        """Load the model and open the camera."""
         self._load_model()
         self._open_camera()
         print("✓ AluminiumCanDetector started")
 
     def stop(self):
-        """Release camera resource."""
+        """Release the camera."""
         if self._cap and self._cap.isOpened():
             self._cap.release()
             print("✓ Camera released")
 
     def reopen_camera(self):
-        """Reopen just the camera hardware after stop() -- no model reload."""
+        """Reopen the camera without reloading the model."""
         self._open_camera()
 
     def read_frame(self):
-        """Grab frame without inference; updates cache for get_annotated_frame()."""
+        """Read a frame without running detection."""
         if not self._cap or not self._cap.isOpened():
             return None
         ret, frame = self._cap.read()
@@ -216,21 +207,13 @@ class AluminiumCanDetector:
 
     def infer(self, frame, imgsz: Optional[int] = None,
               fast: bool = False) -> DetectionResult:
-        """Run YOLO11n-seg and return DetectionResult with segmentation masks.
-
-        imgsz: per-call inference size override (e.g. 320 for a faster, less
-            accurate pass). NCNN exports may reject a size other than the one
-            they were exported at — on failure this falls back to the default
-            size permanently (logged once).
-        fast: skip per-detection orientation estimation (upright/lying) —
-            saves time when the caller only tracks position (cruise approach).
-        """
+        """Run detection on a frame."""
         result = DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
         size = imgsz or self._imgsz
         if imgsz and getattr(self, "_imgsz_override_broken", False):
             size = self._imgsz
         try:
-            yolo_results = self._model.predict( # type: ignore
+            yolo_results = self._model.predict(  # type: ignore
                 source=frame,
                 conf=self._conf_threshold,
                 device=self._resolve_device(),
@@ -239,16 +222,14 @@ class AluminiumCanDetector:
             )
         except Exception as exc:
             if size == self._imgsz:
-                raise           # the normal size failed — a real error
-            # The override size was rejected (NCNN exports are fixed-shape):
-            # remember and permanently fall back to the export size.
+                raise
             self._imgsz_override_broken = True
             print(f"[detector] imgsz={size} rejected by this model backend "
                   f"({exc}); staying at {self._imgsz}.")
             return self.infer(frame, imgsz=None, fast=fast)
         for r in yolo_results:
             polys = r.masks.xy if r.masks is not None else None
-            for i, box in enumerate(r.boxes): # type: ignore
+            for i, box in enumerate(r.boxes):  # type: ignore
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = float(box.conf[0])
                 poly = polys[i] if polys and i < len(polys) and len(polys[i]) >= 3 else None
@@ -262,17 +243,14 @@ class AluminiumCanDetector:
         return result
 
     def detect(self, fast: bool = False) -> DetectionResult:
-        """Capture and infer in one call. fast=True skips orientation
-        estimation (see infer) — only safe while the caller just needs
-        position, since every detection then reads as 'upright'."""
+        """Read a frame and run detection."""
         frame = self.read_frame()
         if frame is None:
             return DetectionResult(frame_width=self._frame_width, frame_height=self._frame_height)
         return self.infer(frame, fast=fast)
 
     def get_annotated_frame(self, result: DetectionResult, target=None):
-        """Render detections with segmentation masks, bbox, base_center, and
-        orientation. target (the locked tin, if any) is boxed in cyan."""
+        """Frame with masks, boxes and orientation drawn."""
         import cv2
         import numpy as np
         if self._last_frame is None:
@@ -321,7 +299,7 @@ class AluminiumCanDetector:
         return frame
 
     def _resolve_device(self):
-        """None -> CUDA if this machine has it, else CPU."""
+        """Use the GPU if there is one, otherwise the CPU."""
         if self._device is not None:
             return self._device
         try:
@@ -333,7 +311,7 @@ class AluminiumCanDetector:
         return self._device
 
     def _pick_model_path(self) -> Path:
-        """Prefer an NCNN export next to the .pt (2-4x faster on the Pi's ARM CPU)."""
+        """Use the NCNN model if it exists, it is faster on the Pi."""
         if self._use_ncnn and self._model_path.suffix == ".pt":
             ncnn = self._model_path.with_name(self._model_path.stem + "_ncnn_model")
             if ncnn.is_dir():
@@ -344,25 +322,21 @@ class AluminiumCanDetector:
         return self._model_path
 
     def _load_model(self):
-        """Load YOLO11n-seg checkpoint (NCNN export preferred) and warm up."""
+        """Load the model and run one warm-up pass."""
         from ultralytics import YOLO
         import numpy as np
         if not self._model_path.exists():
             raise FileNotFoundError(f"Model not found: {self._model_path}")
         path = self._pick_model_path()
-        # task="segment": the NCNN export has no embedded task metadata and
-        # defaults to "detect", which misparses this model's seg output.
         self._model = YOLO(str(path), task="segment")
         print(f"✓ Model loaded: {path}")
-        # Warmup: the first predict pays one-off graph/init cost (hundreds of
-        # ms); do it here on a dummy frame so the first real tick is fast.
         self._model.predict(
             source=np.zeros((self._imgsz, self._imgsz, 3), dtype=np.uint8),
             device=self._resolve_device(), imgsz=self._imgsz, verbose=False,
         )
 
     def _open_camera(self):
-        """Open Brio 4K camera with actual resolution."""
+        """Open the camera at its real resolution."""
         self._cap, actual_w, actual_h, actual_fps = open_camera_capture(
             self._camera_index, self._frame_width, self._frame_height
         )

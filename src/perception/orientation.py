@@ -1,21 +1,17 @@
-"""
-Orientation estimation for detected cans.
-Prefers YOLO11n-seg mask_poly for robustness; falls back to classical CV segmentation.
-Lazy imports keep Orientation dataclass importable without cv2/numpy.
-"""
+"""Works out if a can is upright or lying."""
 from __future__ import annotations
 from dataclasses import dataclass
 
 
 @dataclass
 class Orientation:
-    angle: float    # deg, 0..180; ~90 = vertical
-    aspect: float   # long/short side ratio (>= 1.0)
-    klass: str      # "upright" | "lying" | "axial"
+    angle: float
+    aspect: float
+    klass: str
 
 
 def _segment_bbox_crop(frame_bgr, box):
-    """Segment can inside bbox crop; return largest contour or None."""
+    """Find the can's outline inside its box."""
     import cv2
     import numpy as np
 
@@ -45,7 +41,7 @@ def _segment_bbox_crop(frame_bgr, box):
 
 def estimate_orientation(frame_bgr, box, round_aspect: float = 1.35,
                          upright_band_deg: float = 35.0):
-    """Estimate can orientation from mask_poly or bbox crop segmentation."""
+    """Estimate the can's orientation."""
     import cv2
     import numpy as np
 

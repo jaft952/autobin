@@ -1,9 +1,4 @@
-"""Actuator contracts (mirrors src/hardware/sensors/interfaces.py).
-
-Real drivers, print stubs and test fakes all implement these structurally
-(typing.Protocol — no inheritance required), so callers can substitute any
-of them without checking type.
-"""
+"""Interfaces for the wheel and arm drivers."""
 from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
@@ -11,7 +6,7 @@ from typing import Optional, Protocol, runtime_checkable
 
 @runtime_checkable
 class ActuatorInterface(Protocol):
-    """Wheel actuator surface (PWMActuator, PrintActuator, ...)."""
+    """Methods every wheel driver must have."""
 
     def apply(self, command) -> None: ...
     def stop(self) -> None: ...
@@ -20,7 +15,7 @@ class ActuatorInterface(Protocol):
 
 @runtime_checkable
 class ArmPlannerInterface(Protocol):
-    """Arm driver surface (GraspPlanner, FakePlanner, PrintPlanner, ...)."""
+    """Methods every arm driver must have."""
 
     def goto(self, target, label: str = "") -> None: ...
     def open_gripper(self) -> None: ...
