@@ -13,7 +13,7 @@ class SensorHub(SensorInterface):
     # 15cm left almost no margin once sensor latency (up to ~2 ping cycles),
     # the 0.15s settle pause before the escape manoeuvre starts, and the
     # chassis's own physical extent past the sensor are all accounted for.
-    EMERGENCY_STOP_CM = 25.0
+    EMERGENCY_STOP_CM = 15.0
 
     def __init__(self, front=None, back=None, front_left=None, front_right=None,
                  camera=None):
