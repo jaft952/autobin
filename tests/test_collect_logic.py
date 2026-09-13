@@ -17,10 +17,9 @@ Covers:
     - overshot past the nearest arc       -> active backoff, not a stand-down
     - the grab waits out GRAB_STABLE_S, and GRABBABLE_LATCH_S rides out a
       one-frame detection blink
-    - the front ultrasonic vetoes a grab it reads as out of range
     - ground-contact point preferred over bbox center
     - Layer 2 steering signs and distance scaling
-    - Layer 5 stands down for a tin the arm can actually reach
+    - Layer 4 stands down for a tin the arm can actually reach
     - ArmExecutor: grab -> dump -> home, cooldown, stow idempotence
     - arbitration: collect(3) > approach(2) > scan(1), emergency(5) > all
 
@@ -45,7 +44,7 @@ from src.subsumption.layers.layer2_approach import (
 )
 import src.subsumption.layers.layer3_collect as collect_mod
 from src.subsumption.layers.layer3_collect import (
-    CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S, GRAB_CONFIRM_CM,
+    CollectLitterLayer, GRAB_STABLE_S, GRABBABLE_LATCH_S,
 )
 from src.motion.calibration import MotionCalibration
 import src.visual_servoing.reactive_controller as reactive_mod
@@ -351,30 +350,6 @@ def test_layer2_parks_on_the_arc_grid_not_on_distance():
     print("PASS Layer 2 parks on the arc grid")
 
 
-def test_ultrasonic_vetoes_a_far_grab():
-    """The front sensor is the independent check on the vision estimate. No
-    reading is NOT a veto — an off-center tin sits outside its narrow beam."""
-    with fake_collect_clock() as clock:
-        layer = CollectLitterLayer(arc_solver=make_solver())
-        sensors = FakeSensors()
-        sensors.ground = (0.5, 0.6) # type: ignore
-
-        sensors.dist = GRAB_CONFIRM_CM + 10.0 # type: ignore
-        layer.evaluate(sensors)
-        clock.tick(GRAB_STABLE_S + 0.01)
-        cmd = layer.evaluate(sensors)
-        assert cmd.active and cmd.motion_vector == (0, 0, 0), \
-            "must hold the base, not stand down, once the arc grid solves"
-        assert cmd.arm_action != 'grab_arc', "grabbed past the veto"
-
-        sensors.dist = GRAB_CONFIRM_CM - 5.0 # type: ignore
-        assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-
-        sensors.dist = None                     # no echo -> vision decides
-        assert settle(layer, sensors, clock).arm_action == 'grab_arc'
-    print("PASS ultrasonic vetoes a far grab, missing echo does not")
-
-
 def test_inactive_when_outside_the_grid():
     with fake_collect_clock():
         layer = CollectLitterLayer(arc_solver=make_solver())
@@ -399,7 +374,7 @@ def test_prefers_ground_contact_over_center():
 
 
 def test_is_grabbable_does_not_disturb_the_clock():
-    """Layer 5 and ArmExecutor both poll this every tick; if it advanced the
+    """Layer 4 and ArmExecutor both poll this every tick; if it advanced the
     stability clock it would either delay or short-circuit every grab."""
     with fake_collect_clock() as clock:
         layer = CollectLitterLayer(arc_solver=make_solver())
@@ -488,7 +463,7 @@ def test_layer3_routes_lying_and_axial():
 
 def test_emergency_stands_down_for_a_grabbable_tin():
     """At grab range the front sensor is looking AT the tin. Without the
-    exemption Layer 5 outvoted the grab and drove away from every can the
+    exemption Layer 4 outvoted the grab and drove away from every can the
     robot got close enough to collect."""
     with fake_collect_clock(), fake_emergency_clock():
         collect = CollectLitterLayer(arc_solver=make_solver())
@@ -868,7 +843,7 @@ def test_arbitration_stack():
         sensors.dist = 8.0 # type: ignore
         assert winner().layer_id == 4
 
-        # No litter, no obstacle -> scan patrols, but only once layer 5 has
+        # No litter, no obstacle -> scan patrols, but only once Layer 4 has
         # finished its escape (settle -> backoff -> settle -> pivot, and the
         # pivot itself is held for MIN_TURN_S).
         sensors.center = sensors.ground = None
@@ -879,7 +854,7 @@ def test_arbitration_stack():
             clock.tick(0.2)
             collect_clock.tick(0.2)     # lets Layer 3's blink latch expire
         else:
-            raise AssertionError("layer 5 never handed back to scan")
+            raise AssertionError("Layer 4 never handed back to scan")
     print("PASS arbitration: 5 > 3 > 2 > 1")
 
 
@@ -943,7 +918,6 @@ ALL_TESTS = [
     test_layer2_parks_on_the_arc_grid_not_on_distance,
     test_retreat_survives_a_one_frame_blink,
     test_layer3_stands_down_at_once_when_unreachable,
-    test_ultrasonic_vetoes_a_far_grab,
     test_inactive_when_outside_the_grid,
     test_prefers_ground_contact_over_center,
     test_is_grabbable_does_not_disturb_the_clock,

@@ -2,7 +2,7 @@
 tests/test_floor_scan.py
 
 Floor-scanning integration test: zigzag patrol (Layer 1) + ultrasonic
-(SensorHub) + emergency stop (Layer 5), arbitrated and executed on the base.
+(SensorHub) + emergency stop (Layer 4), arbitrated and executed on the base.
 
 This is the full subsumption loop:
 
@@ -25,7 +25,7 @@ Expected behavior (wheels live, no camera):
     Robot drives a straight lane. When the wall closes to TURN_AT_CM it
     pivots ~90 deg, hops one robot-width sideways, pivots ~90 deg again, and
     drives the return lane; the pivot side alternates each wall. Inside
-    SensorHub.EMERGENCY_STOP_CM Layer 5 takes over and runs its escape.
+    SensorHub.EMERGENCY_STOP_CM Layer 4 takes over and runs its escape.
 
 Calibrating the pattern: pass --turn-90 / --shift / --speed / --turn-speed to
 seed starting values (they call ScanAroundLayer.set_timing/set_speeds); once
@@ -76,7 +76,7 @@ def build_sensors(with_camera: bool) -> SensorHub:
 
 def _speed_input_loop(scan: ScanAroundLayer, emergency: EmergencyStopLayer) -> None:
     """Background thread: 's <val>' sets lane speed, 't <val>' sets turn
-    speed on both layers (layer 5 outvotes the scan pivot, so they must
+    speed on both layers (Layer 4 outvotes the scan pivot, so they must
     match). Runs until stdin closes."""
     for line in sys.stdin:
         parts = line.split()

@@ -8,7 +8,6 @@ from src.subsumption.arbitrator import ActionCommand
 from src.arm.arc_grasp import ArcGraspSolver
 from src.arm.grasp_reach import solve_reach
 
-GRAB_CONFIRM_CM = 35.0
 GRAB_STABLE_S = 2.0
 GRABBABLE_LATCH_S = 2.0
 
@@ -65,16 +64,6 @@ class CollectLitterLayer(BaseLayer):
 
         self._latched_until = now + GRABBABLE_LATCH_S
 
-        if not self._ultrasonic_confirms(sensors):
-            # Hold, don't stand down: a single noisy HC-SR04 ping reading a
-            # hair past GRAB_CONFIRM_CM must not hand the wheels back to
-            # Layer 2 for even one tick -- its own steering correction is a
-            # visible flick, and it moves the base off the spot the arc grid
-            # already solved for, right before the grab fires on the next
-            # good reading.
-            self._ready_since = None
-            return self._stop("GRAB HOLD (ultrasonic not yet confirming range)")
-
         if self._ready_since is None:
             self._ready_since = now
         stable_s = now - self._ready_since
@@ -94,13 +83,12 @@ class CollectLitterLayer(BaseLayer):
             active=True,
             motion_vector=(0, 0, 0),          # halt base for the grab
             arm_action='grab_arc',
-            # tin_pose picks the approach order (lying: elbow last)
-            arm_params={'pose': solved, 'tin_pose': klass},
+            arm_params={'pose': solved, 'tin_pose': klass},  # tin_pose sets approach order
             message=f"ARC GRAB ({label}) @ nx={nx:.2f} ny={ny:.2f}",
         )
 
     def _absorb_suppressed_time(self, now: float) -> None:
-        """Open-loop timers must not count time spent suppressed by Layer 5."""
+        """Don't count time suppressed by Layer 4 in the open-loop timers."""
         if self._suppressed_since is None:
             return
         paused = now - self._suppressed_since
@@ -111,28 +99,16 @@ class CollectLitterLayer(BaseLayer):
         self._suppressed_since = None
 
     def is_grabbable(self, sensors: Any) -> bool:
-        """Can the arc grid solve this tin from where the robot stands?
-        Pure — no timers touched, so Layer 5 and ArmExecutor can ask it
-        without disturbing this layer's stability clock."""
+        """Can the arc grid solve this tin now? Pure, no timers touched."""
         return self._solve(sensors)[0] is not None
 
     def is_holding_for_grab(self, sensors: Any) -> bool:
-        """Same solvability check as is_grabbable, gated on this layer having
-        actually WON arbitration last tick -- i.e. the base is genuinely
-        stopped for the grab, not still being driven by Layer 2's approach.
-
-        This is the one Layer 5 should exempt, not is_grabbable() alone: a
-        tin sitting right in front of a stopped base legitimately reads
-        "too close" on the front ultrasonic, and that must not disarm the
-        e-stop while the base is still moving -- a solvable pose can exist
-        several ticks before Layer 2 actually arrives, and a real obstacle
-        can be sitting right next to that solvable path the whole time."""
+        """Grabbable AND this layer won last tick, so the base is already stopped.
+        Layer 4 exempts only this: a solvable pose can exist while the base still moves."""
         return self._last_won and self.is_grabbable(sensors)
 
     def can_still_in_grab_zone(self, sensors: Any) -> bool:
-        """Re-run the grabbability check after a grab, once the arm is clear
-        of the camera — catches a miss regardless of where a knocked-but-not-
-        grabbed can ended up."""
+        """Re-check grabbability after a grab, once the arm clears the camera."""
         return self.is_grabbable(sensors)
 
     # ── Internals ─────────────────────────────────────────────────────────
@@ -154,13 +130,3 @@ class CollectLitterLayer(BaseLayer):
         2 arrives on -- one criterion, so the two layers cannot disagree
         about whether the base is in position."""
         return solve_reach(self.solver, sensors)
-
-    @staticmethod
-    def _ultrasonic_confirms(sensors: Any) -> bool:
-        """Front sensor agrees the tin is within arm range. No reading is NOT
-        a veto: an off-center tin (a normal calibrated position) sits outside
-        the sensor's narrow beam entirely, and vision plus the arc solver have
-        already placed it. A real too-far reading still blocks."""
-        getter = getattr(sensors, "get_obstacle_distance_cm", None)
-        distance = getter() if getter is not None else None
-        return distance is None or distance <= GRAB_CONFIRM_CM
