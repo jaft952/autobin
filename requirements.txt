@@ -1,33 +1,38 @@
 # pip install -r requirements.txt
 #
-# torch/torchvision aren't pinned to a platform build — pick explicitly:
-#   Raspberry Pi / ARM Linux (no GPU), MUST be CPU-only (a CUDA build imports
-#   fine but SIGILLs on first real op — tests/diagnose_runtime.py confirms):
-#       pip uninstall -y torch torchvision
-#       pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-#   Windows with an NVIDIA GPU and want CUDA:
-#       pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# One file for both machines. Lines ending in "; platform_machine ..." are
+# environment markers: pip installs them only on the matching CPU type.
+#   aarch64 / armv7l = Raspberry Pi
+#   everything else  = Windows / x86 development PC
+#
+# torch/torchvision: on the Raspberry Pi you MUST replace them with the
+# CPU-only build afterwards (a CUDA build imports fine but crashes with
+# SIGILL on the first real operation, tests/diagnose_runtime.py confirms):
+#     pip uninstall -y torch torchvision
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Windows with an NVIDIA GPU (training only):
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
-# ── Core runtime (needed to run the robot, tools and web dashboard) ──────────
+# -- Core runtime (robot, test tools and web server) --------------------------
 numpy>=1.24.0
 opencv-python>=4.7.0
 PyYAML>=6.0
-
-ultralytics>=8.0.0
+ultralytics>=8.3.0          # YOLO11n-seg detector
 torch>=2.0.0
 torchvision>=0.15.0
+flask>=3.0.0                # src/web/server.py
 
-# Web dashboard backend (web/server.py, web/runtime.py)
-flask>=3.0.0
+# -- Raspberry Pi hardware (installed on the Pi only) --------------------------
+RPi.GPIO>=0.7.1; platform_machine == "aarch64" or platform_machine == "armv7l"
+adafruit-circuitpython-servokit>=1.3.0; platform_machine == "aarch64" or platform_machine == "armv7l"
+pigpio>=1.78; platform_machine == "aarch64" or platform_machine == "armv7l"
+ncnn>=1.0.20240410; platform_machine == "aarch64" or platform_machine == "armv7l"
 
-# ── Model training only (run on the dev/Windows machine, not the Pi) ─────────
-albumentations>=1.3.0     # data_preprocessing.py (augmentation)
-pandas>=1.5.0             # monitor_training.py (metrics table)
-matplotlib>=3.7.0         # monitor_training.py (curves)
-tqdm>=4.65.0              # convert_coco_to_yolo.py (progress bars)
+# -- Tests ----------------------------------------------------------------------
+pytest>=7.0
 
-# ── Raspberry Pi hardware (Pi only) ─────────────────────────────────────────
-
-# RPi.GPIO>=0.7
-# adafruit-circuitpython-servokit>=1.3
-# ncnn>=1.0.20230000
+# -- Model training only (development PC, skipped on the Pi) -------------------
+albumentations>=1.3.0; platform_machine != "aarch64" and platform_machine != "armv7l"
+pandas>=1.5.0; platform_machine != "aarch64" and platform_machine != "armv7l"
+matplotlib>=3.7.0; platform_machine != "aarch64" and platform_machine != "armv7l"
+tqdm>=4.65.0; platform_machine != "aarch64" and platform_machine != "armv7l"
